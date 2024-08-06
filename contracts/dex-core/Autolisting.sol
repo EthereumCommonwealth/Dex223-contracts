@@ -158,6 +158,11 @@ contract Dex223AutoListing {
 
     mapping(uint256 => TradeablePair) public pairs; // index => pair
 
+    function getFactory() public view returns (address)
+    {
+        return address(factory);
+    }
+
     function getRegistry() public view returns (address)
     {
         return address(registry);
@@ -205,9 +210,9 @@ contract Dex223AutoListing {
         last_update = block.timestamp;
     }
 
-    function checkListing(address _token_erc20, address _token_erc223) internal 
+    function checkListing(address _token_erc20, address _token_erc223) internal
     {
-        
+
             // There are two possible scenarios here:
             // 1. We are listing a new token on Dex223.
             // 2. We are adding a version of an already listed token which previously had
@@ -235,7 +240,7 @@ contract Dex223AutoListing {
                     tokens[listed_tokens[_token_erc20]] = Token(_token_erc20, _token_erc223);
                     listed_tokens[_token_erc223]        = listed_tokens[_token_erc20];
                 }
-                else 
+                else
                 {
                     // Otherwise the token is listed as ERC-223;
                     tokens[listed_tokens[_token_erc223]] = Token(_token_erc20, _token_erc223);

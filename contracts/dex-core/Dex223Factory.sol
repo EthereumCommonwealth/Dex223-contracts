@@ -71,10 +71,10 @@ contract Dex223Factory is IDex223Factory, UniswapV3PoolDeployer, NoDelegateCall 
         // TODO: Add pool correctness safety checks via Converter.
 
 
-        //require(tokenA != tokenB);
-        //(address _token0_erc20, address _token0_erc223, uint8 _token0_standard) = identifyTokens(tokenA);
-        //(address _token1_erc20, address _token1_erc223, uint8 _token1_standard) = identifyTokens(tokenB);
-        //(address token0, address token1) = tokenA < tokenB ? (tokenA, tokenB) : (tokenB, tokenA);
+        require(tokenA_erc20 != tokenB_erc20);
+//        (address _token0_erc20, address _token0_erc223, uint8 _token0_standard) = identifyTokens(tokenA_erc20);
+//        (address _token1_erc20, address _token1_erc223, uint8 _token1_standard) = identifyTokens(tokenB_erc20);
+//        (address token0, address token1) = tokenA < tokenB ? (tokenA, tokenB) : (tokenB, tokenA);
 
         // Comment out the checks for testing reasons now.
 
@@ -93,6 +93,7 @@ contract Dex223Factory is IDex223Factory, UniswapV3PoolDeployer, NoDelegateCall 
         }
 
         require(tokenA_erc20 != address(0));
+        require(tokenB_erc20 != address(0));
         int24 tickSpacing = feeAmountTickSpacing[fee];
         require(tickSpacing != 0);
         require(getPool[tokenA_erc20][tokenB_erc20][fee] == address(0));
