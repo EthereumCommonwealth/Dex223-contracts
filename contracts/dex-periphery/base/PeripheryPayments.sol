@@ -48,7 +48,7 @@ abstract contract PeripheryPayments is IPeripheryPayments, PeripheryImmutableSta
 
     function depositERC223(address _user, address _token, uint256 _quantity) internal
     {
-        _erc223Deposits[_user][_token] = _quantity;
+        _erc223Deposits[_user][_token] += _quantity;
         emit ERC223Deposit(_token, _user, _quantity);
     }
 
