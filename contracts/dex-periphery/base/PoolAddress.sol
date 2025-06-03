@@ -1,11 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity >=0.5.0;
 
-contract IFactory
-{
-    mapping(address => mapping(address => mapping(uint24 => address))) public getPool;
-}
-
 /// @title Provides functions for deriving a pool address from the factory, tokens, and the fee
 library PoolAddress {
     bytes32 internal constant POOL_INIT_CODE_HASH = 0xf381c67d48673ceb8a17b53722647aee43310f100cd97f25bfcc628958372b8b; // Updated for 0.7.6 compiled version with 5000 runs (EVM version Prague)
