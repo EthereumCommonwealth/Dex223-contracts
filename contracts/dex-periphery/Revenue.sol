@@ -4,6 +4,8 @@ import '../libraries/TransferHelper.sol';
 import '../interfaces/IERC20Minimal.sol';
 import '../dex-core/interfaces/IDex223Factory.sol';
 
+
+// Pseudo-interface of the Pool contract
 contract Dex223Pool {
 
     struct Token
@@ -31,6 +33,10 @@ contract Dex223Pool {
     {
 
     }
+    
+    function setFeeProtocol(uint8 feeProtocol0, uint8 feeProtocol1) external {
+        
+    }
 }
 
 contract Revenue {
@@ -57,6 +63,9 @@ contract Revenue {
     mapping (address => mapping(address => uint256)) public erc223deposit;
     mapping (address => address) public get223;
     mapping (address => address) public get20;
+
+    uint8 public fee_default0 = 10;
+    uint8 public fee_default1 = 10;
 
     mapping (address => uint256) public staking_timestamp;
 
@@ -116,6 +125,14 @@ contract Revenue {
                 false,
                 false
             );
+        }
+    }
+    
+    function set_protocol_fee(address[] calldata pools) public {
+        
+        for (uint256 i = 0; i < pools.length; i++) {
+            address p = pools[i];
+            Dex223Pool(p).setFeeProtocol(fee_default0, fee_default1);
         }
     }
 
@@ -198,5 +215,12 @@ contract Revenue {
     {
         require(msg.sender == revenue_contract_owner, "Owner error");
         claim_delay = _delay;
+    }
+
+    function set_fee_defaults(uint8 _fee0, uint8 _fee1) public
+    {
+        require(msg.sender == revenue_contract_owner, "Owner error");
+        fee_default0 = _fee0;
+        fee_default1 = _fee1;
     }
 }
