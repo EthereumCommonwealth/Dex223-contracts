@@ -2,6 +2,7 @@
 pragma solidity ^0.8.13;
 import '../libraries/TransferHelper.sol';
 import '../interfaces/IERC20Minimal.sol';
+import '../dex-core/interfaces/IDex223Factory.sol';
 
 contract Dex223Pool {
 
@@ -47,6 +48,7 @@ contract Revenue {
     }
 
     uint256 totalContribution;
+    address public                      revenue_contract_owner = msg.sender; // the creator of the contract by default.
     mapping (address => uint256) public staked;
     mapping (address => uint256) public lastUpdate;
     mapping (address => uint256) public contribution;
@@ -184,5 +186,11 @@ contract Revenue {
         uint256 duration = block.timestamp - lastUpdate[staker];
         value = staked[staker] * duration + contribution[staker];
         return value;
+    }
+
+    function give_owner(address _factory) public 
+    {
+        require(msg.sender == revenue_contract_owner, "Requests to reset owner are only accepted from the contracts owner");
+        IDex223Factory(_factory).setOwner(revenue_contract_owner);
     }
 }
