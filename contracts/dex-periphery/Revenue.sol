@@ -190,7 +190,13 @@ contract Revenue {
 
     function give_owner(address _factory) public 
     {
-        require(msg.sender == revenue_contract_owner, "Requests to reset owner are only accepted from the contracts owner");
+        require(msg.sender == revenue_contract_owner, "Owner error");
         IDex223Factory(_factory).setOwner(revenue_contract_owner);
+    }
+
+    function set_staking_claim_delay(uint256 _delay) public 
+    {
+        require(msg.sender == revenue_contract_owner, "Owner error");
+        claim_delay = _delay;
     }
 }
