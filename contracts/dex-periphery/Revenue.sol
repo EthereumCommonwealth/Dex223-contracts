@@ -62,7 +62,7 @@ contract Revenue {
 
     uint256 public claim_delay = 3 days;
 
-    address immutable stakingToken;
+    address public immutable stakingToken;
 
     event Staked(address indexed user, uint256 amount);
     event Withdrawn(address indexed user, uint256 amount);
