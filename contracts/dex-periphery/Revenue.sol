@@ -4,8 +4,6 @@ import '../libraries/TransferHelper.sol';
 import '../interfaces/IERC20Minimal.sol';
 import '../dex-core/interfaces/IDex223Factory.sol';
 
-
-// Pseudo-interface of the Pool contract
 contract Dex223Pool {
 
     struct Token
@@ -33,13 +31,20 @@ contract Dex223Pool {
     {
 
     }
-    
-    function setFeeProtocol(uint8 feeProtocol0, uint8 feeProtocol1) external {
+
+    function setFeeProtocol(uint8 feeProtocol0, uint8 feeProtocol1) public
+    {
         
     }
 }
 
 contract Revenue {
+
+    modifier onlyOwner
+    {
+        require(msg.sender == revenue_contract_owner, "Owner error");
+        _;
+    }
 
     struct Token
     {
@@ -53,6 +58,9 @@ contract Revenue {
         uint128 token1;
     }
 
+    uint8 public default_fee_token0;
+    uint8 public default_fee_token1;
+
     uint256 totalContribution;
     address public                      revenue_contract_owner = msg.sender; // the creator of the contract by default.
     mapping (address => uint256) public staked;
@@ -63,9 +71,6 @@ contract Revenue {
     mapping (address => mapping(address => uint256)) public erc223deposit;
     mapping (address => address) public get223;
     mapping (address => address) public get20;
-
-    uint8 public fee_default0 = 10;
-    uint8 public fee_default1 = 10;
 
     mapping (address => uint256) public staking_timestamp;
 
@@ -125,14 +130,6 @@ contract Revenue {
                 false,
                 false
             );
-        }
-    }
-    
-    function set_protocol_fee(address[] calldata pools) public {
-        
-        for (uint256 i = 0; i < pools.length; i++) {
-            address p = pools[i];
-            Dex223Pool(p).setFeeProtocol(fee_default0, fee_default1);
         }
     }
 
@@ -205,22 +202,27 @@ contract Revenue {
         return value;
     }
 
-    function give_owner(address _factory) public 
+    function give_owner(address _factory) public onlyOwner
     {
-        require(msg.sender == revenue_contract_owner, "Owner error");
         IDex223Factory(_factory).setOwner(revenue_contract_owner);
     }
 
-    function set_staking_claim_delay(uint256 _delay) public 
+    function set_staking_claim_delay(uint256 _delay) public onlyOwner
     {
-        require(msg.sender == revenue_contract_owner, "Owner error");
         claim_delay = _delay;
     }
 
-    function set_fee_defaults(uint8 _fee0, uint8 _fee1) public
+    function set_default_fees(uint8 _token0, uint8 _token1) public onlyOwner
     {
-        require(msg.sender == revenue_contract_owner, "Owner error");
-        fee_default0 = _fee0;
-        fee_default1 = _fee1;
+        default_fee_token0 = _token0;
+        default_fee_token1 = _token1;
+    }
+
+    function enable_fees_in_pools(address[] calldata pools) public 
+    {
+        for(uint256 i = 0; i < pools.length; i++)
+        {
+            Dex223Pool(pools[i]).setFeeProtocol(default_fee_token0, default_fee_token1);
+        }
     }
 }
