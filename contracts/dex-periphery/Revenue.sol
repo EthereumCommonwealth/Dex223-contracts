@@ -76,31 +76,36 @@ contract Revenue {
 
     uint256 public claim_delay = 3 days;
 
-    address public immutable stakingToken;
+    address public staking_token_erc20;
+    address public staking_token_erc223;
 
     event Staked(address indexed user, uint256 amount);
     event Withdrawn(address indexed user, uint256 amount);
     event Claimed(address indexed user, address token, uint256 amount);
 
-    constructor (address token) {
-        require(token != address(0));
-        stakingToken = token;
+    constructor (address _staking_token20, address _staking_token223) {
+        require(_staking_token20 != address(0));
+        require(_staking_token223 != address(0));
+        staking_token_erc20 = _staking_token20;
+        staking_token_erc223 = _staking_token223;
     }
 
-    function stake(uint256 amount) public {
+    function stake(address _token, uint256 _amount) public {
+        require(_token == staking_token_erc20 || _token == staking_token_erc20, "Trying to stake a wrong token");
         _update(msg.sender);
-        staked[msg.sender] += amount;
-        receiveToken(stakingToken, amount);
+        staked[msg.sender] += _amount;
+        receiveToken(_token, _amount);
         staking_timestamp[msg.sender] = block.timestamp;
 
-        emit Staked(msg.sender, amount);
+        emit Staked(msg.sender, _amount);
     }
 
-    function withdraw(uint256 amount) public {
-        require(staking_timestamp[msg.sender] + claim_delay <= block.timestamp, "Tokens are frozen for 3 days after the last staking");
+    function withdraw(address _token, uint256 amount) public {
+        require(staking_timestamp[msg.sender] + claim_delay <= block.timestamp, "Tokens are frozen for a specified duration after the last staking");
+        require(_token == staking_token_erc20 || _token == staking_token_erc20, "Trying to stake a wrong token");
         _update(msg.sender);
         staked[msg.sender] -= amount;
-        sendToken(stakingToken, amount);
+        sendToken(_token, amount);
 
         emit Withdrawn(msg.sender, amount);
     }
