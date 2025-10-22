@@ -138,22 +138,24 @@ contract Revenue {
         }
     }
 
-    function claim(address token) public {
+    function claim(address[] memory tokens) public {
         _update(msg.sender);
 
-        uint256 tokenUnpaidContribution = totalContribution - spentTotalContribution[token];
-        uint256 unpaidUserContribution = contribution[msg.sender] - spentContribution[msg.sender][token];
-        require(unpaidUserContribution <= tokenUnpaidContribution);
+        for (uint256 i = 0; i < tokens.length; i++) {
+            uint256 tokenUnpaidContribution = totalContribution - spentTotalContribution[tokens[i]];
+            uint256 unpaidUserContribution = contribution[msg.sender] - spentContribution[msg.sender][tokens[i]];
+            require(unpaidUserContribution <= tokenUnpaidContribution);
 
-        uint256 balance = IERC20Minimal(token).balanceOf(address(this));
-        uint256 dividends = balance * unpaidUserContribution / tokenUnpaidContribution;
+            uint256 balance = IERC20Minimal(tokens[i]).balanceOf(address(this));
+            uint256 dividends = balance * unpaidUserContribution / tokenUnpaidContribution;
 
-        spentContribution[msg.sender][token] += unpaidUserContribution;
-        spentTotalContribution[token] += unpaidUserContribution;
+            spentContribution[msg.sender][tokens[i]] += unpaidUserContribution;
+            spentTotalContribution[tokens[i]] += unpaidUserContribution;
 
-        sendToken(token, dividends);
+            sendToken(tokens[i], dividends);
 
-        emit Claimed(msg.sender, token, dividends);
+            emit Claimed(msg.sender, tokens[i], dividends);
+        }
     }
 
     function tokenReceived(address user, uint256 value, bytes memory data) public returns (bytes4) {
