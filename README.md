@@ -25,7 +25,7 @@
 - Auto-listing Registry (verified) 0x6ee7518400c14e8046252E3cC1670FC8093e618F
 - Core Testnet Auto-listing (verified / 100 SepWEI per token) 0x8a1839E6b7b4538a15de8865891FcE6e24a27ddA
 - Free Testnet Auto-listing (verified) 0xBC5fC0bbd73DF985Cc28c9367407f9FfB1FD4CC3
-- Revenue contract (testnet) [0xe764d5ba773e89c2ddb315a2a73e3626c1525ee0](https://sepolia.etherscan.io/address/0xe764d5ba773e89c2ddb315a2a73e3626c1525ee0#code)
+- Revenue contract (testnet) [0x4e38fB6f9243d2aC91C490230375FeDE1E0aD7F2](https://sepolia.etherscan.io/address/0x4e38fB6f9243d2aC91C490230375FeDE1E0aD7F2#code)
 
 ## Sepolia testnet deployment (deprecated)
 
