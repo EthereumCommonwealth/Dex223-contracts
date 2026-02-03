@@ -173,7 +173,7 @@ contract Revenue {
                 last_claim[msg.sender][tokens[i]] = staking_timestamp[msg.sender];
             }
             uint256 _self_balance = IERC20Minimal(tokens[i]).balanceOf(address(this));
-            if(tokens[i] == staking_token_erc20 || tokens[i] == staking_token_erc20)
+            if(tokens[i] == staking_token_erc20 || tokens[i] == staking_token_erc223)
             {
                 //break;
                 _self_balance = 0;
