@@ -104,7 +104,7 @@ contract Revenue {
     }
 
     function stake(address _token, uint256 _amount) public {
-        require(_token == staking_token_erc20 || _token == staking_token_erc20, "Trying to stake a wrong token");
+        require(_token == staking_token_erc20 || _token == staking_token_erc223, "Trying to stake a wrong token");
         _update(msg.sender);
         staked[msg.sender] += _amount;
         total_staked += _amount;
@@ -116,7 +116,7 @@ contract Revenue {
 
     function withdraw(address _token, uint256 amount) public {
         require(staking_timestamp[msg.sender] + claim_delay <= block.timestamp, "Tokens are frozen for a specified duration after the last staking");
-        require(_token == staking_token_erc20 || _token == staking_token_erc20, "Trying to stake a wrong token");
+        require(_token == staking_token_erc20 || _token == staking_token_erc223, "Trying to stake a wrong token");
         _update(msg.sender);
         staked[msg.sender] -= amount;
         sendToken(_token, amount);
