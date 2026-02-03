@@ -126,7 +126,7 @@ contract Revenue {
     function withdraw(address _token, uint256 amount) public {
         require(staking_timestamp[msg.sender] + claim_delay <= block.timestamp, "Tokens are frozen for a specified duration after the last staking");
         require(_token == staking_token_erc20 || _token == staking_token_erc223, "Trying to stake a wrong token");
-        _update(msg.sender);
+        //_update(msg.sender);
         staked[msg.sender] -= amount;
         total_staked -= amount;
         sendToken(_token, amount);
@@ -173,6 +173,14 @@ contract Revenue {
                 last_claim[msg.sender][tokens[i]] = staking_timestamp[msg.sender];
             }
             uint256 _self_balance = IERC20Minimal(tokens[i]).balanceOf(address(this));
+            if(tokens[i] == staking_token_erc20 || tokens[i] == staking_token_erc20)
+            {
+                //break;
+                _self_balance = 0;
+                // The case of claiming reward tokens must be prohibited at the UI level.
+                // Leaving this operational in case some checks are missing on the UI side so
+                // that not to interrupt the workflow of claiming the rest of the tokens.
+            }
             _time_delta   = block.timestamp - last_claim[msg.sender][tokens[i]];
             uint256 dividends = _self_balance * staked[msg.sender] * (_time_delta / assigned_avg_staking_duration) / (total_staked + staked[msg.sender] * (_time_delta / assigned_avg_staking_duration));
             last_claim[msg.sender][tokens[i]] = block.timestamp;
