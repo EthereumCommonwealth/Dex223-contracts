@@ -46,14 +46,18 @@ contract Revenue {
         _;
     }
 
-    bool public debug_mode = true;
-
     modifier onlyDebugMode
     {
         require(debug_mode, "Debug mode is disabled.");
         _;
     }
 
+    modifier nonReentrant
+    {
+        require(!reentrancy_lock, "Reentrancy error.");
+        reentrancy_lock = true;
+        _;
+    }
 
     struct Token
     {
@@ -70,6 +74,9 @@ contract Revenue {
     //mapping (address => mapping(address => uint256)) public user_token_paid; // users_address => token_address => how_much.
     //mapping (address => uint256) public total_received_tokens; // token => how much was received in total.
     //mapping (address => uint256) public total_paid_tokens;     // token => how much was already paid out as rewards in total.
+
+    bool public debug_mode = true;
+    bool public reentrancy_lock = false;
 
     uint8 public default_fee_token0;
     uint8 public default_fee_token1;
@@ -153,7 +160,7 @@ contract Revenue {
         }
     }
 
-    function claim(address[] memory tokens) public 
+    function claim(address[] memory tokens) public nonReentrant
     {
         for (uint256 i = 0; i < tokens.length; i++) {
             uint256 _self_balance = IERC20Minimal(tokens[i]).balanceOf(address(this));
