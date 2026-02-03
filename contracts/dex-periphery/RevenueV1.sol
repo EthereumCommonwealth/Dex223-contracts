@@ -213,7 +213,7 @@ contract Revenue {
         IDex223Factory(_factory).setOwner(revenue_contract_owner);
     }
 
-    function give_owner(uint256 _assigned_duration) public onlyOwner
+    function assign_avg_staking_duration(uint256 _assigned_duration) public onlyOwner
     {
         assigned_avg_staking_duration = _assigned_duration;
     }
