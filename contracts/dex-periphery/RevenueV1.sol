@@ -119,6 +119,7 @@ contract Revenue {
         require(_token == staking_token_erc20 || _token == staking_token_erc223, "Trying to stake a wrong token");
         _update(msg.sender);
         staked[msg.sender] -= amount;
+        total_staked -= amount;
         sendToken(_token, amount);
 
         emit Withdrawn(msg.sender, amount);
