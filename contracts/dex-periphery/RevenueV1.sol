@@ -183,7 +183,8 @@ contract Revenue {
     // internal functions //
 
     function _update(address staker) internal {
-        staking_timestamp[msg.sender] = block.timestamp;
+        staking_timestamp[staker] = block.timestamp;
+        // Additional checks if necessary.
     }
 
     function sendToken(address token, uint256 amount) internal {
