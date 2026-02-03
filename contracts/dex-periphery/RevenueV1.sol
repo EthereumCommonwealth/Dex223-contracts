@@ -81,7 +81,7 @@ contract Revenue {
     uint8 public default_fee_token0;
     uint8 public default_fee_token1;
 
-    uint256 public assigned_avg_staking_duration = 30 days;
+    uint256 public assigned_avg_staking_duration = 10 days;
 
     uint256 public total_staked;
     
@@ -93,8 +93,9 @@ contract Revenue {
     mapping (address => address) public get20;
 
     mapping (address => uint256) public staking_timestamp;
+    mapping (address => mapping(address => uint256)) public last_claim;  // User ==> Token ==> When it was last claimed.
 
-    uint256 public claim_delay = 3 days;
+    uint256 public claim_delay = 10 days;
 
     address public staking_token_erc20;
     address public staking_token_erc223;
@@ -162,15 +163,22 @@ contract Revenue {
 
     function claim(address[] memory tokens) public nonReentrant
     {
+        uint256 _time_delta;
+        require(staking_timestamp[msg.sender] + claim_delay <= block.timestamp, "Claim locked.");
         for (uint256 i = 0; i < tokens.length; i++) {
+            if(last_claim[msg.sender][tokens[i]] == 0)
+            {
+                // If the user never claimed a specific token, then consider its inception is the last staking date.
+                last_claim[msg.sender][tokens[i]] = staking_timestamp[msg.sender];
+            }
             uint256 _self_balance = IERC20Minimal(tokens[i]).balanceOf(address(this));
-            uint256 _time_delta   = block.timestamp - staking_timestamp[msg.sender];
+            _time_delta   = block.timestamp - last_claim[msg.sender][tokens[i]];
             uint256 dividends = _self_balance * staked[msg.sender] * (_time_delta / assigned_avg_staking_duration) / (total_staked + staked[msg.sender] * (_time_delta / assigned_avg_staking_duration));
-        
+            last_claim[msg.sender][tokens[i]] = block.timestamp;
             sendToken(tokens[i], dividends);
         }
 
-        staking_timestamp[msg.sender] = block.timestamp;
+        //staking_timestamp[msg.sender] = block.timestamp; // Replaced with the updates of the last_claimed timestamp for each token.
     }
 
     function tokenReceived(address user, uint256 value, bytes memory data) public returns (bytes4) {
