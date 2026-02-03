@@ -57,6 +57,7 @@ contract Revenue {
         require(!reentrancy_lock, "Reentrancy error.");
         reentrancy_lock = true;
         _;
+        reentrancy_lock = false;
     }
 
     struct Token
