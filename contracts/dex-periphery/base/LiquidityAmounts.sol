@@ -6,12 +6,13 @@ import '../../libraries/FixedPoint96.sol';
 
 /// @title Liquidity amount functions
 /// @notice Provides functions for computing liquidity amounts from token amounts and prices
+/// @dev Security-hardened version with explicit zero-price guards and descriptive revert reasons
 library LiquidityAmounts {
     /// @notice Downcasts uint256 to uint128
-    /// @param x The uint258 to be downcasted
+    /// @param x The uint256 to be downcasted
     /// @return y The passed value, downcasted to uint128
     function toUint128(uint256 x) private pure returns (uint128 y) {
-        require((y = uint128(x)) == x);
+        require((y = uint128(x)) == x, 'LA: uint128 overflow');
     }
 
     /// @notice Computes the amount of liquidity received for a given amount of token0 and price range
@@ -26,6 +27,8 @@ library LiquidityAmounts {
         uint256 amount0
     ) internal pure returns (uint128 liquidity) {
         if (sqrtRatioAX96 > sqrtRatioBX96) (sqrtRatioAX96, sqrtRatioBX96) = (sqrtRatioBX96, sqrtRatioAX96);
+        require(sqrtRatioAX96 > 0, 'LA: sqrtRatio zero');
+        require(sqrtRatioAX96 != sqrtRatioBX96, 'LA: price range zero');
         uint256 intermediate = FullMath.mulDiv(sqrtRatioAX96, sqrtRatioBX96, FixedPoint96.Q96);
         return toUint128(FullMath.mulDiv(amount0, intermediate, sqrtRatioBX96 - sqrtRatioAX96));
     }
@@ -42,6 +45,7 @@ library LiquidityAmounts {
         uint256 amount1
     ) internal pure returns (uint128 liquidity) {
         if (sqrtRatioAX96 > sqrtRatioBX96) (sqrtRatioAX96, sqrtRatioBX96) = (sqrtRatioBX96, sqrtRatioAX96);
+        require(sqrtRatioAX96 != sqrtRatioBX96, 'LA: price range zero');
         return toUint128(FullMath.mulDiv(amount1, FixedPoint96.Q96, sqrtRatioBX96 - sqrtRatioAX96));
     }
 
@@ -85,6 +89,8 @@ library LiquidityAmounts {
         uint128 liquidity
     ) internal pure returns (uint256 amount0) {
         if (sqrtRatioAX96 > sqrtRatioBX96) (sqrtRatioAX96, sqrtRatioBX96) = (sqrtRatioBX96, sqrtRatioAX96);
+
+        require(sqrtRatioAX96 > 0, 'LA: sqrtRatioA zero');
 
         return
             FullMath.mulDiv(
