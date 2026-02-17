@@ -45,6 +45,14 @@ contract MockTimeDex223Pool is Dex223Pool {
         }
     }
 
+    function _mockUnwrapWETH9(address _recipient, address _weth, uint256 _amountOut) private {
+        require(_amountOut > 0, "POOL: ZERO_UNWRAP");
+        uint256 bal = IWETH9(_weth).balanceOf(address(this));
+        require(bal >= _amountOut, 'Insufficient WETH9');
+        IWETH9(_weth).withdraw(_amountOut);
+        TransferHelper.safeTransferETH(_recipient, _amountOut);
+    }
+
     function swapExactInput(
         address recipient,
         bool zeroForOne,
@@ -68,7 +76,7 @@ contract MockTimeDex223Pool is Dex223Pool {
             amountOut = uint256(-(zeroForOne ? amount1 : amount0));
 
             if (unwrapETH) {
-                unwrapWETH9(recipient, zeroForOne ? token1.erc20 : token0.erc20, amountOutMinimum);
+                _mockUnwrapWETH9(recipient, zeroForOne ? token1.erc20 : token0.erc20, amountOut);
             }
             
             require(amountOut >= amountOutMinimum, 'Too little received');
@@ -78,8 +86,6 @@ contract MockTimeDex223Pool is Dex223Pool {
                 revert(add(32, retdata), mload(retdata))
             }
         }
-
-
     }
 
     function setFeeGrowthGlobal0X128(uint256 _feeGrowthGlobal0X128) external {
