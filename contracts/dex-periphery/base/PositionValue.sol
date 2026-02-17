@@ -3,9 +3,11 @@ pragma solidity >=0.6.8 <0.8.0;
 
 import '../../interfaces/IUniswapV3Pool.sol';
 import '../../libraries/FixedPoint128.sol';
+import '../../libraries/FullMath.sol';
 import '../../libraries/TickMath.sol';
 import '../../libraries/Tick.sol';
 import '../../libraries/PositionKey.sol';
+import '../../libraries/LowGasSafeMath.sol';
 
 import '../interfaces/INonfungiblePositionManager.sol';
 import './LiquidityAmounts.sol';
@@ -13,6 +15,8 @@ import './PoolAddress.sol';
 
 /// @title Returns information about the token value held in a Uniswap V3 NFT
 library PositionValue {
+    using LowGasSafeMath for uint256;
+
     /// @notice Returns the total amounts of token0 and token1, i.e. the sum of fees and principal
     /// that a given nonfungible position manager token is worth
     /// @param positionManager The Uniswap V3 NonfungiblePositionManager
@@ -27,7 +31,7 @@ library PositionValue {
     ) internal view returns (uint256 amount0, uint256 amount1) {
         (uint256 amount0Principal, uint256 amount1Principal) = principal(positionManager, tokenId, sqrtRatioX96);
         (uint256 amount0Fee, uint256 amount1Fee) = fees(positionManager, tokenId);
-        return (amount0Principal + amount0Fee, amount1Principal + amount1Fee);
+        return (amount0Principal.add(amount0Fee), amount1Principal.add(amount1Fee));
     }
 
     /// @notice Calculates the principal (currently acting as liquidity) owed to the token owner in the event
@@ -126,21 +130,30 @@ library PositionValue {
                 feeParams.tickUpper
             );
 
+        // Use unchecked subtraction to handle modular arithmetic wrapping of fee growth counters.
+        // Uniswap V3 fee growth values are designed to wrap around uint256, so underflow is expected behavior.
+        uint256 feeGrowthDelta0;
+        uint256 feeGrowthDelta1;
+        assembly {
+            feeGrowthDelta0 := sub(poolFeeGrowthInside0LastX128, mload(add(feeParams, 0xC0)))
+            feeGrowthDelta1 := sub(poolFeeGrowthInside1LastX128, mload(add(feeParams, 0xE0)))
+        }
+
         amount0 =
             FullMath.mulDiv(
-                poolFeeGrowthInside0LastX128 - feeParams.positionFeeGrowthInside0LastX128,
+                feeGrowthDelta0,
                 feeParams.liquidity,
                 FixedPoint128.Q128
-            ) +
-            feeParams.tokensOwed0;
+            )
+            .add(feeParams.tokensOwed0);
 
         amount1 =
             FullMath.mulDiv(
-                poolFeeGrowthInside1LastX128 - feeParams.positionFeeGrowthInside1LastX128,
+                feeGrowthDelta1,
                 feeParams.liquidity,
                 FixedPoint128.Q128
-            ) +
-            feeParams.tokensOwed1;
+            )
+            .add(feeParams.tokensOwed1);
     }
 
     function _getFeeGrowthInside(
@@ -152,17 +165,25 @@ library PositionValue {
         (, , uint256 lowerFeeGrowthOutside0X128, uint256 lowerFeeGrowthOutside1X128, , , , ) = pool.ticks(tickLower);
         (, , uint256 upperFeeGrowthOutside0X128, uint256 upperFeeGrowthOutside1X128, , , , ) = pool.ticks(tickUpper);
 
+        // Use assembly for unchecked subtraction to correctly handle modular arithmetic wrapping
+        // of fee growth counters, matching the Uniswap V3 core Tick library behavior.
         if (tickCurrent < tickLower) {
-            feeGrowthInside0X128 = lowerFeeGrowthOutside0X128 - upperFeeGrowthOutside0X128;
-            feeGrowthInside1X128 = lowerFeeGrowthOutside1X128 - upperFeeGrowthOutside1X128;
+            assembly {
+                feeGrowthInside0X128 := sub(lowerFeeGrowthOutside0X128, upperFeeGrowthOutside0X128)
+                feeGrowthInside1X128 := sub(lowerFeeGrowthOutside1X128, upperFeeGrowthOutside1X128)
+            }
         } else if (tickCurrent < tickUpper) {
             uint256 feeGrowthGlobal0X128 = pool.feeGrowthGlobal0X128();
             uint256 feeGrowthGlobal1X128 = pool.feeGrowthGlobal1X128();
-            feeGrowthInside0X128 = feeGrowthGlobal0X128 - lowerFeeGrowthOutside0X128 - upperFeeGrowthOutside0X128;
-            feeGrowthInside1X128 = feeGrowthGlobal1X128 - lowerFeeGrowthOutside1X128 - upperFeeGrowthOutside1X128;
+            assembly {
+                feeGrowthInside0X128 := sub(sub(feeGrowthGlobal0X128, lowerFeeGrowthOutside0X128), upperFeeGrowthOutside0X128)
+                feeGrowthInside1X128 := sub(sub(feeGrowthGlobal1X128, lowerFeeGrowthOutside1X128), upperFeeGrowthOutside1X128)
+            }
         } else {
-            feeGrowthInside0X128 = upperFeeGrowthOutside0X128 - lowerFeeGrowthOutside0X128;
-            feeGrowthInside1X128 = upperFeeGrowthOutside1X128 - lowerFeeGrowthOutside1X128;
+            assembly {
+                feeGrowthInside0X128 := sub(upperFeeGrowthOutside0X128, lowerFeeGrowthOutside0X128)
+                feeGrowthInside1X128 := sub(upperFeeGrowthOutside1X128, lowerFeeGrowthOutside1X128)
+            }
         }
     }
 }
