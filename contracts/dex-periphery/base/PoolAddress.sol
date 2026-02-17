@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-pragma solidity >=0.5.0;
+pragma solidity =0.7.6;
 
 /// @title Provides functions for deriving a pool address from the factory, tokens, and the fee
 library PoolAddress {
     bytes32 internal constant POOL_INIT_CODE_HASH = 0x2ed8d490a5fd6b96b6fc965619c116f0c4dba73ee522cfc1bb2a714f08eae839; // Updated for 0.7.6 compiled version with 5000 runs (EVM version Prague)
+
     /// @notice The identifying key of the pool
     struct PoolKey {
         address token0;
@@ -21,7 +22,9 @@ library PoolAddress {
         address tokenB,
         uint24 fee
     ) internal pure returns (PoolKey memory) {
+        require(tokenA != tokenB, 'PA: IDENTICAL_ADDRESSES');
         if (tokenA > tokenB) (tokenA, tokenB) = (tokenB, tokenA);
+        require(tokenA != address(0), 'PA: ZERO_ADDRESS');
         return PoolKey({token0: tokenA, token1: tokenB, fee: fee});
     }
 
@@ -30,15 +33,18 @@ library PoolAddress {
     /// @param key The PoolKey
     /// @return pool The contract address of the V3 pool
     function computeAddress(address factory, PoolKey memory key) internal pure returns (address pool) {
-        require(key.token0 < key.token1);
+        require(factory != address(0), 'PA: ZERO_FACTORY');
+        require(key.token0 < key.token1, 'PA: UNSORTED');
         pool = address(
-            uint256(
-                keccak256(
-                    abi.encodePacked(
-                        hex'ff',
-                        factory,
-                        keccak256(abi.encode(key.token0, key.token1, key.fee)),
-                        POOL_INIT_CODE_HASH
+            uint160(
+                uint256(
+                    keccak256(
+                        abi.encodePacked(
+                            hex'ff',
+                            factory,
+                            keccak256(abi.encode(key.token0, key.token1, key.fee)),
+                            POOL_INIT_CODE_HASH
+                        )
                     )
                 )
             )
