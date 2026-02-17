@@ -96,6 +96,24 @@ const config: HardhatUserConfig = {
           }
         }
       },
+      "contracts/dex-periphery/Revenue_old.sol": {
+        version: "0.8.19",
+        settings: {
+          optimizer: {
+            enabled: true,
+            runs: 5000,
+          }
+        }
+      },
+      "contracts/dex-periphery/RevenueV1.sol": {
+        version: "0.8.19",
+        settings: {
+          optimizer: {
+            enabled: true,
+            runs: 5000,
+          }
+        }
+      },
       "contracts/dex-core/Autolisting.sol": {
         version: "0.7.6",
         settings: {
