@@ -143,6 +143,7 @@ contract ERC20Rescue
 
     function rescueERC20(address _token, uint256 _amount) external 
     {
+        require(msg.sender == extractor, "ERC20Rescue: caller is not the extractor");
         safeTransfer(_token, extractor, _amount);
     }
 }
@@ -151,6 +152,15 @@ contract ERC223WrapperToken is IERC223, ERC165, ERC20Rescue
 {
     address public creator = msg.sender;
     address private wrapper_for;
+    bool private wrapper_for_set;
+    bool private _reentrancyLock;
+
+    modifier nonReentrant() {
+        require(!_reentrancyLock, "ReentrancyGuard: reentrant call");
+        _reentrancyLock = true;
+        _;
+        _reentrancyLock = false;
+    }
 
     mapping(address account => mapping(address spender => uint256)) private allowances;
 
@@ -161,7 +171,9 @@ contract ERC223WrapperToken is IERC223, ERC165, ERC20Rescue
     function set(address _wrapper_for) external
     {
         require(msg.sender == creator);
+        require(!wrapper_for_set, "Wrapper Token: wrapper_for already set");
         wrapper_for = _wrapper_for;
+        wrapper_for_set = true;
     }
 
     uint256 private _totalSupply;
@@ -192,20 +204,22 @@ contract ERC223WrapperToken is IERC223, ERC165, ERC20Rescue
      * @param _value - the quantity of tokens to transfer.
      * @param _data  - metadata to send alongside the transaction. Can be used to encode subsequent calls in the recipient.
      */
-    function transfer(address _to, uint _value, bytes calldata _data) public payable override returns (bool success)
+    function transfer(address _to, uint _value, bytes calldata _data) public payable override nonReentrant returns (bool success)
     {
+        require(_to != address(0), "ERC223: transfer to the zero address");
         balances[msg.sender] = balances[msg.sender] - _value;
         balances[_to] = balances[_to] + _value;
+        emit Transfer(msg.sender, _to, _value, _data);
+        emit Transfer(msg.sender, _to, _value); // Old ERC20 compatible event. Added for backwards compatibility reasons.
+
         if (msg.value > 0) 
         {
-            (bool sent, bytes memory data) = _to.call{value: msg.value}("");
-            require(sent);
+            (bool sent, ) = _to.call{value: msg.value}("");
+            require(sent, "ERC223: ETH transfer failed");
         }
         if(Address.isContract(_to)) {
             IERC223Recipient(_to).tokenReceived(msg.sender, _value, _data);
         }
-        emit Transfer(msg.sender, _to, _value, _data);
-        emit Transfer(msg.sender, _to, _value); // Old ERC20 compatible event. Added for backwards compatibility reasons.
 
         return true;
     }
@@ -218,16 +232,18 @@ contract ERC223WrapperToken is IERC223, ERC165, ERC20Rescue
      * @param _to    - transfer recipient. Can be contract or EOA.
      * @param _value - the quantity of tokens to transfer.
      */
-    function transfer(address _to, uint _value) public override returns (bool success)
+    function transfer(address _to, uint _value) public override nonReentrant returns (bool success)
     {
+        require(_to != address(0), "ERC223: transfer to the zero address");
         bytes memory _empty = hex"00000000";
         balances[msg.sender] = balances[msg.sender] - _value;
         balances[_to] = balances[_to] + _value;
+        emit Transfer(msg.sender, _to, _value, _empty);
+        emit Transfer(msg.sender, _to, _value); // Old ERC20 compatible event. Added for backwards compatibility reasons.
+
         if(Address.isContract(_to)) {
             IERC223Recipient(_to).tokenReceived(msg.sender, _value, _empty);
         }
-        emit Transfer(msg.sender, _to, _value, _empty);
-        emit Transfer(msg.sender, _to, _value); // Old ERC20 compatible event. Added for backwards compatibility reasons.
 
         return true;
     }
@@ -249,6 +265,7 @@ contract ERC223WrapperToken is IERC223, ERC165, ERC20Rescue
         require(msg.sender == creator, "Wrapper Token: Only the creator contract can mint wrapper tokens.");
         balances[_recipient] += _quantity;
         _totalSupply += _quantity;
+        emit Transfer(address(0), _recipient, _quantity);
     }
 
     /**
@@ -261,6 +278,7 @@ contract ERC223WrapperToken is IERC223, ERC165, ERC20Rescue
         require(msg.sender == creator, "Wrapper Token: Only the creator contract can destroy wrapper tokens.");
         balances[msg.sender] -= _quantity;
         _totalSupply -= _quantity;
+        emit Transfer(msg.sender, address(0), _quantity);
     }
 
     // ERC20 functions for backwards compatibility.
@@ -280,6 +298,7 @@ contract ERC223WrapperToken is IERC223, ERC165, ERC20Rescue
 
     function transferFrom(address _from, address _to, uint _value) public returns (bool) {
 
+        require(_to != address(0), "ERC223: transfer to the zero address");
         require(allowances[_from][msg.sender] >= _value, "ERC223: Insufficient allowance.");
 
         balances[_from] -= _value;
@@ -296,13 +315,16 @@ contract ERC20WrapperToken is IERC20, ERC165, ERC20Rescue
 {
     address public creator = msg.sender;
     address public wrapper_for;
+    bool private wrapper_for_set;
 
     mapping(address account => mapping(address spender => uint256)) private allowances;
 
     function set(address _wrapper_for) external
     {
         require(msg.sender == creator);
+        require(!wrapper_for_set, "Wrapper Token: wrapper_for already set");
         wrapper_for = _wrapper_for;
+        wrapper_for_set = true;
     }
 
     uint256 private _totalSupply;
@@ -326,6 +348,7 @@ contract ERC20WrapperToken is IERC20, ERC165, ERC20Rescue
 
     function transfer(address _to, uint _value) public override returns (bool success)
     {
+        require(_to != address(0), "ERC20: transfer to the zero address");
         balances[msg.sender] = balances[msg.sender] - _value;
         balances[_to] = balances[_to] + _value;
         emit Transfer(msg.sender, _to, _value);
@@ -337,6 +360,7 @@ contract ERC20WrapperToken is IERC20, ERC165, ERC20Rescue
         require(msg.sender == creator, "Wrapper Token: Only the creator contract can mint wrapper tokens.");
         balances[_recipient] += _quantity;
         _totalSupply += _quantity;
+        emit Transfer(address(0), _recipient, _quantity);
     }
 
     function burn(address _from, uint256 _quantity) external
@@ -344,6 +368,7 @@ contract ERC20WrapperToken is IERC20, ERC165, ERC20Rescue
         require(msg.sender == creator, "Wrapper Token: Only the creator contract can destroy wrapper tokens.");
         balances[_from] -= _quantity;
         _totalSupply    -= _quantity;
+        emit Transfer(_from, address(0), _quantity);
     }
 
     function allowance(address owner, address spender) public view virtual returns (uint256) {
@@ -364,6 +389,7 @@ contract ERC20WrapperToken is IERC20, ERC165, ERC20Rescue
 
     function transferFrom(address _from, address _to, uint _value) public returns (bool) {
 
+        require(_to != address(0), "ERC20: transfer to the zero address");
         require(allowances[_from][msg.sender] >= _value, "ERC20: Insufficient allowance.");
 
         balances[_from] -= _value;
@@ -543,7 +569,9 @@ contract TokenStandardConverter is IERC223Recipient
     {
         require(msg.sender == address(0x01000B5fE61411C466b70631d7fF070187179Bbf));
 
-        safeTransfer(_token, address(0x01000B5fE61411C466b70631d7fF070187179Bbf), IERC20(_token).balanceOf(address(this)) - erc20Supply[_token]);
+        uint256 _balance = IERC20(_token).balanceOf(address(this));
+        require(_balance > erc20Supply[_token], "TokenConverter: no stuck tokens to extract");
+        safeTransfer(_token, address(0x01000B5fE61411C466b70631d7fF070187179Bbf), _balance - erc20Supply[_token]);
     }
     
     function safeTransfer(address token, address to, uint value) internal {
