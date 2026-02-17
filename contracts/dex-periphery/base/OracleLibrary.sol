@@ -18,6 +18,7 @@ library OracleLibrary {
         view
         returns (int24 arithmeticMeanTick, uint128 harmonicMeanLiquidity)
     {
+        require(pool != address(0), 'POOL');
         require(secondsAgo != 0, 'BP');
 
         uint32[] memory secondsAgos = new uint32[](2);
@@ -31,13 +32,22 @@ library OracleLibrary {
         uint160 secondsPerLiquidityCumulativesDelta =
             secondsPerLiquidityCumulativeX128s[1] - secondsPerLiquidityCumulativeX128s[0];
 
-        arithmeticMeanTick = int24(tickCumulativesDelta / secondsAgo);
+        int56 meanTick = tickCumulativesDelta / int56(int32(secondsAgo));
         // Always round to negative infinity
-        if (tickCumulativesDelta < 0 && (tickCumulativesDelta % secondsAgo != 0)) arithmeticMeanTick--;
+        if (tickCumulativesDelta < 0 && (tickCumulativesDelta % int56(int32(secondsAgo)) != 0)) meanTick--;
 
-        // We are multiplying here instead of shifting to ensure that harmonicMeanLiquidity doesn't overflow uint128
-        uint192 secondsAgoX160 = uint192(secondsAgo) * type(uint160).max;
-        harmonicMeanLiquidity = uint128(secondsAgoX160 / (uint192(secondsPerLiquidityCumulativesDelta) << 32));
+        // Validate the result fits in int24 range (valid tick range)
+        require(meanTick >= int56(TickMath.MIN_TICK) && meanTick <= int56(TickMath.MAX_TICK), 'TICK');
+        arithmeticMeanTick = int24(meanTick);
+
+        // Guard against division by zero when pool has zero in-range liquidity over the period
+        if (secondsPerLiquidityCumulativesDelta == 0) {
+            harmonicMeanLiquidity = 0;
+        } else {
+            // We are multiplying here instead of shifting to ensure that harmonicMeanLiquidity doesn't overflow uint128
+            uint192 secondsAgoX160 = uint192(secondsAgo) * type(uint160).max;
+            harmonicMeanLiquidity = uint128(secondsAgoX160 / (uint192(secondsPerLiquidityCumulativesDelta) << 32));
+        }
     }
 
     /// @notice Given a tick and a token amount, calculates the amount of token received in exchange
@@ -72,6 +82,7 @@ library OracleLibrary {
     /// @param pool Address of Uniswap V3 pool that we want to observe
     /// @return secondsAgo The number of seconds ago of the oldest observation stored for the pool
     function getOldestObservationSecondsAgo(address pool) internal view returns (uint32 secondsAgo) {
+        require(pool != address(0), 'POOL');
         (, , uint16 observationIndex, uint16 observationCardinality, , , ) = IUniswapV3Pool(pool).slot0();
         require(observationCardinality > 0, 'NI');
 
@@ -84,13 +95,16 @@ library OracleLibrary {
             (observationTimestamp, , , ) = IUniswapV3Pool(pool).observations(0);
         }
 
-        secondsAgo = uint32(block.timestamp) - observationTimestamp;
+        uint32 currentTimestamp = uint32(block.timestamp);
+        require(currentTimestamp >= observationTimestamp, 'FBO');
+        secondsAgo = currentTimestamp - observationTimestamp;
     }
 
     /// @notice Given a pool, it returns the tick value as of the start of the current block
     /// @param pool Address of Uniswap V3 pool
     /// @return The tick that the pool was in at the start of the current block
     function getBlockStartingTickAndLiquidity(address pool) internal view returns (int24, uint128) {
+        require(pool != address(0), 'POOL');
         (, int24 tick, uint16 observationIndex, uint16 observationCardinality, , , ) = IUniswapV3Pool(pool).slot0();
 
         // 2 observations are needed to reliably calculate the block starting tick
@@ -116,12 +130,23 @@ library OracleLibrary {
         require(prevInitialized, 'ONI');
 
         uint32 delta = observationTimestamp - prevObservationTimestamp;
-        tick = int24((tickCumulative - prevTickCumulative) / delta);
-        uint128 liquidity =
-            uint128(
-                (uint192(delta) * type(uint160).max) /
-                    (uint192(secondsPerLiquidityCumulativeX128 - prevSecondsPerLiquidityCumulativeX128) << 32)
-            );
+        require(delta > 0, 'DELTA');
+
+        int56 meanTick = (tickCumulative - prevTickCumulative) / int56(int32(delta));
+        require(meanTick >= int56(TickMath.MIN_TICK) && meanTick <= int56(TickMath.MAX_TICK), 'TICK');
+        tick = int24(meanTick);
+
+        uint160 liquidityDelta = secondsPerLiquidityCumulativeX128 - prevSecondsPerLiquidityCumulativeX128;
+        uint128 liquidity;
+        if (liquidityDelta == 0) {
+            liquidity = 0;
+        } else {
+            liquidity =
+                uint128(
+                    (uint192(delta) * type(uint160).max) /
+                        (uint192(liquidityDelta) << 32)
+                );
+        }
         return (tick, liquidity);
     }
 
@@ -142,6 +167,8 @@ library OracleLibrary {
         pure
         returns (int24 weightedArithmeticMeanTick)
     {
+        require(weightedTickData.length > 0, 'EMPTY');
+
         // Accumulates the sum of products between each tick and its weight
         int256 numerator;
 
@@ -154,9 +181,14 @@ library OracleLibrary {
             denominator += weightedTickData[i].weight;
         }
 
-        weightedArithmeticMeanTick = int24(numerator / int256(denominator));
+        require(denominator > 0, 'WGHT');
+
+        int256 meanTick = numerator / int256(denominator);
         // Always round to negative infinity
-        if (numerator < 0 && (numerator % int256(denominator) != 0)) weightedArithmeticMeanTick--;
+        if (numerator < 0 && (numerator % int256(denominator) != 0)) meanTick--;
+
+        require(meanTick >= int256(TickMath.MIN_TICK) && meanTick <= int256(TickMath.MAX_TICK), 'TICK');
+        weightedArithmeticMeanTick = int24(meanTick);
     }
 
     /// @notice Returns the "synthetic" tick which represents the price of the first entry in `tokens` in terms of the last
@@ -170,6 +202,7 @@ library OracleLibrary {
         pure
         returns (int256 syntheticTick)
     {
+        require(tokens.length >= 2, 'TL');
         require(tokens.length - 1 == ticks.length, 'DL');
         for (uint256 i = 1; i <= ticks.length; i++) {
             // check the tokens for address sort order, then accumulate the
