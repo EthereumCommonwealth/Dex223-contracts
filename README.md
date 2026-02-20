@@ -26,6 +26,7 @@
 - Core Testnet Auto-listing (verified / 100 SepWEI per token) 0x8a1839E6b7b4538a15de8865891FcE6e24a27ddA
 - Free Testnet Auto-listing (verified) 0xBC5fC0bbd73DF985Cc28c9367407f9FfB1FD4CC3
 - Revenue contract (testnet) [0x4e38fB6f9243d2aC91C490230375FeDE1E0aD7F2](https://sepolia.etherscan.io/address/0x4e38fB6f9243d2aC91C490230375FeDE1E0aD7F2#code)
+- Router (tokenReceived restricted) [0x1f611e17c3a45f87d3edd14acd42b2113db9a4dd](https://sepolia.etherscan.io/address/0x1f611e17c3a45f87d3edd14acd42b2113db9a4dd#code)
 
 ## Sepolia testnet deployment (deprecated)
 
