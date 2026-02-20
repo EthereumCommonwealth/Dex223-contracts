@@ -18,6 +18,11 @@ import './base/PeripheryPaymentsWithFee.sol';
 import './base/PoolAddress.sol';
 import './base/CallbackValidation.sol';
 
+interface IERC7417TokenConverter
+{
+    function getERC223WrapperFor(address _token) external view returns (address);
+}
+
 interface IDex223Pool {
     function token0() external view returns (address, address);
     function token1() external view returns (address, address);
@@ -32,8 +37,6 @@ interface IDex223Pool {
 }
 
 abstract contract IERC223Recipient {
-
-
     struct ERC223TransferInfo
     {
         address token_contract;
@@ -41,7 +44,6 @@ abstract contract IERC223Recipient {
         uint256 value;
         bytes   data;
     }
-
     ERC223TransferInfo private tkn;
 
 /**
@@ -83,6 +85,8 @@ IERC223Recipient
     address public call_sender;
     // store ERC223 token on deposit
     address public token_sender;
+
+    IERC7417TokenConverter public ERC7417TokenConverter;
     bool unlocked = true;
 
     modifier lock() {
@@ -93,6 +97,7 @@ IERC223Recipient
     }
 
     modifier adjustableSender() {
+        
         if (call_sender == address(0))
         {
             call_sender = msg.sender;
@@ -103,7 +108,9 @@ IERC223Recipient
         delete(call_sender);
     }
 
-    constructor(address _factory, address _WETH9) PeripheryImmutableState(_factory, _WETH9) {}
+    constructor(address _factory, address _WETH9, address _converter) PeripheryImmutableState(_factory, _WETH9) {
+        ERC7417TokenConverter = IERC7417TokenConverter(_converter);
+    }
 
     function tokenReceived(address _from, uint _value, bytes memory _data) public override lock returns (bytes4)
     {
@@ -307,10 +314,17 @@ IERC223Recipient
     external
     payable
     override
-    adjustableSender
+    adjustableSender()
     checkDeadline(params.deadline)
     returns (uint256 amountOut)
     {
+        if(token_sender != address(0))
+        {
+            // Execution within `tokenReceived` function
+            // Allow only swaps of a token that was deposited in this transaction
+
+            require(params.tokenIn == msg.sender, "Wrong token swap requested");
+        }
         amountOut = exactInputInternal(
             params.amountIn,
             params.recipient,
@@ -373,6 +387,26 @@ IERC223Recipient
     checkDeadline(params.deadline)
     returns (uint256 amountOut)
     {
+        if(token_sender != address(0))
+        {
+            // Execution within `tokenReceived` function
+            // Allow only swaps of a token that was deposited in this transaction
+            //(address _token0_erc20, address _token0_erc223) = IDex223Pool(address(params.path.getFirstPool())).token0();
+            //(address _token1_erc20, address _token1_erc223) = IDex223Pool(params.path.getFirstPool()).token1;
+//decodeFirstPool
+            //bytes memory firstPool = params.path.getFirstPool();
+            (
+                address tokenA,
+                address tokenB,
+                uint24 fee
+            ) = Path.decodeFirstPool(params.path);
+            //address tokenIn = firstPool.toAddress(0);
+
+            // Swappable token has to be either
+            // the token which is being deposited
+            // or its ERC-223 version.
+            require(tokenA == msg.sender || ERC7417TokenConverter.getERC223WrapperFor(tokenA) == msg.sender, "Token doesnt match ERC223 versions");
+        }
         address payer = call_sender; //msg.sender; // msg.sender pays for the first hop
 
         while (true) {
