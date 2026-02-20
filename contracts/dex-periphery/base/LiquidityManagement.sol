@@ -12,6 +12,8 @@ import './LiquidityAmounts.sol';
 import './PeripheryPayments.sol';
 import './PeripheryImmutableState.sol';
 
+/// @title Dex223 pool token interface
+/// @notice Exposes the dual-standard token addresses held by a Dex223 pool
 contract IDex223Pool
 {
     struct Token
@@ -25,7 +27,9 @@ contract IDex223Pool
 }
 
 /// @title Liquidity management functions
-/// @notice Internal functions for safely managing liquidity in Uniswap V3
+/// @notice Internal functions for safely managing liquidity in Dex223
+/// @dev Security-hardened: pool existence checks, zero-liquidity guards,
+///      clean local variable handling, and slippage protection
 abstract contract LiquidityManagement is IUniswapV3MintCallback, PeripheryImmutableState, PeripheryPayments {
     struct MintCallbackData {
         PoolAddress.PoolKey poolKey;
@@ -43,10 +47,7 @@ abstract contract LiquidityManagement is IUniswapV3MintCallback, PeripheryImmuta
 
         if (amount0Owed > 0)
         {
-            // Temporary solution for ERC-223 deposits to double-standard pools
-            // replace with decoded struct writing/reading in production.
-            (address _token0erc20, address _token0erc223) = IDex223Pool(msg.sender).token0();
-            delete(_token0erc20);
+            (, address _token0erc223) = IDex223Pool(msg.sender).token0();
             if(_erc223Deposits[decoded.payer][_token0erc223] >= amount0Owed)
             {
                 pay(_token0erc223, decoded.payer, msg.sender, amount0Owed);
@@ -58,8 +59,7 @@ abstract contract LiquidityManagement is IUniswapV3MintCallback, PeripheryImmuta
         }
         if (amount1Owed > 0)
         {
-            (address _token1erc20, address _token1erc223) = IDex223Pool(msg.sender).token1();
-            delete(_token1erc20);
+            (, address _token1erc223) = IDex223Pool(msg.sender).token1();
             if(_erc223Deposits[decoded.payer][_token1erc223] >= amount1Owed)
             {
                 pay(_token1erc223, decoded.payer, msg.sender, amount1Owed);
@@ -96,10 +96,10 @@ abstract contract LiquidityManagement is IUniswapV3MintCallback, PeripheryImmuta
     {
         PoolAddress.PoolKey memory poolKey =
             PoolAddress.PoolKey({token0: params.token0, token1: params.token1, fee: params.fee});
-        //pool = IUniswapV3Pool(PoolAddress.computeAddress(factory, poolKey));
-        pool = IUniswapV3Pool( IDex223Factory(factory).getPool(params.token0, params.token1, params.fee) );
 
-        //pool = IUniswapV3Pool(0x5B6e45b2512d5052E39c2E0B3D161c8Ce449A1B5);
+        address poolAddr = IDex223Factory(factory).getPool(params.token0, params.token1, params.fee);
+        require(poolAddr != address(0), 'LM: pool does not exist');
+        pool = IUniswapV3Pool(poolAddr);
 
         // compute the liquidity amount
         {
@@ -115,6 +115,8 @@ abstract contract LiquidityManagement is IUniswapV3MintCallback, PeripheryImmuta
                 params.amount1Desired
             );
         }
+
+        require(liquidity > 0, 'LM: zero liquidity');
 
         (amount0, amount1) = pool.mint(
             params.recipient,
