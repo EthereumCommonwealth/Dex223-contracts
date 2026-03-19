@@ -32,7 +32,10 @@ contract Dex223Factory is IDex223Factory, UniswapV3PoolDeployer, NoDelegateCall 
 
     function set(address _lib, address _quote, address _converter) public
     {
-        require(msg.sender == owner);
+        require(msg.sender == owner, "FACTORY: NOT_OWNER");
+        require(_lib != address(0), "FACTORY: ZERO_LIB");
+        require(_quote != address(0), "FACTORY: ZERO_QUOTE");
+        require(_converter != address(0), "FACTORY: ZERO_CONVERTER");
         converter = ITokenStandardConverter(_converter);
         pool_lib = _lib;
         quote_lib = _quote;
@@ -52,10 +55,11 @@ contract Dex223Factory is IDex223Factory, UniswapV3PoolDeployer, NoDelegateCall 
 
     function tokenReceived(address _from, uint _value, bytes memory ) public returns (bytes4)
     {
-        if(_from == address(this) && _value == 0)
-        {
-            tokenReceivedCaller = msg.sender;
-        }
+        // Only allow state mutation when called by the factory itself during
+        // token identification (prevents external callers from polluting
+        // tokenReceivedCaller state).
+        require(_from == address(this) && _value == 0, "FACTORY: INVALID_TOKEN_RECEIVED");
+        tokenReceivedCaller = msg.sender;
         return 0x8943ec02;
     }
 
@@ -68,11 +72,29 @@ contract Dex223Factory is IDex223Factory, UniswapV3PoolDeployer, NoDelegateCall 
         uint24 fee
     ) external override noDelegateCall returns (address payable pool) {
 
-        require(tokenA_erc20 != tokenB_erc20);
-        require(tokenA_erc20 != address(0));
-        require(tokenB_erc20 != address(0));
-        require(tokenA_erc223 != address(0));
-        require(tokenB_erc223 != address(0));
+        require(tokenA_erc20 != tokenB_erc20, "FACTORY: IDENTICAL_ERC20");
+        require(tokenA_erc223 != tokenB_erc223, "FACTORY: IDENTICAL_ERC223");
+        require(tokenA_erc20 != address(0), "FACTORY: ZERO_TOKEN_A_ERC20");
+        require(tokenB_erc20 != address(0), "FACTORY: ZERO_TOKEN_B_ERC20");
+        require(tokenA_erc223 != address(0), "FACTORY: ZERO_TOKEN_A_ERC223");
+        require(tokenB_erc223 != address(0), "FACTORY: ZERO_TOKEN_B_ERC223");
+
+        // Prevent pool creation before factory is fully configured.
+        // If pool_lib/quote_lib are zero, the pool's delegatecall-based functions
+        // (swap, mint, burn, collect) will silently succeed but do nothing,
+        // resulting in a permanently broken pool that blocks future pool creation
+        // for the same token pair + fee.
+        require(pool_lib != address(0), "FACTORY: LIB_NOT_SET");
+        require(quote_lib != address(0), "FACTORY: QUOTE_NOT_SET");
+        require(address(converter) != address(0), "FACTORY: CONVERTER_NOT_SET");
+
+        // Prevent address overlaps between ERC-20 and ERC-223 token addresses.
+        // If any ERC-20 address equals an ERC-223 address from the other pair,
+        // the getPool mapping could contain conflicting entries.
+        require(tokenA_erc20 != tokenA_erc223, "FACTORY: A_ERC20_EQ_A_ERC223");
+        require(tokenB_erc20 != tokenB_erc223, "FACTORY: B_ERC20_EQ_B_ERC223");
+        require(tokenA_erc20 != tokenB_erc223, "FACTORY: A_ERC20_EQ_B_ERC223");
+        require(tokenB_erc20 != tokenA_erc223, "FACTORY: B_ERC20_EQ_A_ERC223");
 
         // pool correctness safety checks via Converter.
         // identifyTokens(..) function attempts to call the `standard` function of the examinable token
@@ -97,8 +119,8 @@ contract Dex223Factory is IDex223Factory, UniswapV3PoolDeployer, NoDelegateCall 
         }
 
         int24 tickSpacing = feeAmountTickSpacing[fee];
-        require(tickSpacing != 0);
-        require(getPool[tokenA_erc20][tokenB_erc20][fee] == address(0));
+        require(tickSpacing != 0, "FACTORY: INVALID_FEE");
+        require(getPool[tokenA_erc20][tokenB_erc20][fee] == address(0), "FACTORY: POOL_EXISTS");
         pool = payable(deploy(address(this), tokenA_erc20, tokenB_erc20, fee, tickSpacing));
         Dex223Pool(pool).set(tokenA_erc223, tokenB_erc223, pool_lib, quote_lib, address(converter));
         getPool[tokenA_erc20][tokenB_erc20][fee] = pool;
@@ -116,12 +138,13 @@ contract Dex223Factory is IDex223Factory, UniswapV3PoolDeployer, NoDelegateCall 
 
     // @inheritdoc IUniswapV3Factory
     function setOwner(address _owner) external override {
-        require(msg.sender == owner);
+        require(msg.sender == owner, "FACTORY: NOT_OWNER");
+        require(_owner != address(0), "FACTORY: ZERO_OWNER");
         emit OwnerChanged(owner, _owner);
         owner = _owner;
     }
 
-    function identifyTokens(address _token, address _token223) internal
+    function identifyTokens(address _token, address _token223) internal view
     {
         // This function checks the correctness of provided tokens and it must prevent the creation of incorrect pools.
         //
@@ -148,17 +171,18 @@ contract Dex223Factory is IDex223Factory, UniswapV3PoolDeployer, NoDelegateCall 
 
 
         // In any scenario _token MUST NOT be a ERC-223 token.
-        (bool success, bytes memory data) = _token.call(abi.encodeWithSelector(0x5a3b7e42)); // call `standard() returns uint32`
+        (bool _success, bytes memory _data) = _token.staticcall(abi.encodeWithSelector(0x5a3b7e42)); // call `standard() returns uint32`
         // It is important to note that the call may be handled by the fallback function
         // of the token contract.
-        // In this case it will succeed but the returned `data` will be empty.
+        // In this case it will succeed but the returned `_data` will be empty.
                 
         // Make sure that `standard()` call fails or returns something other than 223 for _token.
         // Note that if there is a fallback function in the token contract
         // then it MAY handle the `standard()` call.
-        require(!success              // The call failed i.e. token doesn't implement `standard()` func.
-                //|| abi.decode(data,(uint32)) != uint32(223) // The token implements `standard()` and it responds that it is not ERC-223.
-                || data.length == 0); // The call was handled by the fallback function of the token.
+        require(!_success              // The call failed i.e. token doesn't implement `standard()` func.
+                || _data.length == 0   // The call was handled by the fallback function of the token.
+                || abi.decode(_data,(uint32)) != uint32(223), // The token implements `standard()` and it responds that it is not ERC-223.
+                "FACTORY: ERC20_IS_ERC223");
 
         if(!converter.isWrapper(_token))
         {
@@ -173,17 +197,16 @@ contract Dex223Factory is IDex223Factory, UniswapV3PoolDeployer, NoDelegateCall 
             {
                 // Assume that _token223 is a deployed ERC-223 token contract,
                 // it MUST be created by the converter and it MUST respond that it is a ERC-223 token via standard() func.
-                (bool success, bytes memory data) = _token223.staticcall(abi.encodeWithSelector(0x5a3b7e42)); // call `standard() returns uint32`
+                (bool _s1Success, bytes memory _s1Data) = _token223.staticcall(abi.encodeWithSelector(0x5a3b7e42)); // call `standard() returns uint32`
 
                 // Check if the token responds that its ERC-223.
-                require(success && abi.decode(data,(uint32)) == uint32(223)); 
-
-                // Check if converter identifies it as a ERC-223 wrapper.
-//                require(converter.isWrapper(_token223)); 
+                require(_s1Success && abi.decode(_s1Data,(uint32)) == uint32(223),
+                    "FACTORY: NOT_ERC223_TOKEN"); 
 
                 // Check if converter identifies the ERC-223 wrapper
                 // as a wrapper for our exact ERC-20 _token.
-                require(converter.getERC20OriginFor(_token223) == _token); 
+                require(converter.getERC20OriginFor(_token223) == _token,
+                    "FACTORY: ERC223_ORIGIN_MISMATCH"); 
 
                 return; // All checks passed for scenario 1.
             }
@@ -192,14 +215,14 @@ contract Dex223Factory is IDex223Factory, UniswapV3PoolDeployer, NoDelegateCall 
                 // Assume that _token223 is not yet deployed,
                 // in this case it must be predicted by the converter.
 
-                // Check if the "predicted ERC-223-Wrapper addresss" for our _token
+                // Check if the "predicted ERC-223-Wrapper address" for our _token
                 // would be the exact _token223 address.
-                require(converter.predictWrapperAddress(_token, true) == _token223);
+                require(converter.predictWrapperAddress(_token, true) == _token223,
+                    "FACTORY: PREDICTED_ADDR_MISMATCH");
 
                 return; // All checks passed for scenario 1.
             }
         }
-
         else 
         {
             // We assume scenario 2, _token is ERC-20-Wrapper created by the converter,
@@ -212,41 +235,46 @@ contract Dex223Factory is IDex223Factory, UniswapV3PoolDeployer, NoDelegateCall 
             {
                 // Only check if the provided token is recognized by the converter if it is already created.
                 // Otherwise checking if the converter predicts its address would be sufficient.
-                require(converter.getERC223OriginFor(_token)              == _token223);
+                require(converter.getERC223OriginFor(_token) == _token223,
+                    "FACTORY: ERC223_ORIGIN_MISMATCH");
 
-                // The main purpose of this checks is to prevent users from creating an incorrectly set pool
+                // The main purpose of this check is to prevent users from creating an incorrectly set pool
                 // for an existing token and therefore "banning" the creation of new (correct) pool with this token
                 // in the future.
             }
-            require(converter.predictWrapperAddress(_token223, false) == _token);
+            require(converter.predictWrapperAddress(_token223, false) == _token,
+                "FACTORY: WRAPPER_ADDR_MISMATCH");
 
             uint256 _origin_code_size;
             // solhint-disable-next-line no-inline-assembly
             assembly { _origin_code_size := extcodesize(_token223) }
-            require(_origin_code_size > 0); // Origin MUST exist.
+            require(_origin_code_size > 0, "FACTORY: ERC223_ORIGIN_NOT_DEPLOYED"); // Origin MUST exist.
 
-            (bool success, bytes memory data) = _token223.staticcall(abi.encodeWithSelector(0x5a3b7e42));
+            (bool _s2Success, bytes memory _s2Data) = _token223.staticcall(abi.encodeWithSelector(0x5a3b7e42));
 
-            // The ERC-223 token MUST implement `standard()` funct.
+            // The ERC-223 token MUST implement `standard()` func.
             // If it doesn't - then its not a valid ERC-223 token.
-            require(success && abi.decode(data,(uint32)) == uint32(223));
+            require(_s2Success && abi.decode(_s2Data,(uint32)) == uint32(223),
+                "FACTORY: INVALID_ERC223_STANDARD");
 
             return; // All checks passed for scenario 2.
         }
 
-        revert(); // Explicitly fail the transaction in any case of uncertainty.
+        // Note: unreachable due to the if/else above both having returns,
+        // but kept as a safety net.
+        revert("FACTORY: UNRESOLVABLE_TOKEN"); // Explicitly fail the transaction in any case of uncertainty.
     }
 
 
     // @inheritdoc IUniswapV3Factory
     function enableFeeAmount(uint24 fee, int24 tickSpacing) public override {
-        require(msg.sender == owner);
-        require(fee < 1000000);
+        require(msg.sender == owner, "FACTORY: NOT_OWNER");
+        require(fee < 1000000, "FACTORY: FEE_TOO_LARGE");
         // tick spacing is capped at 16384 to prevent the situation where tickSpacing is so large that
         // TickBitmap#nextInitializedTickWithinOneWord overflows int24 container from a valid tick
         // 16384 ticks represents a >5x price change with ticks of 1 bips
-        require(tickSpacing > 0 && tickSpacing < 16384);
-        require(feeAmountTickSpacing[fee] == 0);
+        require(tickSpacing > 0 && tickSpacing < 16384, "FACTORY: INVALID_TICK_SPACING");
+        require(feeAmountTickSpacing[fee] == 0, "FACTORY: FEE_ALREADY_ENABLED");
 
         feeAmountTickSpacing[fee] = tickSpacing;
         emit FeeAmountEnabled(fee, tickSpacing);
