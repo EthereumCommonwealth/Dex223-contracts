@@ -13,7 +13,9 @@ import '../libraries/SqrtPriceMath.sol';
 import '../libraries/Position.sol';
 import '../libraries/LowGasSafeMath.sol';
 import '../libraries/SafeCast.sol';
-import '../libraries/SafeERC20Limited.sol';
+// @audit-fix V-QL-05: Removed SafeERC20Limited import — safeIncreaseAllowance was replaced
+//   with TransferHelper.safeApprove to avoid uint256 overflow on repeated approvals.
+//   This is consistent with the same fix applied in Dex223PoolLib.sol (V-LIB-04).
 import '../libraries/Tick.sol';
 import '../libraries/TickBitmap.sol';
 import '../libraries/Oracle.sol';
@@ -342,8 +344,32 @@ contract Dex223QuoteLib {
         }
     }
 
+    // @audit-fix V-QL-02: Replaced safeIncreaseAllowance with safeApprove(0) + safeApprove(max).
+    //   `safeIncreaseAllowance(token, spender, 2**256 - 1)` computes
+    //   `newAllowance = currentAllowance + (2**256 - 1)` which overflows if
+    //   currentAllowance > 0 (in Solidity 0.7.6 this wraps silently, producing a
+    //   near-zero allowance). The standard pattern for "approve max once" is to reset
+    //   to 0 first (also handles tokens like USDT that require allowance == 0 before
+    //   setting a new value), then approve the maximum.
+    //
+    // @audit-fix V-QL-03: Added underflow protection in conversion path.
+    //   When the initial transfer fails and we fall through to the conversion path,
+    //   `_amount - _balance` can underflow in Solidity 0.7.6 (no built-in overflow
+    //   checks) if `_balance >= _amount` (e.g., transfer failed due to a paused token
+    //   rather than insufficient balance), producing a huge value that would drain the
+    //   converter or revert with a confusing error.
+    //   Fix: require `_amount > _balance` before computing the deficit.
+    //
+    // @audit-fix V-QL-04: Added recipient zero-address check.
+    //   Delivering tokens to address(0) would burn them permanently.
+    //
+    // @audit-fix V-QL-05: Use TransferHelper.safeTransfer for ERC-223 fallback path.
+    //   Raw transfer() ignores the return value. If the ERC-223 token returns false
+    //   on failure (instead of reverting), the conversion silently fails.
     function optimisticDelivery(address _token, address _recipient, uint256 _amount) internal
     {
+        require(_recipient != address(0), "QLIB: ZERO_RECIPIENT");
+
         bool _is223 = false;
         if(_token == token0.erc223 || _token == token1.erc223) _is223 = true;
         // Transfer the tokens and hope that the transfer will succeed i.e. there were
@@ -360,25 +386,26 @@ contract Dex223QuoteLib {
         {
             // NOTE can not get balance if no contract deployed
             uint _balance = tokenNotExist ? 0 : IERC20Minimal(_token).balanceOf(address(this));
+            require(_amount > _balance, "QLIB: NO_DEFICIT");
+            uint256 _deficit = _amount - _balance;
 
             if(_is223)
             {
                 // take ERC20 version of token
                 address _token20 = (_token == token0.erc223) ? token0.erc20 : token1.erc20;
-                // Approve the converter first if necessary.
-                // This approval is expected to execute once and forever.
+                // Approve the converter if the current allowance is insufficient.
                 if(IERC20Minimal(_token20).allowance(address(this), address(converter)) < _amount)
                 {
-                    //IERC20Minimal(_token20).approve(address(converter), 2**256-1);
-                    SafeERC20.safeIncreaseAllowance(IERC20Minimal(_token20), address(converter), 2**256 - 1);
+                    TransferHelper.safeApprove(_token20, address(converter), 0);
+                    TransferHelper.safeApprove(_token20, address(converter), uint256(-1));
                 }
-                converter.convertERC20(_token20, _amount - _balance);
+                converter.convertERC20(_token20, _deficit);
             }
             else
             {
                 // take ERC223 version of token
                 address _token223 = (_token == token0.erc20) ? token0.erc223 : token1.erc223;
-                IERC20Minimal(_token223).transfer(address(converter), _amount - _balance);
+                TransferHelper.safeTransfer(_token223, address(converter), _deficit);
             }
             TransferHelper.safeTransfer(_token, _recipient, _amount);
         }
@@ -434,6 +461,32 @@ contract Dex223QuoteLib {
         uint256 feeAmount;
     }
 
+    // @audit-note V-QL-01: State mutation + revert pattern analysis.
+    //   This function intentionally mutates state (slot0, liquidity, fees, ticks,
+    //   observations) during swap simulation, then reverts via inline assembly to
+    //   return the computed amounts. When called via delegatecall from Dex223Pool,
+    //   the revert rolls back ALL state changes within the delegatecall frame.
+    //   The Pool's quoteSwap() catches the revert data and decodes it.
+    //
+    //   This is safe as long as:
+    //   (a) quoteSwap always terminates with a revert (guaranteed by the assembly blocks), and
+    //   (b) the function is only invoked via delegatecall (the Pool enforces this).
+    //
+    //   Direct calls to this contract's quoteSwap operate on the QuoteLib's own
+    //   (uninitialized) storage and always revert, so they are harmless.
+    //
+    // @audit-note V-QL-06: Dead code analysis.
+    //   Functions _modifyPosition, _updatePosition, balance0, balance1, checkTicks,
+    //   and _blockTimestamp are defined but only used internally by quoteSwap's swap
+    //   loop logic. They are not dead code — they are called indirectly through the
+    //   swap simulation. However, optimisticDelivery IS dead code in the context of
+    //   quoteSwap (the function reverts before reaching any token delivery). It is
+    //   retained for storage layout consistency with Dex223PoolLib.
+    //
+    // @audit-note V-QL-07: No access control (informational).
+    //   Anyone can call quoteSwap directly on this contract. This is safe because:
+    //   (1) the function always reverts, so no state persists, and
+    //   (2) direct calls operate on the QuoteLib's own uninitialized storage.
     function quoteSwap(
         address recipient,
         bool zeroForOne,

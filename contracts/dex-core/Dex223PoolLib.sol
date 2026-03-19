@@ -13,7 +13,8 @@ import '../libraries/SqrtPriceMath.sol';
 import '../libraries/Position.sol';
 import '../libraries/LowGasSafeMath.sol';
 import '../libraries/SafeCast.sol';
-import '../libraries/SafeERC20Limited.sol';
+// @audit-fix V-LIB-04: Removed SafeERC20Limited import — safeIncreaseAllowance was replaced
+//   with TransferHelper.safeApprove to avoid uint256 overflow on repeated approvals.
 import '../libraries/Tick.sol';
 import '../libraries/TickBitmap.sol';
 import '../libraries/Oracle.sol';
@@ -146,6 +147,22 @@ contract Dex223PoolLib {
         uint128 liquidity,
         int24 tick
     );
+
+    // @audit-note V-LIB-01: Reentrancy protection analysis.
+    //   This contract is a logic library called exclusively via delegatecall from Dex223Pool.
+    //   The Pool contract's `lock` modifier already sets slot0.unlocked = false before
+    //   delegatecalling any PoolLib function. Adding a `lock` modifier here would BREAK
+    //   the delegatecall pattern: the Pool's lock sets unlocked = false, then the PoolLib's
+    //   lock would check `require(slot0.unlocked, 'LOK')` and revert because it reads the
+    //   Pool's storage (where unlocked is already false).
+    //
+    //   Direct calls to this contract operate on the PoolLib's own storage, which:
+    //   - holds no user funds (the Pool holds funds)
+    //   - has no initialized state (no one calls initialize() on the PoolLib)
+    //   - has no tokens to steal
+    //   Therefore, direct-call reentrancy on the PoolLib is a non-issue.
+    //
+    //   The reentrancy protection responsibility lies entirely with Dex223Pool.sol.
 
     /// @dev Common checks for valid tick inputs.
     function checkTicks(int24 tickLower, int24 tickUpper) private pure {
@@ -342,14 +359,15 @@ contract Dex223PoolLib {
         }
     }
 
-    /// @dev noDelegateCall is applied indirectly via _modifyPosition
+    // @audit-note V-LIB-02a: Reentrancy for mint is guarded by Pool's `lock` modifier.
+    //   See V-LIB-01 note above for why we do NOT add a `lock` modifier here.
     function mint(
         address recipient,
         int24 tickLower,
         int24 tickUpper,
         uint128 amount,
         bytes calldata data
-    ) external  /*adjustableSender*/ returns (uint256 amount0, uint256 amount1) {
+    ) external returns (uint256 amount0, uint256 amount1) {
         require(amount > 0);
         (, int256 amount0Int, int256 amount1Int) =
                         _modifyPosition(
@@ -375,8 +393,29 @@ contract Dex223PoolLib {
         emit Mint(msg.sender, recipient, tickLower, tickUpper, amount, amount0, amount1);
     }
 
+    // @audit-fix V-LIB-03: Added underflow protection in conversion path.
+    //   When the initial transfer fails and we fall through to the conversion path,
+    //   the code computes `_amount - _balance` to determine how much to convert.
+    //   If `_balance >= _amount` (e.g. the transfer failed for a reason other than
+    //   insufficient balance, such as a paused token), this subtraction underflows
+    //   in Solidity 0.7.6 (no built-in overflow checks), producing a huge value that
+    //   would drain the converter or revert with a confusing error.
+    //   Fix: require `_amount > _balance` before computing the deficit.
+    //
+    // @audit-fix V-LIB-04: Replaced safeIncreaseAllowance with safeApprove(0) + safeApprove(max).
+    //   `safeIncreaseAllowance(token, spender, 2**256 - 1)` computes
+    //   `newAllowance = currentAllowance + (2**256 - 1)` which overflows if
+    //   currentAllowance > 0 (which it will be after the first approval).
+    //   The standard pattern for "approve max once" is to reset to 0 first (to
+    //   handle tokens like USDT that require allowance == 0 before setting a new value),
+    //   then approve the maximum.
+    //
+    // @audit-fix V-LIB-09a: Added recipient zero-address check.
+    //   Delivering tokens to address(0) would burn them permanently.
     function optimisticDelivery(address _token, address _recipient, uint256 _amount) internal
     {
+        require(_recipient != address(0), "LIB: ZERO_RECIPIENT");
+
         bool _is223 = false;
         if(_token == token0.erc223 || _token == token1.erc223) _is223 = true;
         // Transfer the tokens and hope that the transfer will succeed i.e. there were
@@ -393,30 +432,38 @@ contract Dex223PoolLib {
         {
             // NOTE can not get balance if no contract deployed
             uint _balance = tokenNotExist ? 0 : IERC20Minimal(_token).balanceOf(address(this));
+            require(_amount > _balance, "LIB: NO_DEFICIT");
+            uint256 _deficit = _amount - _balance;
 
             if(_is223)
             {
                 // take ERC20 version of token
                 address _token20 = (_token == token0.erc223) ? token0.erc20 : token1.erc20;
-                // Approve the converter first if necessary.
-                // This approval is expected to execute once and forever.
+                // Approve the converter if the current allowance is insufficient.
                 if(IERC20Minimal(_token20).allowance(address(this), address(converter)) < _amount)
                 {
-                    //IERC20Minimal(_token20).approve(address(converter), 2**256-1);
-                    SafeERC20.safeIncreaseAllowance(IERC20Minimal(_token20), address(converter), 2**256 - 1);
+                    TransferHelper.safeApprove(_token20, address(converter), 0);
+                    TransferHelper.safeApprove(_token20, address(converter), uint256(-1));
                 }
-                converter.convertERC20(_token20, _amount - _balance);
+                converter.convertERC20(_token20, _deficit);
             }
             else
             {
                 // take ERC223 version of token
                 address _token223 = (_token == token0.erc20) ? token0.erc223 : token1.erc223;
-                IERC20Minimal(_token223).transfer(address(converter), _amount - _balance);
+                // @audit-fix V-LIB-10: Use safeTransfer instead of raw transfer.
+                //   Raw transfer() ignores the return value. If the ERC-223 token
+                //   returns false on failure (instead of reverting), the conversion
+                //   silently fails and the subsequent safeTransfer of the output
+                //   token will revert with a confusing "ST" error.
+                TransferHelper.safeTransfer(_token223, address(converter), _deficit);
             }
             TransferHelper.safeTransfer(_token, _recipient, _amount);
         }
     }
 
+    // @audit-note V-LIB-05a: Reentrancy for collect is guarded by Pool's `lock` modifier.
+    //   See V-LIB-01 note above.
     function collect(
         address recipient,
         int24 tickLower,
@@ -448,6 +495,8 @@ contract Dex223PoolLib {
         emit Collect(msg.sender, recipient, tickLower, tickUpper, amount0, amount1);
     }
 
+    // @audit-note V-LIB-05b: Reentrancy for collectProtocol is guarded by Pool's `lock` modifier.
+    //   See V-LIB-01 note above.
     function collectProtocol(
         address recipient,
         uint128 amount0Requested,
@@ -476,12 +525,13 @@ contract Dex223PoolLib {
         emit CollectProtocol(msg.sender, recipient, amount0, amount1);
     }
 
-    /// @dev noDelegateCall is applied indirectly via _modifyPosition
+    // @audit-note V-LIB-02b: Reentrancy for burn is guarded by Pool's `lock` modifier.
+    //   See V-LIB-01 note above.
     function burn(
         int24 tickLower,
         int24 tickUpper,
         uint128 amount
-    ) external  returns (uint256 amount0, uint256 amount1) {
+    ) external returns (uint256 amount0, uint256 amount1) {
         (Position.Info storage position, int256 amount0Int, int256 amount1Int) =
                         _modifyPosition(
                 ModifyPositionParams({
@@ -556,6 +606,10 @@ contract Dex223PoolLib {
         uint256 feeAmount;
     }
 
+    // @audit-note V-LIB-02c: Reentrancy for swap is guarded by Pool's `lock` modifier.
+    //   See V-LIB-01 note above. The swap function is the most critical path.
+    //   Note: noDelegateCall is intentionally omitted because this method IS called
+    //   via delegatecall from the pool, and also indirectly via tokenReceived -> delegatecall.
     function swap(
         address recipient,
         bool zeroForOne,
@@ -563,8 +617,7 @@ contract Dex223PoolLib {
         uint160 sqrtPriceLimitX96,
         bool prefer223Out,
         bytes memory data
-    ) external /*noDelegateCall*/ // noDelegateCall will not prevent delegatecalling
-                                                        // this method from the same contract via `tokenReceived` of ERC-223
+    ) external /*noDelegateCall*/
      returns (int256 amount0, int256 amount1) {
 
         require(amountSpecified != 0, 'AS');
