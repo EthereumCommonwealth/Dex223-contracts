@@ -129,7 +129,7 @@ contract AutoListingsRegistry {
         return true;
     }
 
-    function tokenUnanned(address _token20, address _token223) public returns (bool)
+    function tokenUnbanned(address _token20, address _token223) public returns (bool)
     {
         emit TokenUnbanned(msg.sender, _token20, _token223);
         return true;
@@ -158,6 +158,20 @@ contract Dex223AutoListing {
     IDex223Factory       factory;
     AutoListingsRegistry registry;
 
+    bool private _locked;
+
+    modifier nonReentrant() {
+        require(!_locked, "Reentrant call");
+        _locked = true;
+        _;
+        _locked = false;
+    }
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Not owner");
+        _;
+    }
+
     constructor(address _factory, address _registry, string memory _name, string memory _URL)
     {
         factory  = IDex223Factory(_factory);
@@ -181,6 +195,7 @@ contract Dex223AutoListing {
 
     event TokenListed(address indexed token_erc20, address indexed token_erc223);
     event PairListed(address indexed token0_erc20, address token0_erc223, address indexed token1_erc20, address token1_erc223, address indexed pool, uint256 feeTier);
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
 
     struct TradeablePair
     {
@@ -205,7 +220,14 @@ contract Dex223AutoListing {
         uint price;
     }
 
-    function updateMe(string memory _newURL) public
+    function transferOwnership(address _newOwner) public onlyOwner
+    {
+        require(_newOwner != address(0), "New owner is zero address");
+        emit OwnershipTransferred(owner, _newOwner);
+        owner = _newOwner;
+    }
+
+    function updateMe(string memory _newURL) public onlyOwner
     {
         url = _newURL;
         registry.updateContractInfo(owner, _newURL, "");
@@ -236,10 +258,19 @@ contract Dex223AutoListing {
         return (listed_tokens[_token] != 0);
     }
 
-    function list(address pool, uint24 feeTier, address paymentToken) public payable 
+    function _isFullyListed(address _erc20, address _erc223) internal view returns (bool)
+    {
+        bool erc20Listed  = _erc20  != address(0) && isListed(_erc20);
+        bool erc223Listed = _erc223 != address(0) && isListed(_erc223);
+
+        if (_erc20 == address(0)) return erc223Listed;
+        if (_erc223 == address(0)) return erc20Listed;
+        return erc20Listed && erc223Listed;
+    }
+
+    function list(address pool, uint24 feeTier, address paymentToken) public payable nonReentrant
     {
         uint price = checkListingCriteria(paymentToken);
-//        require(price >= 0); // if price < 0 - listing criteria not met
 
         IDexPool _pool = IDexPool(pool);
 
@@ -253,13 +284,13 @@ contract Dex223AutoListing {
 
         uint toTransfer = 0;
 
-        if(!isListed(_token0_erc20) || !isListed(_token0_erc223))
+        if(!_isFullyListed(_token0_erc20, _token0_erc223))
         {
             toTransfer += price;
             checkListing(_token0_erc20, _token0_erc223);
         }
 
-        if(!isListed(_token1_erc20) || !isListed(_token1_erc223))
+        if(!_isFullyListed(_token1_erc20, _token1_erc223))
         {
             toTransfer += price;
             checkListing(_token1_erc20, _token1_erc223);
@@ -267,11 +298,18 @@ contract Dex223AutoListing {
 
         if (toTransfer > 0) {
             if (paymentToken == address(0)) {
-                // NOTE no return of excess payment
                 require(msg.value >= toTransfer, "Payment is not enough");
+                uint refund = msg.value - toTransfer;
+                if (refund > 0) {
+                    (bool sent, ) = msg.sender.call{value: refund}("");
+                    require(sent, "Refund failed");
+                }
             } else {
+                require(msg.value == 0, "Do not send ETH with token payment");
                 safeTransferFrom(paymentToken, msg.sender, address(this), toTransfer);
             }
+        } else {
+            require(msg.value == 0, "No payment required");
         }
 
         emit PairListed(_token0_erc20, _token0_erc223, _token1_erc20, _token1_erc223, pool, feeTier);
@@ -286,14 +324,18 @@ contract Dex223AutoListing {
         // 2. We are adding a version of an already listed token which previously had
         //    only one standard available.
 
-        //emit TokenListed(_token_erc20, _token_erc223);
         if(!isListed(_token_erc20) && !isListed(_token_erc223))
         {
             // Listing a new token.
             num_listed_tokens++; // First increase the counter, tokens[0] must be always address(0).
             tokens[num_listed_tokens]    = Token(_token_erc20, _token_erc223);
-            listed_tokens[_token_erc20]  = num_listed_tokens;
-            listed_tokens[_token_erc223] = num_listed_tokens;
+
+            if (_token_erc20 != address(0)) {
+                listed_tokens[_token_erc20]  = num_listed_tokens;
+            }
+            if (_token_erc223 != address(0)) {
+                listed_tokens[_token_erc223] = num_listed_tokens;
+            }
 
             // Record the listing via Auto-listings Registry for Subgraph logging.
             registry.recordListing(_token_erc20, _token_erc223);
@@ -306,13 +348,17 @@ contract Dex223AutoListing {
             {
                 // If the token is already listed as ERC-20;
                 tokens[listed_tokens[_token_erc20]] = Token(_token_erc20, _token_erc223);
-                listed_tokens[_token_erc223]        = listed_tokens[_token_erc20];
+                if (_token_erc223 != address(0)) {
+                    listed_tokens[_token_erc223]    = listed_tokens[_token_erc20];
+                }
             }
             else
             {
                 // Otherwise the token is listed as ERC-223;
                 tokens[listed_tokens[_token_erc223]] = Token(_token_erc20, _token_erc223);
-                listed_tokens[_token_erc20]          = listed_tokens[_token_erc223];
+                if (_token_erc20 != address(0)) {
+                    listed_tokens[_token_erc20]      = listed_tokens[_token_erc223];
+                }
             }
 
             // Record the listing via Auto-listings Registry for Subgraph logging.
@@ -332,11 +378,11 @@ contract Dex223AutoListing {
 
         // get price for passed token address
         uint price = paymentPrices[paymentToken];
-        require(price > 0);
+        require(price > 0, "Payment token not accepted");
 
         // check payment in native coin
         if (paymentToken == address(0)) {
-            require(msg.value > 0);
+            require(msg.value > 0, "Must send ETH");
         }
 
         return price;
@@ -349,10 +395,8 @@ contract Dex223AutoListing {
 
     // function to set paymentToken price
     //@dec set price to ZERO to exclude token from acceptable
-    function setPaymentPrice(address paymentToken, uint price)  external returns (bool)
+    function setPaymentPrice(address paymentToken, uint price) external onlyOwner returns (bool)
     {
-        require(msg.sender == owner);
-
         // If the token is being set to a non-zero price for the first time, add it to paymentTokens
         if (price > 0 && paymentPrices[paymentToken] == 0) {
             paymentTokens.push(paymentToken);
@@ -402,13 +446,12 @@ contract Dex223AutoListing {
         require(success && (data.length == 0 || abi.decode(data, (bool))), "Transfer failed");
     }
 
-    function extractTokens(address _token, uint256 _amount) public
+    function extractTokens(address _token, uint256 _amount) public onlyOwner
     {
-        require(msg.sender == owner);
-
         if(_token == address(0))
         {
-            payable(msg.sender).transfer(_amount);
+            (bool sent, ) = msg.sender.call{value: _amount}("");
+            require(sent, "ETH transfer failed");
         } else {
             safeTransfer(_token, msg.sender, _amount);
         }
@@ -425,6 +468,20 @@ contract Dex223CoreAutoListing {
     IDex223Factory       factory;
     IERC7417Converter    converter;
     AutoListingsRegistry registry;
+
+    bool private _locked;
+
+    modifier nonReentrant() {
+        require(!_locked, "Reentrant call");
+        _locked = true;
+        _;
+        _locked = false;
+    }
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Not owner");
+        _;
+    }
 
     constructor(address _factory, address _registry, address _converter, string memory _name, string memory _URL)
     {
@@ -450,6 +507,7 @@ contract Dex223CoreAutoListing {
 
     event TokenListed(address indexed token_erc20, address indexed token_erc223);
     event PairListed(address indexed token0_erc20, address token0_erc223, address indexed token1_erc20, address token1_erc223, address indexed pool, uint256 feeTier);
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
 
     struct TradeablePair
     {
@@ -474,7 +532,14 @@ contract Dex223CoreAutoListing {
         uint price;
     }
 
-    function updateMe(string memory _newURL) public
+    function transferOwnership(address _newOwner) public onlyOwner
+    {
+        require(_newOwner != address(0), "New owner is zero address");
+        emit OwnershipTransferred(owner, _newOwner);
+        owner = _newOwner;
+    }
+
+    function updateMe(string memory _newURL) public onlyOwner
     {
         url = _newURL;
         registry.updateContractInfo(owner, _newURL, "");
@@ -505,10 +570,19 @@ contract Dex223CoreAutoListing {
         return (listed_tokens[_token] != 0);
     }
 
-    function list(address pool, uint24 feeTier, address paymentToken) public payable 
+    function _isFullyListed(address _erc20, address _erc223) internal view returns (bool)
+    {
+        bool erc20Listed  = _erc20  != address(0) && isListed(_erc20);
+        bool erc223Listed = _erc223 != address(0) && isListed(_erc223);
+
+        if (_erc20 == address(0)) return erc223Listed;
+        if (_erc223 == address(0)) return erc20Listed;
+        return erc20Listed && erc223Listed;
+    }
+
+    function list(address pool, uint24 feeTier, address paymentToken) public payable nonReentrant
     {
         uint price = checkListingCriteria(paymentToken);
-//        require(price >= 0); // if price < 0 - listing criteria not met
 
         IDexPool _pool = IDexPool(pool);
 
@@ -522,13 +596,13 @@ contract Dex223CoreAutoListing {
 
         uint toTransfer = 0;
 
-        if(!isListed(_token0_erc20) || !isListed(_token0_erc223))
+        if(!_isFullyListed(_token0_erc20, _token0_erc223))
         {
             toTransfer += price;
             checkListing(_token0_erc20, _token0_erc223);
         }
 
-        if(!isListed(_token1_erc20) || !isListed(_token1_erc223))
+        if(!_isFullyListed(_token1_erc20, _token1_erc223))
         {
             toTransfer += price;
             checkListing(_token1_erc20, _token1_erc223);
@@ -536,18 +610,25 @@ contract Dex223CoreAutoListing {
 
         if (toTransfer > 0) {
             if (paymentToken == address(0)) {
-                // NOTE no return of excess payment
                 require(msg.value >= toTransfer, "Payment is not enough");
+                uint refund = msg.value - toTransfer;
+                if (refund > 0) {
+                    (bool sent, ) = msg.sender.call{value: refund}("");
+                    require(sent, "Refund failed");
+                }
             } else {
+                require(msg.value == 0, "Do not send ETH with token payment");
                 safeTransferFrom(paymentToken, msg.sender, address(this), toTransfer);
             }
+        } else {
+            require(msg.value == 0, "No payment required");
         }
 
         emit PairListed(_token0_erc20, _token0_erc223, _token1_erc20, _token1_erc223, pool, feeTier);
         last_update = block.timestamp;
     }
 
-    function listSingle(address token20, address token223, address paymentToken) public payable 
+    function listSingle(address token20, address token223, address paymentToken) public payable nonReentrant
     {
         uint price = checkListingCriteria(paymentToken);
 
@@ -558,11 +639,18 @@ contract Dex223CoreAutoListing {
 
         if (price > 0 && msg.sender != owner) {
             if (paymentToken == address(0)) {
-                // NOTE no return of excess payment
                 require(msg.value >= price, "Payment is not enough");
+                uint refund = msg.value - price;
+                if (refund > 0) {
+                    (bool sent, ) = msg.sender.call{value: refund}("");
+                    require(sent, "Refund failed");
+                }
             } else {
+                require(msg.value == 0, "Do not send ETH with token payment");
                 safeTransferFrom(paymentToken, msg.sender, address(this), price);
             }
+        } else {
+            require(msg.value == 0, "No payment required");
         }
 
         emit TokenListed(token20, token223);
@@ -577,14 +665,18 @@ contract Dex223CoreAutoListing {
         // 2. We are adding a version of an already listed token which previously had
         //    only one standard available.
 
-        //emit TokenListed(_token_erc20, _token_erc223);
         if(!isListed(_token_erc20) && !isListed(_token_erc223))
         {
             // Listing a new token.
             num_listed_tokens++; // First increase the counter, tokens[0] must be always address(0).
             tokens[num_listed_tokens]    = Token(_token_erc20, _token_erc223);
-            listed_tokens[_token_erc20]  = num_listed_tokens;
-            listed_tokens[_token_erc223] = num_listed_tokens;
+
+            if (_token_erc20 != address(0)) {
+                listed_tokens[_token_erc20]  = num_listed_tokens;
+            }
+            if (_token_erc223 != address(0)) {
+                listed_tokens[_token_erc223] = num_listed_tokens;
+            }
 
             // Record the listing via Auto-listings Registry for Subgraph logging.
             registry.recordListing(_token_erc20, _token_erc223);
@@ -597,13 +689,17 @@ contract Dex223CoreAutoListing {
             {
                 // If the token is already listed as ERC-20;
                 tokens[listed_tokens[_token_erc20]] = Token(_token_erc20, _token_erc223);
-                listed_tokens[_token_erc223]        = listed_tokens[_token_erc20];
+                if (_token_erc223 != address(0)) {
+                    listed_tokens[_token_erc223]    = listed_tokens[_token_erc20];
+                }
             }
             else
             {
                 // Otherwise the token is listed as ERC-223;
                 tokens[listed_tokens[_token_erc223]] = Token(_token_erc20, _token_erc223);
-                listed_tokens[_token_erc20]          = listed_tokens[_token_erc223];
+                if (_token_erc20 != address(0)) {
+                    listed_tokens[_token_erc20]      = listed_tokens[_token_erc223];
+                }
             }
 
             // Record the listing via Auto-listings Registry for Subgraph logging.
@@ -618,11 +714,11 @@ contract Dex223CoreAutoListing {
 
         // get price for passed token address
         uint price = paymentPrices[paymentToken];
-        require(price > 0);
+        require(price > 0, "Payment token not accepted");
 
         // check payment in native coin
         if (paymentToken == address(0)) {
-            require(msg.value > 0);
+            require(msg.value > 0, "Must send ETH");
         }
 
         return price;
@@ -635,10 +731,8 @@ contract Dex223CoreAutoListing {
 
     // function to set paymentToken price
     //@dec set price to ZERO to exclude token from acceptable
-    function setPaymentPrice(address paymentToken, uint price)  external returns (bool)
+    function setPaymentPrice(address paymentToken, uint price) external onlyOwner returns (bool)
     {
-        require(msg.sender == owner);
-
         // If the token is being set to a non-zero price for the first time, add it to paymentTokens
         if (price > 0 && paymentPrices[paymentToken] == 0) {
             paymentTokens.push(paymentToken);
@@ -688,13 +782,12 @@ contract Dex223CoreAutoListing {
         require(success && (data.length == 0 || abi.decode(data, (bool))), "Transfer failed");
     }
 
-    function extractTokens(address _token, uint256 _amount) public
+    function extractTokens(address _token, uint256 _amount) public onlyOwner
     {
-        require(msg.sender == owner);
-
         if(_token == address(0))
         {
-            payable(msg.sender).transfer(_amount);
+            (bool sent, ) = msg.sender.call{value: _amount}("");
+            require(sent, "ETH transfer failed");
         } else {
             safeTransfer(_token, msg.sender, _amount);
         }
@@ -709,6 +802,15 @@ contract Dex223OwnableListing {
     address public owner;
     IDex223Factory       factory;
     AutoListingsRegistry registry;
+
+    bool private _locked;
+
+    modifier nonReentrant() {
+        require(!_locked, "Reentrant call");
+        _locked = true;
+        _;
+        _locked = false;
+    }
 
     constructor(address _factory, address _registry, string memory _name, string memory _URL)
     {
@@ -738,6 +840,7 @@ contract Dex223OwnableListing {
     event TokenListed(address indexed token);
     event TokenBanned(address indexed token);
     event PairListed(address indexed token0_erc20, address token0_erc223, address indexed token1_erc20, address token1_erc223, address indexed pool, uint256 feeTier);
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
 
     struct TradeablePair
     {
@@ -758,7 +861,7 @@ contract Dex223OwnableListing {
 
     modifier onlyOwner
     {
-        require(msg.sender == owner);
+        require(msg.sender == owner, "Not owner");
         _;
     }
 
@@ -768,10 +871,16 @@ contract Dex223OwnableListing {
         uint price;
     }
 
-    function updateMe(string memory _newURL, string memory _metadata, address _registry) public onlyOwner
+    function transferOwnership(address _newOwner) public onlyOwner
+    {
+        require(_newOwner != address(0), "New owner is zero address");
+        emit OwnershipTransferred(owner, _newOwner);
+        owner = _newOwner;
+    }
+
+    function updateMe(string memory _newURL, string memory _metadata) public onlyOwner
     {
         url = _newURL;
-        registry = AutoListingsRegistry(_registry);
         metadata = _metadata;
         registry.updateContractInfo(owner, _newURL, "");
     }
@@ -803,14 +912,14 @@ contract Dex223OwnableListing {
 
     function listTokenByOwner(address _token20, address _token223) public onlyOwner
     {
+        checkListing(_token20, _token223);
+
         if(_token20 != address(0))
         {
-            emit TokenListed(_token20);
             registry.recordListing(_token20, address(0));
         }
         if(_token223 != address(0))
         {
-            emit TokenListed(_token223);
             registry.recordListing(address(0), _token223);
         }
         last_update = block.timestamp;
@@ -830,10 +939,19 @@ contract Dex223OwnableListing {
         }
     }
 
-    function list(address pool, uint24 feeTier, address paymentToken) public payable 
+    function _isFullyListed(address _erc20, address _erc223) internal view returns (bool)
+    {
+        bool erc20Listed  = _erc20  != address(0) && isListed(_erc20);
+        bool erc223Listed = _erc223 != address(0) && isListed(_erc223);
+
+        if (_erc20 == address(0)) return erc223Listed;
+        if (_erc223 == address(0)) return erc20Listed;
+        return erc20Listed && erc223Listed;
+    }
+
+    function list(address pool, uint24 feeTier, address paymentToken) public payable nonReentrant
     {
         uint price = checkListingCriteria(paymentToken);
-//        require(price >= 0); // if price < 0 - listing criteria not met
 
         IDexPool _pool = IDexPool(pool);
 
@@ -847,13 +965,13 @@ contract Dex223OwnableListing {
 
         uint toTransfer = 0;
 
-        if(!isListed(_token0_erc20) || !isListed(_token0_erc223))
+        if(!_isFullyListed(_token0_erc20, _token0_erc223))
         {
             toTransfer += price;
             checkListing(_token0_erc20, _token0_erc223);
         }
 
-        if(!isListed(_token1_erc20) || !isListed(_token1_erc223))
+        if(!_isFullyListed(_token1_erc20, _token1_erc223))
         {
             toTransfer += price;
             checkListing(_token1_erc20, _token1_erc223);
@@ -861,11 +979,18 @@ contract Dex223OwnableListing {
 
         if (toTransfer > 0) {
             if (paymentToken == address(0)) {
-                // NOTE no return of excess payment
                 require(msg.value >= toTransfer, "Payment is not enough");
+                uint refund = msg.value - toTransfer;
+                if (refund > 0) {
+                    (bool sent, ) = msg.sender.call{value: refund}("");
+                    require(sent, "Refund failed");
+                }
             } else {
+                require(msg.value == 0, "Do not send ETH with token payment");
                 safeTransferFrom(paymentToken, msg.sender, address(this), toTransfer);
             }
+        } else {
+            require(msg.value == 0, "No payment required");
         }
 
         emit PairListed(_token0_erc20, _token0_erc223, _token1_erc20, _token1_erc223, pool, feeTier);
@@ -880,14 +1005,18 @@ contract Dex223OwnableListing {
         // 2. We are adding a version of an already listed token which previously had
         //    only one standard available.
 
-        //emit TokenListed(_token_erc20, _token_erc223);
         if(!isListed(_token_erc20) && !isListed(_token_erc223))
         {
             // Listing a new token.
             num_listed_tokens++; // First increase the counter, tokens[0] must be always address(0).
             tokens[num_listed_tokens]    = Token(_token_erc20, _token_erc223);
-            listed_tokens[_token_erc20]  = num_listed_tokens;
-            listed_tokens[_token_erc223] = num_listed_tokens;
+
+            if (_token_erc20 != address(0)) {
+                listed_tokens[_token_erc20]  = num_listed_tokens;
+            }
+            if (_token_erc223 != address(0)) {
+                listed_tokens[_token_erc223] = num_listed_tokens;
+            }
 
             // Record the listing via Auto-listings Registry for Subgraph logging.
             registry.recordListing(_token_erc20, _token_erc223);
@@ -900,13 +1029,17 @@ contract Dex223OwnableListing {
             {
                 // If the token is already listed as ERC-20;
                 tokens[listed_tokens[_token_erc20]] = Token(_token_erc20, _token_erc223);
-                listed_tokens[_token_erc223]        = listed_tokens[_token_erc20];
+                if (_token_erc223 != address(0)) {
+                    listed_tokens[_token_erc223]    = listed_tokens[_token_erc20];
+                }
             }
             else
             {
                 // Otherwise the token is listed as ERC-223;
                 tokens[listed_tokens[_token_erc223]] = Token(_token_erc20, _token_erc223);
-                listed_tokens[_token_erc20]          = listed_tokens[_token_erc223];
+                if (_token_erc20 != address(0)) {
+                    listed_tokens[_token_erc20]      = listed_tokens[_token_erc223];
+                }
             }
 
             // Record the listing via Auto-listings Registry for Subgraph logging.
@@ -926,11 +1059,11 @@ contract Dex223OwnableListing {
 
         // get price for passed token address
         uint price = paymentPrices[paymentToken];
-        require(price > 0);
+        require(price > 0, "Payment token not accepted");
 
         // check payment in native coin
         if (paymentToken == address(0)) {
-            require(msg.value > 0);
+            require(msg.value > 0, "Must send ETH");
         }
 
         return price;
@@ -943,10 +1076,8 @@ contract Dex223OwnableListing {
 
     // function to set paymentToken price
     //@dec set price to ZERO to exclude token from acceptable
-    function setPaymentPrice(address paymentToken, uint price)  external returns (bool)
+    function setPaymentPrice(address paymentToken, uint price) external onlyOwner returns (bool)
     {
-        require(msg.sender == owner);
-
         // If the token is being set to a non-zero price for the first time, add it to paymentTokens
         if (price > 0 && paymentPrices[paymentToken] == 0) {
             paymentTokens.push(paymentToken);
@@ -996,13 +1127,12 @@ contract Dex223OwnableListing {
         require(success && (data.length == 0 || abi.decode(data, (bool))), "Transfer failed");
     }
 
-    function extractTokens(address _token, uint256 _amount) public
+    function extractTokens(address _token, uint256 _amount) public onlyOwner
     {
-        require(msg.sender == owner);
-
         if(_token == address(0))
         {
-            payable(msg.sender).transfer(_amount);
+            (bool sent, ) = msg.sender.call{value: _amount}("");
+            require(sent, "ETH transfer failed");
         } else {
             safeTransfer(_token, msg.sender, _amount);
         }
