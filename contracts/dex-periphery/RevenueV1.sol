@@ -22,7 +22,8 @@ contract Dex223PoolMinimal {
     Token public token0;
     Token public token1;
     ProtocolFees public protocolFees;
-    
+    uint24 public fee;
+
     function collectProtocol(
         address recipient,
         uint128 amount0Requested,
@@ -78,7 +79,7 @@ contract Revenue {
     //mapping (address => uint256) public total_received_tokens; // token => how much was received in total.
     //mapping (address => uint256) public total_paid_tokens;     // token => how much was already paid out as rewards in total.
 
-    bool public debug_mode = true;
+    bool public debug_mode = false;
     bool public reentrancy_lock = false;
 
     uint8 public default_fee_token0;
@@ -103,6 +104,11 @@ contract Revenue {
     address public staking_token_erc20;
     address public staking_token_erc223;
 
+    // Used by delivery() to verify that a caller-supplied pool is a genuine factory
+    // pool before trusting the token addresses it reports. Must be set by the owner;
+    // until it is, delivery() refuses to run rather than trusting unverified input.
+    address public factory;
+
     event Staked(address indexed user, uint256 amount);
     event Withdrawn(address indexed user, uint256 amount);
     event Claimed(address indexed user, address token, uint256 amount);
@@ -114,7 +120,7 @@ contract Revenue {
         staking_token_erc223 = _staking_token223;
     }
 
-    function stake(address _token, uint256 _amount) public {
+    function stake(address _token, uint256 _amount) public nonReentrant {
         require(_token == staking_token_erc20 || _token == staking_token_erc223, "Trying to stake a wrong token");
         _update(msg.sender);
         staked[msg.sender] += _amount;
@@ -125,7 +131,7 @@ contract Revenue {
         emit Staked(msg.sender, _amount);
     }
 
-    function withdraw(address _token, uint256 amount) public {
+    function withdraw(address _token, uint256 amount) public nonReentrant {
         require(staking_timestamp[msg.sender] + claim_delay <= block.timestamp, "Tokens are frozen for a specified duration after the last staking");
         require(_token == staking_token_erc20 || _token == staking_token_erc223, "Trying to stake a wrong token");
         //_update(msg.sender);
@@ -140,15 +146,31 @@ contract Revenue {
     // This contract must be established as the owner of the Factory
     // to have permission to call "collectProtocol"
     function delivery(address[] calldata pools) public {
+        // delivery() is permissionless by design, but the addresses it is handed are
+        // not trustworthy. Anything implementing token0()/token1() used to have its
+        // reported token addresses written straight into get223/get20, and sendToken
+        // consults those maps to decide which token to pay a shortfall in - so an
+        // attacker could register a worthless token as the counterpart of a real one
+        // and have users paid in it. Entries are also write-once, making the poisoning
+        // permanent. Verify each pool against the factory before reading anything.
+        require(factory != address(0), "Factory is not configured");
         for (uint256 i = 0; i < pools.length; i++) {
             address p = pools[i];
-            //Token memory t0 = Dex223PoolMinimal(p).token0();
             (address t0_20, address t0_223) = Dex223PoolMinimal(p).token0();
+            (address t1_20, address t1_223) = Dex223PoolMinimal(p).token1();
+
+            // The factory mapping is the authority on what is a real pool. A forged
+            // contract can report any token addresses it likes, but it will not be
+            // registered under them in the factory.
+            require(
+                IDex223Factory(factory).getPool(t0_20, t1_20, Dex223PoolMinimal(p).fee()) == p,
+                "Pool is not registered in the factory"
+            );
+
             if (get20[t0_223] == address(0)) {
                 get223[t0_20] = t0_223;
                 get20[t0_223] = t0_20;
             }
-            (address t1_20, address t1_223) = Dex223PoolMinimal(p).token1();
             if (get20[t1_223] == address(0)) {
                 get223[t1_20] = t1_223;
                 get20[t1_223] = t1_20;
@@ -184,12 +206,33 @@ contract Revenue {
                 // that not to interrupt the workflow of claiming the rest of the tokens.
             }
             _time_delta   = block.timestamp - last_claim[msg.sender][tokens[i]];
-            uint256 dividends = _self_balance * staked[msg.sender] * (_time_delta / assigned_avg_staking_duration) / (total_staked + staked[msg.sender] * (_time_delta / assigned_avg_staking_duration));
-            last_claim[msg.sender][tokens[i]] = block.timestamp;
-            sendToken(tokens[i], dividends);
+            uint256 _periods = _time_delta / assigned_avg_staking_duration;
+            uint256 _denominator = total_staked + staked[msg.sender] * _periods;
+            uint256 dividends = _denominator == 0
+                ? 0
+                : _self_balance * staked[msg.sender] * _periods / _denominator;
+            // Only stamp last_claim when something is actually paid. `_periods` floors
+            // to zero until a full averaging window has elapsed, so stamping it here
+            // unconditionally discarded the time accrued since the previous claim - a
+            // staker claiming on a shorter cycle than the window would never earn again.
+            if (dividends != 0) {
+                last_claim[msg.sender][tokens[i]] = block.timestamp;
+                sendToken(tokens[i], dividends);
+            }
         }
 
         //staking_timestamp[msg.sender] = block.timestamp; // Replaced with the updates of the last_claimed timestamp for each token.
+    }
+
+    // Returns an ERC-223 deposit that was credited by tokenReceived but never staked.
+    // Without this the only way to get such a deposit back out is to stake it and then
+    // wait out the claim delay.
+    function withdrawDeposit(address _token) public nonReentrant
+    {
+        uint256 _amount = erc223deposit[msg.sender][_token];
+        require(_amount != 0, "Nothing deposited");
+        erc223deposit[msg.sender][_token] = 0;
+        TransferHelper.safeTransfer(_token, msg.sender, _amount);
     }
 
     function tokenReceived(address user, uint256 value, bytes memory data) public returns (bytes4) {
@@ -207,13 +250,24 @@ contract Revenue {
     }
 
     function sendToken(address token, uint256 amount) internal {
+        if (amount == 0) return;
         uint256 balance = IERC20Minimal(token).balanceOf(address(this));
         if (balance >= amount) {
             TransferHelper.safeTransfer(token, msg.sender, amount);
         } else {
-            TransferHelper.safeTransfer(token, msg.sender, balance);
             uint256 remaining = amount - balance;
             address second = get223[token] != address(0) ? get223[token] : get20[token];
+            // get223/get20 are only populated by delivery() for pool tokens, so for the
+            // staking token they are unset. Transferring to address(0) would SUCCEED
+            // silently - the call hits an account with no code and returns no data, so
+            // TransferHelper's `success && data.length == 0` check passes - and the
+            // shortfall would be destroyed after the caller's balance was debited.
+            require(second != address(0), "No counterpart token to cover the shortfall");
+            require(
+                IERC20Minimal(second).balanceOf(address(this)) >= remaining,
+                "Insufficient balance across both token versions"
+            );
+            if (balance != 0) TransferHelper.safeTransfer(token, msg.sender, balance);
             TransferHelper.safeTransfer(second, msg.sender, remaining);
         }
     }
@@ -228,13 +282,27 @@ contract Revenue {
         }
     }
 
+    function set_factory(address _factory) public onlyOwner
+    {
+        factory = _factory;
+    }
+
     function give_owner(address _factory) public onlyOwner
     {
         IDex223Factory(_factory).setOwner(revenue_contract_owner);
     }
 
+    function set_debug_mode(bool _enabled) public onlyOwner
+    {
+        // emergency_call performs an arbitrary call as this contract, so the gate it
+        // sits behind must be off unless deliberately switched on.
+        debug_mode = _enabled;
+    }
+
     function assign_avg_staking_duration(uint256 _assigned_duration) public onlyOwner
     {
+        // claim() divides by this value; zero would make every claim revert.
+        require(_assigned_duration != 0, "Averaging window must be non-zero");
         assigned_avg_staking_duration = _assigned_duration;
     }
 

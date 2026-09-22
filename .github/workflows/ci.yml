@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: yarn
+
+      - run: yarn install --frozen-lockfile
+
+      - name: Compile
+        run: npx hardhat compile
+
+      # The two checks below catch failures that the test suite cannot, because both are silent:
+      # the contract still compiles, the tests still run, and nothing in the output names the cause.
+      # Each has already cost this repo a full debugging session, so they run before the suite.
+
+      - name: POOL_INIT_CODE_HASH is current
+        # Any change to Dex223Pool.sol, or to its compiler settings, changes the pool creation code
+        # and so the CREATE2 init code hash. When the constant in PoolAddress.sol is not regenerated,
+        # every derived pool address misses and ~42 tests revert with no reason string.
+        run: npx hardhat run scripts/check-pool-init-code-hash.ts
+
+      - name: Every contract fits under EIP-170
+        run: npx hardhat run scripts/check-contract-sizes.ts
+
+      - name: Test
+        run: npx hardhat test
+
+      - name: Test with the real EIP-170 limit enforced
+        # The hardhat network sets allowUnlimitedContractSize, so an oversized contract deploys fine
+        # in tests and surfaces only as a changed bytecode-size snapshot - which UPDATE_SNAPSHOT=1
+        # will happily bury. This run applies the real 24,576-byte limit, so "cannot be deployed"
+        # fails here instead of on a live chain.
+        run: ENFORCE_SIZE_LIMIT=1 npx hardhat test
