@@ -2,6 +2,29 @@
 
 ## Ethereum mainnet deployment
 
+Deployed 2026-09-22 at commit 44927a3 from `0x9467a00F2DFBF392254133ff36c291c618dF6f54` (current factory owner). Transaction record: `deployments/mainnet.json`. All contracts are verified on Etherscan. Pool library, quote library, token validator and factory have the same address and bytecode on Sepolia.
+
+| Name                  | Address |
+| --------------------- | ------- |
+| WETH9                 | [0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2](https://etherscan.io/address/0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2#code) |
+| TOKEN_CONVERTER       | [0xe7E969012557f25bECddB717A3aa2f4789ba9f9a](https://etherscan.io/address/0xe7E969012557f25bECddB717A3aa2f4789ba9f9a#code) |
+| POOL_LIBRARY          | [0x9321361bdDc23a16E90ae18081c7E758e6481Eb6](https://etherscan.io/address/0x9321361bdDc23a16E90ae18081c7E758e6481Eb6#code) |
+| QUOTE_LIBRARY         | [0x079784c215F9F2f2b8118A7a0bD916A0ddbcB92d](https://etherscan.io/address/0x079784c215F9F2f2b8118A7a0bD916A0ddbcB92d#code) |
+| TOKEN_VALIDATOR       | [0x269Dac0FB22e207468e3D91a0d39088Ae9CaD7e6](https://etherscan.io/address/0x269Dac0FB22e207468e3D91a0d39088Ae9CaD7e6#code) |
+| FACTORY               | [0xeA0A163e0196Bf1500B1B41d3ADdA0476dC137eb](https://etherscan.io/address/0xeA0A163e0196Bf1500B1B41d3ADdA0476dC137eb#code) |
+| SWAP_ROUTER           | [0xc06C5F3a889DCDF23D54B4fB8FCE3DE2707199ED](https://etherscan.io/address/0xc06C5F3a889DCDF23D54B4fB8FCE3DE2707199ED#code) |
+| POSITION_MANAGER      | [0x2A40FF7c062336dC82A502aB38EBD3579e42BAE1](https://etherscan.io/address/0x2A40FF7c062336dC82A502aB38EBD3579e42BAE1#code) |
+| QUOTER                | [0x2C44c27a41BCE8BF679b306284d68C1245eE4c52](https://etherscan.io/address/0x2C44c27a41BCE8BF679b306284d68C1245eE4c52#code) |
+| CORE_AUTOLISTING      | [0x83E1e7f47536515db9Ec4D7C4024e7395CD11A48](https://etherscan.io/address/0x83E1e7f47536515db9Ec4D7C4024e7395CD11A48#code) |
+| FREE_AUTOLISTING      | [0xCc46E110426958E83e9298d46a50572691065eC5](https://etherscan.io/address/0xCc46E110426958E83e9298d46a50572691065eC5#code) |
+| AUTOLISTINGS_REGISTRY | [0x105F43A70aFCEd0493545D04C1d5687DF4b3f48f](https://etherscan.io/address/0x105F43A70aFCEd0493545D04C1d5687DF4b3f48f#code) |
+| ERC223_TOKEN_DEPLOYER | [0xe3391c70A6b71bC26D6F77437590306006aD0ddb](https://etherscan.io/address/0xe3391c70A6b71bC26D6F77437590306006aD0ddb#code) |
+| POOL_INIT_CODE_HASH   | 0xe125afe94932872c7162b66e1bb1587d6fc76d525d248bb20e9e0484a99ec486 |
+
+## Ethereum mainnet deployment (previous, superseded 2026-09-22)
+
+Do not use for new integrations. Its position manager did not bind `collect()` to the NFT's pool (fixed in #57).
+
 | Name                | Address                                                                                                                    |
 | ------------------- | -------------------------------------------------------------------------------------------------------------------------- |
 | WETH9               | [0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2](https://etherscan.io/address/0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2#code) |
