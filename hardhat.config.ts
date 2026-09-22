@@ -267,6 +267,8 @@ const config: HardhatUserConfig = {
     target: "ethers-v6",
 
   },
+  // `npx hardhat verify` no longer works: hardhat-verify 2.0.x speaks only Etherscan's retired v1 API.
+  // Use scripts/verify-etherscan.ts (v2) instead; it reads ETHERSCAN_API_KEY directly.
   etherscan: {
     apiKey: {
       sepolia: ETHERSCAN_API_KEY,

@@ -267,7 +267,7 @@ async function main() {
         already = await st.done()
       }
       if (!already) fail(`nonce ${nonce} was used by something else (step '${st.key}' is not on chain). Stop and investigate.`)
-      if (st.kind === 'deploy') state[st.key] = addr[st.key]
+      if (st.kind === 'deploy') { state[st.key] = addr[st.key]; state[`fqn:${st.key}`] = st.fqn; state[`args:${st.key}`] = JSON.stringify(st.args()) }
       state[doneKey] = 'recovered'; save(); console.log(`  found [${nonce}] ${st.key} already on chain`); continue
     }
     if (current < nonce) fail(`deployer nonce ${current} is behind the plan (${nonce}); an earlier step is missing`)
@@ -282,6 +282,8 @@ async function main() {
       if (!eq(got, addr[st.key])) fail(`deployed at ${got}, predicted ${addr[st.key]}`)
       await eventually(`${st.key} code`, () => ethers.provider.getCode(got), (c) => c !== '0x')
       state[st.key] = got
+      // What scripts/verify-etherscan.ts needs to verify this contract later.
+      state[`fqn:${st.key}`] = st.fqn; state[`args:${st.key}`] = JSON.stringify(st.args())
     } else if (st.kind === 'burn') {
       const tx = await s.sendTransaction({ to: DEPLOYER, value: 0n, nonce })
       receipt = await tx.wait(network.name === 'mainnet' ? 2 : 1)
