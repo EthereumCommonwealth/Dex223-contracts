@@ -63,7 +63,11 @@ contract Revenue {
     uint8 public default_fee_token0;
     uint8 public default_fee_token1;
 
-    uint256 totalContribution;
+    // Public so a front end can reproduce claim()'s own formula:
+    //   tokenUnpaidContribution = totalContribution - spentTotalContribution[token]
+    // Without a getter the denominator is unreadable, and a UI that substitutes the
+    // user's own contribution computes a negative value and shows a wrong amount.
+    uint256 public totalContribution;
     address public                      revenue_contract_owner = msg.sender; // the creator of the contract by default.
     mapping (address => uint256) public staked;
     mapping (address => uint256) public lastUpdate;
