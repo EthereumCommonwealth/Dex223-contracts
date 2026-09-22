@@ -7,7 +7,9 @@
  * then checks:
  *   1. the legitimate ERC-223 swap path still works  (the one-shot permit lets the payload through)
  *   2. a plain deposit + auto-refund still works     (no functional regression)
- *   3. the reentrant swap() from the refund callback is REJECTED with 'LOK'  (the fix)
+ *   3. the reentrant swap() from the refund callback is REJECTED while the pool-wide lock is held  (the fix)
+ *      The production pool is compiled with revertStrings stripped, so the reason reads 'unknown' rather
+ *      than 'LOK'; the proof is the attacker's `lockHeldOnReentry` observation of slot0.unlocked == false.
  *
  * Deployed addresses are cached so the script can be re-run after an RPC hiccup without redeploying.
  */
@@ -52,14 +54,49 @@ async function deployOnce(key: string, name: string, args: any[] = []): Promise<
   return c
 }
 
-async function step(label: string, fn: () => Promise<any>) {
+type Step = { ran: boolean; block?: number }
+
+/// Runs a transaction once. Reports whether it ran in THIS run and the block it landed in. The block is
+/// persisted so a resumed run can still pin its reads to it.
+async function step(label: string, fn: () => Promise<any>): Promise<Step> {
   const key = `done:${label}`
-  if (state[key]) { console.log(`  skip   ${label}`); return }
+  const blockKey = `block:${label}`
+  if (state[key]) {
+    console.log(`  skip   ${label}`)
+    return { ran: false, block: state[blockKey] ? Number(state[blockKey]) : undefined }
+  }
   process.stdout.write(`  tx     ${label} ...`)
   const tx = await fn()
-  if (tx && tx.wait) { const r = await tx.wait(); gasTotal += r.gasUsed; console.log(` ok (block ${r.blockNumber}, gas ${r.gasUsed.toLocaleString()})`) } else console.log(' ok')
-  state[key] = '1'; save(state)
+  let block: number | undefined
+  if (tx && tx.wait) {
+    const r = await tx.wait(); gasTotal += r.gasUsed; block = r.blockNumber
+    console.log(` ok (block ${r.blockNumber}, gas ${r.gasUsed.toLocaleString()})`)
+  } else console.log(' ok')
+  state[key] = '1'; if (block !== undefined) state[blockKey] = String(block); save(state)
+  return { ran: true, block }
 }
+
+/// Reads state as of `block`. Public Sepolia RPCs are load-balanced across nodes that lag each other by a
+/// block or two, so an unpinned read right after a transaction can return the pre-transaction value and
+/// turn a passing check into a spurious FAIL - or a failing one into a spurious PASS. Pinning with
+/// blockTag makes a lagging node error instead of answering stale; we retry until one that has the block
+/// responds.
+async function readAt<T>(block: number | undefined, fn: (overrides: any) => Promise<T>): Promise<T> {
+  if (block === undefined) return fn({})
+  for (let attempt = 0; ; attempt++) {
+    try { return await fn({ blockTag: block }) }
+    catch (e) { if (attempt >= 15) throw e; await new Promise((r) => setTimeout(r, 2000)) }
+  }
+}
+
+/// A balance delta measured across a transaction only exists in the run that sent it. Persist it so a
+/// resumed run reports what was actually measured instead of recomputing a zero delta and calling it FAIL.
+const recall = (key: string): bigint | undefined =>
+  state[`val:${key}`] === undefined ? undefined : BigInt(state[`val:${key}`])
+const store = (key: string, v: bigint) => { state[`val:${key}`] = v.toString(); save(state) }
+const NOT_MEASURED = 'NOT MEASURED'
+const verdict = (v: bigint | undefined, ok: (v: bigint) => boolean) =>
+  v === undefined ? NOT_MEASURED : ok(v) ? 'PASS' : 'FAIL'
 
 let gasTotal = 0n
 async function main() {
@@ -150,11 +187,15 @@ async function main() {
     ethers.AbiCoder.defaultAbiCoder().encode(['address'], [wallet.address]), deadline, false,
   ])
   const before1 = await token1_223.balanceOf(wallet.address)
-  await step('transfer token0_223 -> pool with swapExactInput payload', () =>
+  const s1 = await step('transfer token0_223 -> pool with swapExactInput payload', () =>
     token0_223['transfer(address,uint256,bytes)'](state.pool, DEPOSIT, ethers.getBytes(swapData)))
-  const gained = (await token1_223.balanceOf(wallet.address)) - before1
-  const t1ok = gained > 0n
-  console.log(`  token1_223 received : ${fmt(gained)}   -> ${t1ok ? 'PASS (payload executed)' : 'FAIL'}`)
+  let gained = recall('test1 gained')
+  if (s1.ran) {
+    gained = (await readAt(s1.block, (o) => token1_223.balanceOf(wallet.address, o))) - before1
+    store('test1 gained', gained)
+  }
+  const r1 = verdict(gained, (g) => g > 0n)
+  console.log(`  token1_223 received : ${gained === undefined ? 'n/a (step ran in an earlier run)' : fmt(gained)}   -> ${r1}${r1 === 'PASS' ? ' (payload executed)' : ''}`)
 
   // ---------------------------------------------------------------- test 2
   console.log('\n' + '='.repeat(78))
@@ -163,10 +204,11 @@ async function main() {
   const atkAddr = await attacker.getAddress()
   await step('fund attacker with token0_223', () => token0_223.transfer(atkAddr, DEPOSIT * 2n))
   await step('attacker.configure', () => attacker.configure(state.pool, t0_223, true, MIN_SQRT_RATIO + 1n))
-  await step('attack(reenter=false)', () => attacker.attack(DEPOSIT, false))
-  const refunded = await token0_223.balanceOf(atkAddr)
-  const t2ok = refunded >= DEPOSIT
-  console.log(`  attacker token0_223 : ${fmt(refunded)}   -> ${t2ok ? 'PASS (refund works)' : 'FAIL'}`)
+  const s2 = await step('attack(reenter=false)', () => attacker.attack(DEPOSIT, false))
+  // Absolute balance, not a delta, so it is valid on a resumed run too; still pinned to the tx block.
+  const refunded = await readAt(s2.block, (o) => token0_223.balanceOf(atkAddr, o))
+  const r2 = refunded >= DEPOSIT ? 'PASS' : 'FAIL'
+  console.log(`  attacker token0_223 : ${fmt(refunded)}   -> ${r2}${r2 === 'PASS' ? ' (refund works)' : ''}`)
 
   // ---------------------------------------------------------------- test 3
   console.log('\n' + '='.repeat(78))
@@ -174,32 +216,52 @@ async function main() {
   console.log('='.repeat(78))
   const p1Before = await token1.balanceOf(state.pool)
   const a1Before = await token1.balanceOf(atkAddr)
-  await step('attack(reenter=true)', () => attacker.attack(DEPOSIT, true))
+  const s3 = await step('attack(reenter=true)', () => attacker.attack(DEPOSIT, true))
 
-  const reentered = await attacker.reentered()
-  const succeeded = await attacker.reentrySucceeded()
-  const err = await attacker.reentryError()
-  const stolen = (await token1.balanceOf(atkAddr)) - a1Before
-  const drained = p1Before - (await token1.balanceOf(state.pool))
+  // Attacker flags are absolute state: valid on a resumed run, but pinned to the tx block so a lagging
+  // RPC node cannot hand back the pre-attack values.
+  const reentered = await readAt(s3.block, (o) => attacker.reentered(o))
+  const succeeded = await readAt(s3.block, (o) => attacker.reentrySucceeded(o))
+  const err = await readAt(s3.block, (o) => attacker.reentryError(o))
+  const lockHeld = await readAt(s3.block, (o) => attacker.lockHeldOnReentry(o))
+  let stolen = recall('test3 stolen')
+  let drained = recall('test3 drained')
+  if (s3.ran) {
+    stolen = (await readAt(s3.block, (o) => token1.balanceOf(atkAddr, o))) - a1Before
+    drained = p1Before - (await readAt(s3.block, (o) => token1.balanceOf(state.pool, o)))
+    store('test3 stolen', stolen); store('test3 drained', drained)
+  }
 
   console.log(`  refund callback fired : ${reentered}`)
+  console.log(`  lock held on reentry  : ${lockHeld}   (slot0.unlocked == false inside the callback)`)
   console.log(`  reentrant swap ran    : ${succeeded}`)
-  console.log(`  revert reason         : "${err}"`)
-  console.log(`  attacker token1 gain  : ${fmt(stolen)}`)
-  console.log(`  pool token1 drained   : ${fmt(drained)}`)
+  console.log(`  revert reason         : "${err}"   ('unknown' = stripped 'LOK' on the production build)`)
+  console.log(`  attacker token1 gain  : ${stolen === undefined ? 'n/a (step ran in an earlier run)' : fmt(stolen)}`)
+  console.log(`  pool token1 drained   : ${drained === undefined ? 'n/a (step ran in an earlier run)' : fmt(drained)}`)
 
-  const t3ok = reentered && !succeeded && err === 'LOK' && stolen === 0n && drained === 0n
+  // 'LOK' on builds that keep revert strings (the MockTime pool used locally); 'unknown' on the production
+  // Dex223Pool, which strips them. Either way the lock must have been observed held at the callback.
+  const blocked = reentered && !succeeded && lockHeld && (err === 'LOK' || err === 'unknown')
+  const r3 = !blocked ? 'FAIL'
+    : stolen === undefined || drained === undefined ? NOT_MEASURED
+    : stolen === 0n && drained === 0n ? 'PASS' : 'FAIL'
 
   console.log('\n' + '='.repeat(78))
-  console.log(`TEST 1 legitimate swap allowed : ${t1ok ? 'PASS' : 'FAIL'}`)
-  console.log(`TEST 2 deposit + refund works  : ${t2ok ? 'PASS' : 'FAIL'}`)
-  console.log(`TEST 3 reentrancy blocked      : ${t3ok ? 'PASS' : 'FAIL'}`)
+  console.log(`TEST 1 legitimate swap allowed : ${r1}`)
+  console.log(`TEST 2 deposit + refund works  : ${r2}`)
+  console.log(`TEST 3 reentrancy blocked      : ${r3}`)
   console.log('='.repeat(78))
+  const results = [r1, r2, r3]
+  if (results.includes(NOT_MEASURED)) {
+    console.log(`${NOT_MEASURED}: that step ran in an earlier run before its result was persisted. To re-measure,`)
+    console.log(`delete its "done:" key from ${STATE} and run again; everything already deployed is reused.`)
+  }
   console.log(`pool: ${scan(state.pool)}`)
   // GAS TALLY
   console.log(`\ntotal gas used this run: ${gasTotal.toLocaleString()}`)
   for (const gwei of [1n, 2n, 5n]) console.log(`  @ ${gwei} gwei -> ${ethers.formatEther(gasTotal * gwei * 10n ** 9n)} ETH`)
-  if (!(t1ok && t2ok && t3ok)) process.exitCode = 1
+  // A FAIL is a failure. NOT MEASURED is not a pass either: do not let a resumed run exit green on it.
+  if (results.some((r) => r !== 'PASS')) process.exitCode = 1
 }
 
 main().catch((e) => { console.error(e); process.exitCode = 1 })
