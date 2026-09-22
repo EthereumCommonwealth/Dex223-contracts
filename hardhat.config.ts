@@ -247,6 +247,10 @@ const config: HardhatUserConfig = {
           debug: { revertStrings: "strip" }
         }
       },
+      "contracts/test/MaliciousRevenuePool.sol": {
+        version: "0.7.6",
+        settings: { optimizer: { enabled: true, runs: 5000 } }
+      },
       "contracts/dex-periphery/base/NFTDescriptor.sol": {
         version: "0.7.6",
         settings: { optimizer: { enabled: true, runs: 1 } }
