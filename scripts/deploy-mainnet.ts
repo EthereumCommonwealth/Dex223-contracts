@@ -22,6 +22,18 @@
  * Resumable: addresses and completed steps are written to deployments/<network>.json after every
  * transaction. If a run dies after a transaction is mined but before it is recorded, the next run
  * detects that from chain state and does not send it again.
+ *
+ * Cross-chain address layout. The same deployer already used nonces 0-30 on Sepolia, and CREATE addresses
+ * depend only on (deployer, nonce), so a plain nonce-0 deploy would put mainnet contracts at addresses that
+ * hold different contracts on Sepolia (the Sepolia factory would have been the mainnet position manager).
+ * The plan is laid out so every mainnet contract address is either
+ *   - the same contract, byte-identical, on Sepolia: poolLib, quoteLib, validator, factory at nonces 3-6, or
+ *   - permanently empty on Sepolia: nonces 9-13, which Sepolia consumed without creating a contract.
+ * Nonces whose Sepolia address holds something else (0-2: converter and test tokens, 8: a test contract)
+ * are burned with a zero-value self-transfer, so those addresses stay empty on mainnet forever. Nonce 7 is
+ * factory.set, a call. EXPECTED below pins the result; the script refuses any other layout.
+ * Keep it that way: before any later mainnet contract creation from this deployer, check what Sepolia holds
+ * at that nonce (nonce 24 there is a test contract).
  */
 import { ethers, network, artifacts } from 'hardhat'
 import * as fs from 'fs'
@@ -58,6 +70,20 @@ const save = () => {
 type Step =
   | { kind: 'deploy'; key: string; fqn: string; args: () => any[] }
   | { kind: 'call'; key: string; send: (s: any, o: { nonce: bigint }) => Promise<any>; done: () => Promise<boolean> }
+  | { kind: 'burn'; key: string } // zero-value self-transfer: consumes the nonce, creates nothing
+
+// Step index == deployer nonce. Addresses are fixed by the layout described at the top of the file.
+const EXPECTED: Record<string, string> = {
+  poolLib: '0x9321361bdDc23a16E90ae18081c7E758e6481Eb6', //         nonce 3, identical on Sepolia
+  quoteLib: '0x079784c215F9F2f2b8118A7a0bD916A0ddbcB92d', //        nonce 4, identical on Sepolia
+  validator: '0x269Dac0FB22e207468e3D91a0d39088Ae9CaD7e6', //       nonce 5, identical on Sepolia
+  factory: '0xeA0A163e0196Bf1500B1B41d3ADdA0476dC137eb', //         nonce 6, identical on Sepolia
+  router: '0xc06C5F3a889DCDF23D54B4fB8FCE3DE2707199ED', //          nonce 9, never a contract on Sepolia
+  positionManager: '0x2A40FF7c062336dC82A502aB38EBD3579e42BAE1', // nonce 10, never a contract on Sepolia
+  quoter: '0x2C44c27a41BCE8BF679b306284d68C1245eE4c52', //          nonce 11, never a contract on Sepolia
+  freeAutolisting: '0xCc46E110426958E83e9298d46a50572691065eC5', // nonce 12, never a contract on Sepolia
+  coreAutolisting: '0x83E1e7f47536515db9Ec4D7C4024e7395CD11A48', // nonce 13, never a contract on Sepolia
+}
 
 const FQN = {
   poolLib: 'contracts/dex-core/Dex223PoolLib.sol:Dex223PoolLib',
@@ -75,6 +101,9 @@ const POOL_FQN = 'contracts/dex-core/Dex223Pool.sol:Dex223Pool'
 function plan(addr: Record<string, string>): Step[] {
   const at = (key: keyof typeof FQN) => ethers.getContractAt(FQN[key], addr[key])
   return [
+    { kind: 'burn', key: 'burn nonce 0' },
+    { kind: 'burn', key: 'burn nonce 1' },
+    { kind: 'burn', key: 'burn nonce 2' },
     { kind: 'deploy', key: 'poolLib', fqn: FQN.poolLib, args: () => [] },
     { kind: 'deploy', key: 'quoteLib', fqn: FQN.quoteLib, args: () => [] },
     { kind: 'deploy', key: 'validator', fqn: FQN.validator, args: () => [] },
@@ -89,6 +118,7 @@ function plan(addr: Record<string, string>): Step[] {
         return eq(await f.pool_lib(), addr.poolLib) && eq(await f.quote_lib(), addr.quoteLib) && eq(await f.converter(), CONVERTER)
       },
     },
+    { kind: 'burn', key: 'burn nonce 8' },
     { kind: 'deploy', key: 'router', fqn: FQN.router, args: () => [addr.factory, WETH9, CONVERTER] },
     { kind: 'deploy', key: 'positionManager', fqn: FQN.positionManager, args: () => [addr.factory, WETH9] },
     { kind: 'deploy', key: 'quoter', fqn: FQN.quoter, args: () => [addr.factory, WETH9] },
@@ -180,20 +210,26 @@ async function main() {
   const poolHash = await preflight()
   const s = await signer()
 
+  // The layout is absolute (step index == nonce), so the plan always starts at nonce 0.
   const nonceNow = BigInt(await ethers.provider.getTransactionCount(DEPLOYER))
   if (state.startNonce === undefined) {
-    const expected = BigInt(process.env.EXPECTED_START_NONCE ?? '0')
-    if (nonceNow !== expected) fail(`deployer nonce is ${nonceNow}, expected ${expected}. Addresses would differ from the rehearsal; set EXPECTED_START_NONCE deliberately if this is intended.`)
-    state.startNonce = nonceNow.toString(); state.deployer = DEPLOYER; state.poolInitCodeHash = poolHash; save()
+    if (nonceNow !== 0n) fail(`deployer nonce is ${nonceNow}, expected 0. The address layout assumes a fresh deployer; stop and investigate what used it.`)
+    state.startNonce = '0'; state.deployer = DEPLOYER; state.poolInitCodeHash = poolHash; save()
   }
   const start = BigInt(state.startNonce)
+  if (start !== 0n) fail(`state file starts at nonce ${start}; this plan only supports 0`)
 
-  // Predict every address up front from the nonce schedule.
+  // Predict every address up front from the nonce schedule, and hold it to the pinned layout.
   const probe = plan({})
   const addr: Record<string, string> = {}
+  const burned: string[] = []
   probe.forEach((st, i) => {
-    if (st.kind === 'deploy') addr[st.key] = ethers.getCreateAddress({ from: DEPLOYER, nonce: start + BigInt(i) })
+    const a = ethers.getCreateAddress({ from: DEPLOYER, nonce: start + BigInt(i) })
+    if (st.kind === 'deploy') addr[st.key] = a
+    if (st.kind === 'burn') burned.push(a)
   })
+  for (const k of Object.keys(addr)) if (!EXPECTED[k] || !eq(EXPECTED[k], addr[k])) fail(`${k} would deploy at ${addr[k]}, but the pinned layout says ${EXPECTED[k]}`)
+  if (Object.keys(EXPECTED).length !== Object.keys(addr).length) fail('EXPECTED and the plan disagree on which contracts are deployed')
   for (const k of Object.keys(addr)) if (state[k] && !eq(state[k], addr[k])) fail(`state has ${k}=${state[k]} but the nonce schedule predicts ${addr[k]}`)
 
   const fee = await ethers.provider.getFeeData()
@@ -219,7 +255,17 @@ async function main() {
     // Recover from a crash between "mined" and "recorded": trust chain state, never resend.
     const current = BigInt(await ethers.provider.getTransactionCount(DEPLOYER))
     if (current > nonce) {
-      const already = st.kind === 'deploy' ? (await ethers.provider.getCode(addr[st.key])) !== '0x' : await st.done()
+      let already: boolean
+      if (st.kind === 'deploy') {
+        // Same length as our artifact (immutables do not change length), not merely "some code".
+        const code = await ethers.provider.getCode(addr[st.key])
+        already = code.length === (await artifacts.readArtifact(st.fqn)).deployedBytecode.length
+      } else if (st.kind === 'burn') {
+        // Any transaction serves to consume the nonce, as long as it did not create a contract there.
+        already = (await ethers.provider.getCode(ethers.getCreateAddress({ from: DEPLOYER, nonce }))) === '0x'
+      } else {
+        already = await st.done()
+      }
       if (!already) fail(`nonce ${nonce} was used by something else (step '${st.key}' is not on chain). Stop and investigate.`)
       if (st.kind === 'deploy') state[st.key] = addr[st.key]
       state[doneKey] = 'recovered'; save(); console.log(`  found [${nonce}] ${st.key} already on chain`); continue
@@ -236,6 +282,9 @@ async function main() {
       if (!eq(got, addr[st.key])) fail(`deployed at ${got}, predicted ${addr[st.key]}`)
       await eventually(`${st.key} code`, () => ethers.provider.getCode(got), (c) => c !== '0x')
       state[st.key] = got
+    } else if (st.kind === 'burn') {
+      const tx = await s.sendTransaction({ to: DEPLOYER, value: 0n, nonce })
+      receipt = await tx.wait(network.name === 'mainnet' ? 2 : 1)
     } else {
       const tx = await st.send(s, { nonce })
       receipt = await tx.wait(network.name === 'mainnet' ? 2 : 1)
@@ -261,6 +310,7 @@ async function main() {
   for (const k of ['freeAutolisting', 'coreAutolisting'] as const) {
     checks.push([`${k} factory / registry / owner`, async () => { const x = await c(k); return eq(await x.getFactory(), addr.factory) && eq(await x.getRegistry(), REGISTRY) && eq(await x.owner(), DEPLOYER) }])
   }
+  checks.push(['burned nonces created no contract', async () => (await Promise.all(burned.map((a) => ethers.provider.getCode(a)))).every((x) => x === '0x')])
   checks.push(['coreAutolisting price 40 USDT', async () => (await c('coreAutolisting')).getPrices().then((p: any[]) => p.some((q) => eq(q[0], USDT) && BigInt(q[1]) === CORE_LISTING_PRICE_USDT))])
   let bad = 0
   for (const [label, fn] of checks) {
