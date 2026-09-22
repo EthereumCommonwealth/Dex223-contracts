@@ -777,6 +777,56 @@ describe('NonfungiblePositionManager', () => {
       ).to.be.reverted // With('Not approved')
     })
 
+    it('rejects a pool the manager holds positions in that is not this NFT\'s pool', async () => {
+      // A second pool for the same pair at a different fee, with a position minted through the manager,
+      // so the manager genuinely knows it. Collecting token 1 against it must still be refused.
+      await nft.createAndInitializePoolIfNecessary(
+        tokens[0].target.toString(),
+        tokens[1].target.toString(),
+        tokens[3].target.toString(),
+        tokens[4].target.toString(),
+        FeeAmount.LOW,
+        encodePriceSqrt(1n, 1n)
+      )
+      await nft.mint({
+        token0: tokens[0].target.toString(),
+        token1: tokens[1].target.toString(),
+        fee: FeeAmount.LOW,
+        tickLower: getMinTick(TICK_SPACINGS[FeeAmount.LOW]),
+        tickUpper: getMaxTick(TICK_SPACINGS[FeeAmount.LOW]),
+        recipient: wallet.address,
+        amount0Desired: 100,
+        amount1Desired: 100,
+        amount0Min: 0,
+        amount1Min: 0,
+        deadline: 1,
+      })
+      const otherPool = await factory.getPool(tokens[0].target.toString(), tokens[1].target.toString(), FeeAmount.LOW)
+      await expect(
+        nft.connect(other).collect({
+          pool: otherPool,
+          tokenId,
+          recipient: other.address,
+          amount0Max: MaxUint128,
+          amount1Max: MaxUint128,
+          tokensOutCode: 0n
+        })
+      ).to.be.revertedWith('Invalid pool')
+    })
+
+    it('rejects an address the manager never minted into', async () => {
+      await expect(
+        nft.connect(other).collect({
+          pool: wallet.address,
+          tokenId,
+          recipient: other.address,
+          amount0Max: MaxUint128,
+          amount1Max: MaxUint128,
+          tokensOutCode: 0n
+        })
+      ).to.be.revertedWith('Invalid pool')
+    })
+
     it('cannot be called with 0 for both amounts', async () => {
       const positions = await nft.positions(tokenId);
       const pool = await factory.getPool(positions.token0, positions.token1, positions.fee);

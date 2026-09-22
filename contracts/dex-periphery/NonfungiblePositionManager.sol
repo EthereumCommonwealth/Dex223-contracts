@@ -381,8 +381,11 @@ IERC223Recipient
 
         Position storage position = _positions[params.tokenId];
 
-        //PoolAddress.PoolKey memory poolKey = _poolIdToPoolKey[position.poolId];
-        //IDex223PoolActions pool = IDex223PoolActions(params.pool);
+        // `params.pool` must be the pool this NFT's position lives in. Every position minted through this
+        // manager shares one aggregate position per pool and tick range, owned by this contract, so an
+        // unchecked pool would let the caller settle this NFT's accounting against a different pool.
+        // `_poolIds` is written when a position is minted into a pool, so it binds the pool to the NFT.
+        require(position.poolId != 0 && _poolIds[params.pool] == position.poolId, 'Invalid pool');
 
         (uint128 tokensOwed0, uint128 tokensOwed1) = (position.tokensOwed0, position.tokensOwed1);
 
