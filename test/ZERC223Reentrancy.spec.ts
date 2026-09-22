@@ -57,7 +57,9 @@ describe('Dex223Pool ERC-223 reentrancy', () => {
 
     expect(await attacker.reentered(), 'refund callback must have fired').to.eq(true)
     expect(await attacker.reentrySucceeded(), 'reentrant swap() must NOT execute').to.eq(false)
-    expect(await attacker.reentryError()).to.eq('LOK')
+    // 'LOK' where revert strings are kept (MockTime pool); 'unknown' on the production build, which strips them.
+    expect(await attacker.reentryError()).to.be.oneOf(['LOK', 'unknown'])
+    expect(await attacker.lockHeldOnReentry(), 'pool-wide lock must be held at the callback').to.eq(true)
 
     // The deposit came back in full and the attacker gained no output token.
     expect(await token0_223.balanceOf(attacker.target)).to.eq(amount)
@@ -81,8 +83,11 @@ describe('Dex223Pool ERC-223 reentrancy', () => {
     await token0_223.transfer(attacker.target, amount)
 
     await attacker.attack(amount, true)
-    // 'LOK' proves the pool-wide lock - not merely a swap-specific guard - rejected the reentrant call.
-    expect(await attacker.reentryError()).to.eq('LOK')
+    // The pool-wide lock - not merely a swap-specific guard - must have rejected the reentrant call. The
+    // attacker observes slot0.unlocked == false inside the callback, which holds whether or not the build
+    // keeps revert strings ('LOK' vs 'unknown').
+    expect(await attacker.lockHeldOnReentry()).to.eq(true)
+    expect(await attacker.reentryError()).to.be.oneOf(['LOK', 'unknown'])
 
     // And the lock is properly released afterwards.
     expect((await pool.slot0()).unlocked).to.eq(true)

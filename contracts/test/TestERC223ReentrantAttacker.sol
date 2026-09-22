@@ -15,6 +15,11 @@ interface IAttackTarget {
     ) external returns (int256 amount0, int256 amount1);
 
     function increaseObservationCardinalityNext(uint16 observationCardinalityNext) external;
+
+    function slot0()
+        external
+        view
+        returns (uint160, int24, uint16, uint16, uint16, uint8, bool unlocked);
 }
 
 interface IERC223Transfer {
@@ -39,6 +44,11 @@ contract TestERC223ReentrantAttacker is IERC223Recipient {
     bool public reentered;
     bool public reentrySucceeded;
     string public reentryError;
+    /// @dev `!slot0.unlocked` observed at the instant of the refund callback. Proves the pool-wide lock was
+    ///      held when we re-entered, independent of any revert string: the production Dex223Pool is compiled
+    ///      with revertStrings stripped, so its `require(slot0.unlocked, 'LOK')` reverts with no reason data
+    ///      and `reentryError` reads 'unknown' rather than 'LOK'.
+    bool public lockHeldOnReentry;
 
     function configure(
         address _pool,
@@ -59,6 +69,7 @@ contract TestERC223ReentrantAttacker is IERC223Recipient {
         reentered = false;
         reentrySucceeded = false;
         reentryError = '';
+        lockHeldOnReentry = false;
 
         // A payload that is a no-op as far as the deposit is concerned.
         bytes memory payload =
@@ -71,6 +82,10 @@ contract TestERC223ReentrantAttacker is IERC223Recipient {
         // This is the pool refunding us. Try to spend the deposit that has just been paid back.
         if (reenterOnRefund && msg.sender == token && !reentered) {
             reentered = true;
+            // Record the lock state before touching it: `slot0()` is an unguarded view, so this read
+            // succeeds even while the pool is locked.
+            (, , , , , , bool unlocked) = IAttackTarget(pool).slot0();
+            lockHeldOnReentry = !unlocked;
             try
                 IAttackTarget(pool).swap(
                     address(this),
