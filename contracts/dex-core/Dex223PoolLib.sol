@@ -399,10 +399,17 @@ contract Dex223PoolLib {
     //   When the initial transfer fails and we fall through to the conversion path,
     //   the code computes `_amount - _balance` to determine how much to convert.
     //   If `_balance >= _amount` (e.g. the transfer failed for a reason other than
-    //   insufficient balance, such as a paused token), this subtraction underflows
-    //   in Solidity 0.7.6 (no built-in overflow checks), producing a huge value that
-    //   would drain the converter or revert with a confusing error.
-    //   Fix: require `_amount > _balance` before computing the deficit.
+    //   insufficient balance, such as a paused token or ERC-223 recipient rejection),
+    //   this subtraction underflows in Solidity 0.7.6. Fix: only convert when there
+    //   is a real deficit; otherwise revert with RECIPIENT_REJECTED / TRANSFER_FAILED.
+    //   After conversion, a second transfer failure is also classified the same way
+    //   (recipient rejection is independent of which standard the pool held).
+    //   RECIPIENT_REJECTED is inferred from "ERC-223 token, enough balance, transfer failed";
+    //   for the converter's ERC-223 wrappers that means the recipient's tokenReceived refused.
+    //
+    // @audit-fix V-LIB-11: Both delivery attempts check the token's return value, not only
+    //   whether the call reverted. Some ERC-20 tokens return `false` on failure instead of
+    //   reverting; treating that as delivered completed the swap while the recipient got nothing.
     //
     // @audit-fix V-LIB-04: Replaced safeIncreaseAllowance with safeApprove(0) + safeApprove(max).
     //   `safeIncreaseAllowance(token, spender, 2**256 - 1)` computes
@@ -422,8 +429,7 @@ contract Dex223PoolLib {
         if(_token == token0.erc223 || _token == token1.erc223) _is223 = true;
         // Transfer the tokens and hope that the transfer will succeed i.e. there were
         // enough tokens of the given standard to cover the cost of the transfer.
-        (bool success, bytes memory data) =
-                            _token.call(abi.encodeWithSelector(IERC20Minimal.transfer.selector, _recipient, _amount));
+        bool success = _tryTransfer(_token, _recipient, _amount);
 
         // Check whether the _token exists or is an empty address.
         uint256 _tokenCodeSize;
@@ -434,7 +440,13 @@ contract Dex223PoolLib {
         {
             // NOTE can not get balance if no contract deployed
             uint _balance = tokenNotExist ? 0 : IERC20Minimal(_token).balanceOf(address(this));
-            require(_amount > _balance, "LIB: NO_DEFICIT");
+            // Failure with sufficient balance is not a convertible deficit. Typical causes:
+            // ERC-223 recipient rejected via tokenReceived (incl. EIP-7702 wallets without the hook),
+            // or an ERC-20 that is paused / blacklists the recipient.
+            if (_amount <= _balance) {
+                if (_is223) revert("LIB: RECIPIENT_REJECTED");
+                revert("LIB: TRANSFER_FAILED");
+            }
             uint256 _deficit = _amount - _balance;
 
             if(_is223)
@@ -460,8 +472,22 @@ contract Dex223PoolLib {
                 //   token will revert with a confusing "ST" error.
                 TransferHelper.safeTransfer(_token223, address(converter), _deficit);
             }
-            TransferHelper.safeTransfer(_token, _recipient, _amount);
+            // Retry delivery after conversion. A failure here is the recipient/token
+            // rejecting, not a remaining deficit.
+            if (!_tryTransfer(_token, _recipient, _amount)) {
+                if (_is223) revert("LIB: RECIPIENT_REJECTED");
+                revert("LIB: TRANSFER_FAILED");
+            }
         }
+    }
+
+    /// @dev `transfer` that reports failure instead of reverting, with the same success rule as
+    ///      TransferHelper.safeTransfer: the call must not revert and, if it returns data, must return true.
+    function _tryTransfer(address _token, address _to, uint256 _amount) private returns (bool)
+    {
+        (bool success, bytes memory data) =
+            _token.call(abi.encodeWithSelector(IERC20Minimal.transfer.selector, _to, _amount));
+        return success && (data.length == 0 || abi.decode(data, (bool)));
     }
 
     // @audit-note V-LIB-05a: Reentrancy for collect is guarded by Pool's `lock` modifier.
