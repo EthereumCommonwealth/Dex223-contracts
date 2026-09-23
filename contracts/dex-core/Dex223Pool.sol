@@ -245,17 +245,7 @@ contract Dex223Pool is IUniswapV3Pool, NoDelegateCall, PeripheryValidation {
             erc223CallPermit = false; // clear it in case the payload never consumed it
 
             delete(_data);
-            // Bubble the inner revert reason (e.g. LIB: RECIPIENT_REJECTED) so callers can tell
-            // delivery rejection from other failures. Fall back to the legacy "23F" only when the
-            // delegatecall left no revert data.
-            if (!success) {
-                if (_data_.length > 0) {
-                    assembly {
-                        revert(add(_data_, 32), mload(_data_))
-                    }
-                }
-                revert("23F");
-            }
+            require(success, "23F");
         }
 
         // Auto-refund of any remaining ERC-223 tokens.

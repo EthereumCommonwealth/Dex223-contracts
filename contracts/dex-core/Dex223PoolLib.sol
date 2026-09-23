@@ -404,6 +404,12 @@ contract Dex223PoolLib {
     //   is a real deficit; otherwise revert with RECIPIENT_REJECTED / TRANSFER_FAILED.
     //   After conversion, a second transfer failure is also classified the same way
     //   (recipient rejection is independent of which standard the pool held).
+    //   RECIPIENT_REJECTED is inferred from "ERC-223 token, enough balance, transfer failed";
+    //   for the converter's ERC-223 wrappers that means the recipient's tokenReceived refused.
+    //
+    // @audit-fix V-LIB-11: Both delivery attempts check the token's return value, not only
+    //   whether the call reverted. Some ERC-20 tokens return `false` on failure instead of
+    //   reverting; treating that as delivered completed the swap while the recipient got nothing.
     //
     // @audit-fix V-LIB-04: Replaced safeIncreaseAllowance with safeApprove(0) + safeApprove(max).
     //   `safeIncreaseAllowance(token, spender, 2**256 - 1)` computes
@@ -423,8 +429,7 @@ contract Dex223PoolLib {
         if(_token == token0.erc223 || _token == token1.erc223) _is223 = true;
         // Transfer the tokens and hope that the transfer will succeed i.e. there were
         // enough tokens of the given standard to cover the cost of the transfer.
-        (bool success, ) =
-                            _token.call(abi.encodeWithSelector(IERC20Minimal.transfer.selector, _recipient, _amount));
+        bool success = _tryTransfer(_token, _recipient, _amount);
 
         // Check whether the _token exists or is an empty address.
         uint256 _tokenCodeSize;
@@ -469,13 +474,20 @@ contract Dex223PoolLib {
             }
             // Retry delivery after conversion. A failure here is the recipient/token
             // rejecting, not a remaining deficit.
-            (success, ) =
-                _token.call(abi.encodeWithSelector(IERC20Minimal.transfer.selector, _recipient, _amount));
-            if (!success) {
+            if (!_tryTransfer(_token, _recipient, _amount)) {
                 if (_is223) revert("LIB: RECIPIENT_REJECTED");
                 revert("LIB: TRANSFER_FAILED");
             }
         }
+    }
+
+    /// @dev `transfer` that reports failure instead of reverting, with the same success rule as
+    ///      TransferHelper.safeTransfer: the call must not revert and, if it returns data, must return true.
+    function _tryTransfer(address _token, address _to, uint256 _amount) private returns (bool)
+    {
+        (bool success, bytes memory data) =
+            _token.call(abi.encodeWithSelector(IERC20Minimal.transfer.selector, _to, _amount));
+        return success && (data.length == 0 || abi.decode(data, (bool)));
     }
 
     // @audit-note V-LIB-05a: Reentrancy for collect is guarded by Pool's `lock` modifier.

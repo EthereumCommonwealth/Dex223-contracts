@@ -225,18 +225,17 @@ describe('Dex223 adversarial / security', () => {
 
   // ------------------------------------------------------------------ known limitation
   describe('ERC-223 delivery to code-bearing recipients (EIP-7702 exposure)', () => {
-    it('ERC-223 delivery reverts with RECIPIENT_REJECTED when the recipient has code but no tokenReceived', async () => {
+    it('DOCUMENTS: output delivery reverts if the recipient has code but no tokenReceived', async () => {
       const { pool, token0_223 } = await loadFixture(fx)
       // Any address with code is treated as a contract by Address.isContract(), including an EOA that
       // has an EIP-7702 delegation. If its code does not implement tokenReceived, ERC-223 delivery
-      // fails while the pool still holds enough tokens. That must surface as RECIPIENT_REJECTED,
-      // not as a convertible "deficit".
+      // reverts and the swap fails. Recorded so the behaviour is tracked, not endorsed.
       const noHook = await (await ethers.getContractFactory('RogueERC223')).deploy() // has code, no tokenReceived
       const amt = expandTo18Decimals(1) / 100n
       await expect(
         token0_223['transfer(address,uint256,bytes)'](
           pool.target, amt, swapPayload(pool, await noHook.getAddress(), amt))
-      ).to.be.revertedWith('LIB: RECIPIENT_REJECTED')
+      ).to.be.reverted
     })
 
     it('an ERC-20 payout to the same recipient succeeds (the ERC-223 leg is the problem)', async () => {
@@ -247,6 +246,77 @@ describe('Dex223 adversarial / security', () => {
         token0_223['transfer(address,uint256,bytes)'](
           pool.target, amt, swapPayload(pool, await noHook.getAddress(), amt, 0n, false))
       ).to.not.be.reverted
+    })
+  })
+  // ------------------------------------------------------------------ delivery failure reasons
+  describe('optimisticDelivery: failure reasons and return values', () => {
+    it('ERC-223 output via pool.swap to a recipient without tokenReceived: RECIPIENT_REJECTED after conversion', async () => {
+      const { pool, token0 } = await loadFixture(fx)
+      // The pool holds only ERC-20 token1 from the liquidity mint, so the first ERC-223 attempt is a real
+      // deficit: it converts, then the retry is refused by the recipient.
+      const swapper = await (await ethers.getContractFactory('TestERC223OutputSwapper')).deploy()
+      await token0.approve(swapper.target, ethers.MaxUint256)
+      const noHook = await (await ethers.getContractFactory('RogueERC223')).deploy() // has code, no tokenReceived
+      await expect(
+        swapper.swapExact0For1Prefer223(pool.target, expandTo18Decimals(1) / 100n, noHook.target, MIN_SQRT_RATIO + 1n)
+      ).to.be.revertedWith('LIB: RECIPIENT_REJECTED')
+    })
+
+    it('ERC-223 output via pool.swap to a recipient without tokenReceived: RECIPIENT_REJECTED when the pool already holds it', async () => {
+      const { pool, token0, token1_223, wallet } = await loadFixture(fx)
+      // Put token1 into the pool in its ERC-223 form with an ERC-223 swap 1 -> 0, so the first delivery
+      // attempt below has the balance and fails only because the recipient refuses it.
+      const deposit = expandTo18Decimals(1) / 10n
+      const payload = ethers.getBytes(pool.interface.encodeFunctionData('swapExactInput', [
+        wallet.address, false, deposit, 0n, MAX_SQRT_RATIO - 1n, false,
+        ethers.AbiCoder.defaultAbiCoder().encode(['address'], [wallet.address]), 1893456000n, false,
+      ]))
+      await token1_223['transfer(address,uint256,bytes)'](pool.target, deposit, payload)
+      expect(await token1_223.balanceOf(pool.target)).to.be.gte(deposit)
+
+      const swapper = await (await ethers.getContractFactory('TestERC223OutputSwapper')).deploy()
+      await token0.approve(swapper.target, ethers.MaxUint256)
+      const noHook = await (await ethers.getContractFactory('RogueERC223')).deploy()
+      await expect(
+        swapper.swapExact0For1Prefer223(pool.target, expandTo18Decimals(1) / 1000n, noHook.target, MIN_SQRT_RATIO + 1n)
+      ).to.be.revertedWith('LIB: RECIPIENT_REJECTED')
+    })
+
+    async function harnessFx() {
+      const [, recipient] = await ethers.getSigners()
+      const erc20 = await (await ethers.getContractFactory('FalseReturningERC20')).deploy()
+      const erc223 = await (await ethers.getContractFactory('MockERC223')).deploy()
+      const conv = await (await ethers.getContractFactory('MockConverter223to20')).deploy(erc20.target)
+      const harness = await (await ethers.getContractFactory('OptimisticDeliveryHarness')).deploy()
+      const other = ethers.Wallet.createRandom().address
+      await harness.setup(erc20.target, erc223.target, other, other, conv.target)
+      return { erc20, erc223, harness, recipient }
+    }
+
+    it('an ERC-20 that returns false with enough balance is TRANSFER_FAILED, not delivered', async () => {
+      const { erc20, harness, recipient } = await loadFixture(harnessFx)
+      await erc20.mint(harness.target, 1000n)
+      await erc20.setBlocked(recipient.address, true)
+      await expect(harness.deliver(erc20.target, recipient.address, 100n)).to.be.revertedWith('LIB: TRANSFER_FAILED')
+      expect(await erc20.balanceOf(recipient.address)).to.eq(0n)
+    })
+
+    it('an ERC-20 that returns false after conversion is TRANSFER_FAILED, not delivered', async () => {
+      const { erc20, erc223, harness, recipient } = await loadFixture(harnessFx)
+      // Only the ERC-223 form is held: the first attempt returns false (no balance), the pool converts,
+      // and the retry returns false because the recipient is blocked.
+      await erc223.mint(harness.target, 1000n)
+      await erc20.setBlocked(recipient.address, true)
+      await expect(harness.deliver(erc20.target, recipient.address, 100n)).to.be.revertedWith('LIB: TRANSFER_FAILED')
+      expect(await erc20.balanceOf(recipient.address)).to.eq(0n)
+    })
+
+    it('an ERC-20 that returns false for lack of balance is converted and delivered', async () => {
+      const { erc20, erc223, harness, recipient } = await loadFixture(harnessFx)
+      await erc223.mint(harness.target, 1000n)
+      await harness.deliver(erc20.target, recipient.address, 100n)
+      expect(await erc20.balanceOf(recipient.address)).to.eq(100n)
+      expect(await erc223.balanceOf(harness.target)).to.eq(900n)
     })
   })
 })

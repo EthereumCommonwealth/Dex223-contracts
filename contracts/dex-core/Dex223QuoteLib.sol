@@ -376,7 +376,7 @@ contract Dex223QuoteLib {
         if(_token == token0.erc223 || _token == token1.erc223) _is223 = true;
         // Transfer the tokens and hope that the transfer will succeed i.e. there were
         // enough tokens of the given standard to cover the cost of the transfer.
-        (bool success, ) =
+        (bool success, bytes memory data) =
                             _token.call(abi.encodeWithSelector(IERC20Minimal.transfer.selector, _recipient, _amount));
 
         // Check whether the _token exists or is an empty address.
@@ -388,13 +388,7 @@ contract Dex223QuoteLib {
         {
             // NOTE can not get balance if no contract deployed
             uint _balance = tokenNotExist ? 0 : IERC20Minimal(_token).balanceOf(address(this));
-            // Failure with sufficient balance is not a convertible deficit. Typical causes:
-            // ERC-223 recipient rejected via tokenReceived (incl. EIP-7702 wallets without the hook),
-            // or an ERC-20 that is paused / blacklists the recipient.
-            if (_amount <= _balance) {
-                if (_is223) revert("QLIB: RECIPIENT_REJECTED");
-                revert("QLIB: TRANSFER_FAILED");
-            }
+            require(_amount > _balance, "QLIB: NO_DEFICIT");
             uint256 _deficit = _amount - _balance;
 
             if(_is223)
@@ -415,14 +409,7 @@ contract Dex223QuoteLib {
                 address _token223 = (_token == token0.erc20) ? token0.erc223 : token1.erc223;
                 TransferHelper.safeTransfer(_token223, address(converter), _deficit);
             }
-            // Retry delivery after conversion. A failure here is the recipient/token
-            // rejecting, not a remaining deficit.
-            (success, ) =
-                _token.call(abi.encodeWithSelector(IERC20Minimal.transfer.selector, _recipient, _amount));
-            if (!success) {
-                if (_is223) revert("QLIB: RECIPIENT_REJECTED");
-                revert("QLIB: TRANSFER_FAILED");
-            }
+            TransferHelper.safeTransfer(_token, _recipient, _amount);
         }
     }
 
