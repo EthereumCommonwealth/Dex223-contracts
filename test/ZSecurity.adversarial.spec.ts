@@ -225,17 +225,18 @@ describe('Dex223 adversarial / security', () => {
 
   // ------------------------------------------------------------------ known limitation
   describe('ERC-223 delivery to code-bearing recipients (EIP-7702 exposure)', () => {
-    it('DOCUMENTS: output delivery reverts if the recipient has code but no tokenReceived', async () => {
+    it('ERC-223 delivery reverts with RECIPIENT_REJECTED when the recipient has code but no tokenReceived', async () => {
       const { pool, token0_223 } = await loadFixture(fx)
       // Any address with code is treated as a contract by Address.isContract(), including an EOA that
       // has an EIP-7702 delegation. If its code does not implement tokenReceived, ERC-223 delivery
-      // reverts and the swap fails. Recorded so the behaviour is tracked, not endorsed.
+      // fails while the pool still holds enough tokens. That must surface as RECIPIENT_REJECTED,
+      // not as a convertible "deficit".
       const noHook = await (await ethers.getContractFactory('RogueERC223')).deploy() // has code, no tokenReceived
       const amt = expandTo18Decimals(1) / 100n
       await expect(
         token0_223['transfer(address,uint256,bytes)'](
           pool.target, amt, swapPayload(pool, await noHook.getAddress(), amt))
-      ).to.be.reverted
+      ).to.be.revertedWith('LIB: RECIPIENT_REJECTED')
     })
 
     it('an ERC-20 payout to the same recipient succeeds (the ERC-223 leg is the problem)', async () => {
