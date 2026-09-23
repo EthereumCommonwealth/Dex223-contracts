@@ -58,5 +58,12 @@
   "done:coreAutolisting": "0x42189844d20b647a91cdfae7b7f32226671c15276c6206683dc910266c99df0c",
   "block:coreAutolisting": "26032219",
   "done:coreAutolisting.setPaymentPrice(USDT, 40 USDT)": "0xead1f9b7b1aefb2339fb90703a16c294c02058bbf29d9fbe3b98938daa3dd708",
-  "block:coreAutolisting.setPaymentPrice(USDT, 40 USDT)": "26032221"
+  "block:coreAutolisting.setPaymentPrice(USDT, 40 USDT)": "26032221",
+  "done:poolLibV2": "0x71454f96e8c534dbed44a5cbfdec121a040b5cc0b9e2a9c18722cabe02fc2e88",
+  "block:poolLibV2": "26037649",
+  "poolLibV2": "0x7219ebDfFD7EF54d3d1F1B7C174ce470f3825001",
+  "fqn:poolLibV2": "contracts/dex-core/Dex223PoolLib.sol:Dex223PoolLib",
+  "args:poolLibV2": "[]",
+  "done:factory.set(poolLibV2)": "0xbae1ab28baba375bcd51e7b88f09e62770d835b9bee8f5f21d70a3935231fd99",
+  "block:factory.set(poolLibV2)": "26037651"
 }

@@ -2,13 +2,15 @@
 
 ## Ethereum mainnet deployment
 
-Deployed 2026-09-22 at commit 44927a3 from `0x9467a00F2DFBF392254133ff36c291c618dF6f54` (current factory owner). Transaction record: `deployments/mainnet.json`. All contracts are verified on Etherscan. Pool library, quote library, token validator and factory have the same address and bytecode on Sepolia.
+Deployed 2026-09-22 at commit 44927a3 from `0x9467a00F2DFBF392254133ff36c291c618dF6f54` (current factory owner). Transaction record: `deployments/mainnet.json`. All contracts are verified on Etherscan. Quote library, token validator and factory have the same address and bytecode on Sepolia.
+
+On 2026-09-23, before any pool existed, the factory's pool library was replaced (#60: delivery failures are named, and token return values are checked) with `0x7219…5001`, so every pool uses it. The original library [0x9321361bdDc23a16E90ae18081c7E758e6481Eb6](https://etherscan.io/address/0x9321361bdDc23a16E90ae18081c7E758e6481Eb6#code), which matches Sepolia, is no longer used by the factory.
 
 | Name                  | Address |
 | --------------------- | ------- |
 | WETH9                 | [0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2](https://etherscan.io/address/0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2#code) |
 | TOKEN_CONVERTER       | [0xe7E969012557f25bECddB717A3aa2f4789ba9f9a](https://etherscan.io/address/0xe7E969012557f25bECddB717A3aa2f4789ba9f9a#code) |
-| POOL_LIBRARY          | [0x9321361bdDc23a16E90ae18081c7E758e6481Eb6](https://etherscan.io/address/0x9321361bdDc23a16E90ae18081c7E758e6481Eb6#code) |
+| POOL_LIBRARY          | [0x7219ebDfFD7EF54d3d1F1B7C174ce470f3825001](https://etherscan.io/address/0x7219ebDfFD7EF54d3d1F1B7C174ce470f3825001#code) |
 | QUOTE_LIBRARY         | [0x079784c215F9F2f2b8118A7a0bD916A0ddbcB92d](https://etherscan.io/address/0x079784c215F9F2f2b8118A7a0bD916A0ddbcB92d#code) |
 | TOKEN_VALIDATOR       | [0x269Dac0FB22e207468e3D91a0d39088Ae9CaD7e6](https://etherscan.io/address/0x269Dac0FB22e207468e3D91a0d39088Ae9CaD7e6#code) |
 | FACTORY               | [0xeA0A163e0196Bf1500B1B41d3ADdA0476dC137eb](https://etherscan.io/address/0xeA0A163e0196Bf1500B1B41d3ADdA0476dC137eb#code) |
