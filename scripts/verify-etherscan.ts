@@ -24,18 +24,34 @@ const STATE_FILE = process.env.STATE_FILE || path.join(process.cwd(), 'deploymen
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 const fail = (msg: string): never => { throw new Error(msg) }
 
+type ApiResponse = { status: string; message: string; result: any }
+
+// Etherscan allows 3 calls per second per key. A rate-limited reply looks like any other failure
+// (status "0"), so without spacing a verified contract can read as unverified and get resubmitted.
+const MIN_GAP_MS = 400
+let lastCall = 0
+async function throttled(call: () => Promise<Response>): Promise<ApiResponse> {
+  for (let attempt = 0; ; attempt++) {
+    const wait = lastCall + MIN_GAP_MS - Date.now()
+    if (wait > 0) await sleep(wait)
+    lastCall = Date.now()
+    const json = (await (await call()).json()) as ApiResponse
+    if (!/rate limit/i.test(String(json.result)) || attempt >= 5) return json
+    await sleep(1000 * (attempt + 1))
+  }
+}
+
 async function get(chainId: bigint, params: Record<string, string>) {
   const q = new URLSearchParams({ chainid: chainId.toString(), ...params })
-  return (await fetch(`${API}?${q}`)).json() as Promise<{ status: string; message: string; result: any }>
+  return throttled(() => fetch(`${API}?${q}`))
 }
 
 async function post(chainId: bigint, params: Record<string, string>) {
-  const res = await fetch(`${API}?chainid=${chainId}`, {
+  return throttled(() => fetch(`${API}?chainid=${chainId}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams(params).toString(),
-  })
-  return res.json() as Promise<{ status: string; message: string; result: string }>
+  }))
 }
 
 async function isVerified(chainId: bigint, apikey: string, address: string) {
