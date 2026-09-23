@@ -215,6 +215,15 @@ contract Dex223Pool is IUniswapV3Pool, NoDelegateCall, PeripheryValidation {
         converter     = ITokenStandardConverter(_converter);
     }
 
+    /// @dev Re-throws a failed pool_lib delegatecall with the library's own revert data, so callers see the
+    ///      library's reason (LIB: RECIPIENT_REJECTED, LS, TLU, ...) instead of an empty revert. With no data
+    ///      it reverts without a reason, as the bare `require(success)` it replaces did.
+    function _bubbleRevert(bytes memory _ret) private pure {
+        assembly {
+            revert(add(_ret, 32), mload(_ret))
+        }
+    }
+
 /**
  * @dev Standard ERC223 function that will handle incoming token transfers.
  *
@@ -245,7 +254,11 @@ contract Dex223Pool is IUniswapV3Pool, NoDelegateCall, PeripheryValidation {
             erc223CallPermit = false; // clear it in case the payload never consumed it
 
             delete(_data);
-            require(success, "23F");
+            // Surface the dispatched call's own reason (e.g. LIB: RECIPIENT_REJECTED); "23F" only when it gave none.
+            if (!success) {
+                if (_data_.length > 0) _bubbleRevert(_data_);
+                revert("23F");
+            }
         }
 
         // Auto-refund of any remaining ERC-223 tokens.
@@ -449,7 +462,7 @@ contract Dex223Pool is IUniswapV3Pool, NoDelegateCall, PeripheryValidation {
         bytes calldata data
     ) external override lock /*adjustableSender*/ returns (uint256 amount0, uint256 amount1) {
         (bool success, bytes memory retdata) = pool_lib.delegatecall(abi.encodeWithSignature("mint(address,int24,int24,uint128,bytes)", recipient, tickLower, tickUpper, amount, data));
-        require(success);
+        if (!success) _bubbleRevert(retdata);
         return abi.decode(retdata, (uint256, uint256));
     }
 
@@ -464,7 +477,7 @@ contract Dex223Pool is IUniswapV3Pool, NoDelegateCall, PeripheryValidation {
         bool token1_223
     ) external override lock  returns (uint128 amount0, uint128 amount1) {
         (bool success, bytes memory retdata) = pool_lib.delegatecall(abi.encodeWithSignature("collect(address,int24,int24,uint128,uint128,bool,bool)", recipient, tickLower, tickUpper, amount0Requested, amount1Requested, token0_223, token1_223));
-        require(success);
+        if (!success) _bubbleRevert(retdata);
         return abi.decode(retdata, (uint128, uint128));
     }
 
@@ -476,7 +489,7 @@ contract Dex223Pool is IUniswapV3Pool, NoDelegateCall, PeripheryValidation {
         uint128 amount
     ) external override lock  returns (uint256 amount0, uint256 amount1) {
         (bool success, bytes memory retdata) = pool_lib.delegatecall(abi.encodeWithSignature("burn(int24,int24,uint128)", tickLower, tickUpper, amount));
-        require(success);
+        if (!success) _bubbleRevert(retdata);
         return abi.decode(retdata, (uint256, uint256));
     }
 
@@ -595,7 +608,7 @@ contract Dex223Pool is IUniswapV3Pool, NoDelegateCall, PeripheryValidation {
         int256 amount0;
         int256 amount1;
 
-        require(success);
+        if (!success) _bubbleRevert(retdata);
         ( amount0,  amount1) = abi.decode(retdata, (int256, int256));
 
         amountOut = uint256(-(zeroForOne ? amount1 : amount0));
@@ -675,7 +688,7 @@ contract Dex223Pool is IUniswapV3Pool, NoDelegateCall, PeripheryValidation {
         bool token1_223
     ) external override lock onlyFactoryOwner  returns (uint128 amount0, uint128 amount1) {
         (bool success, bytes memory retdata) = pool_lib.delegatecall(abi.encodeWithSignature("collectProtocol(address,uint128,uint128,bool,bool)", recipient, amount0Requested, amount1Requested, token0_223, token1_223));
-        require(success);
+        if (!success) _bubbleRevert(retdata);
         return abi.decode(retdata, (uint128, uint128));
     }
 
