@@ -1,0 +1,12 @@
+{
+  "note": "RevenueV1 at revenue. Legacy Revenue_old at legacyRevenueOld is deprecated for Phase 1 UI.",
+  "legacyRevenueOld": "0x4e38fB6f9243d2aC91C490230375FeDE1E0aD7F2",
+  "legacyStakingTokenErc20": "0x1DEf777468F76ed1E74fC87bD32334d3Ccb520d0",
+  "legacyStakingTokenErc223": "0x0a67Cc4D3Ac29a133a597b5Bef3fe9A6028ACad2",
+  "factoryQuoteswap": "0x5D63230470AB553195dfaf794de3e94C69d150f9",
+  "revenue": "0xB5581C5500B3b68c5F3855518e7646304e84f9D2",
+  "revenueStakingTokenErc20": "0x1DEf777468F76ed1E74fC87bD32334d3Ccb520d0",
+  "revenueStakingTokenErc223": "0x0a67Cc4D3Ac29a133a597b5Bef3fe9A6028ACad2",
+  "revenueFactory": "0x5D63230470AB553195dfaf794de3e94C69d150f9",
+  "revenueDeployer": "0x9467a00F2DFBF392254133ff36c291c618dF6f54"
+}
