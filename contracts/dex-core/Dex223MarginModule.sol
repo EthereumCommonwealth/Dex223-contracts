@@ -973,7 +973,12 @@ contract MarginModule is Multicall, IOrderParams
         Position storage position = positions[positionId];
         (uint256 requiredAmount, uint256 totalValueInBaseAsset) = _positionValue(positionId);
 
-        if(totalValueInBaseAsset > requiredAmount)
+        // insolvensy_expected_time is the moment interest alone would make the position
+        // liquidatable at today's prices. 0 means "never": an interest-free loan (or an empty one)
+        // only becomes liquidatable through price moves. Without this branch the division below
+        // reverted for every zero-interest position, and so did any caller of this view, such as
+        // the liquidation bot polling it.
+        if(totalValueInBaseAsset > requiredAmount && position.interest > 0 && position.initialBalance > 0)
         {
             uint256 _insolvency_time_delta = ((totalValueInBaseAsset - requiredAmount) * 10000 * 30 days) / (position.interest * position.initialBalance);
             insolvensy_expected_time = _insolvency_time_delta + block.timestamp;

@@ -512,6 +512,46 @@ describe('MarginModule', () => {
       expect((await mm.positions(0)).open).to.eq(false)
       expect((await mm.order_status(0)).positions).to.eq(0n)
     })
+
+    it('subjectToLiquidationExtended works for a zero-interest position (no division by zero)', async () => {
+      const c = await loadFixture(fx)
+      await c.seedPool()
+      await c.mm.createOrder({ ...c.orderParams, interestRate: 0n })
+      await c.mm.setOrderStatus(0, true)
+      await c.base.approve(c.mm.target, ethers.MaxUint256)
+      await c.collat.approve(c.mm.target, ethers.MaxUint256)
+      await c.mm.orderDepositToken(0, expandTo18Decimals(100))
+      await c.mm.takeLoan(0, expandTo18Decimals(1), 0, expandTo18Decimals(1))
+
+      // Used to revert: (value - debt) * ... / (interest * initialBalance) with interest == 0.
+      const [liquidatable, , , liquidated, insolvencyAt] = await c.mm.subjectToLiquidationExtended(0)
+      expect(liquidatable).to.eq(false)
+      expect(liquidated).to.eq(false)
+      expect(insolvencyAt, '0 means interest alone never makes it insolvent').to.eq(0n)
+    })
+
+    it('subjectToLiquidationExtended projects the insolvency time for an interest-bearing position', async () => {
+      const c = await loadFixture(fx)
+      await c.seedPool()
+      await c.mm.createOrder({ ...c.orderParams, interestRate: 5000n, duration: BigInt(365 * DAY) })
+      await c.mm.setOrderStatus(0, true)
+      await c.base.approve(c.mm.target, ethers.MaxUint256)
+      await c.collat.approve(c.mm.target, ethers.MaxUint256)
+      await c.mm.orderDepositToken(0, expandTo18Decimals(100))
+      await c.mm.takeLoan(0, expandTo18Decimals(1), 0, expandTo18Decimals(1))
+
+      // Holds ~2 of value against a debt of 1 growing 0.5 per 30 days: insolvent in ~60 days.
+      const [isLiquidatable, , , , insolvencyAt] = await c.mm.subjectToLiquidationExtended(0)
+      expect(isLiquidatable).to.eq(false)
+      const now = BigInt(await time.latest())
+      expect(insolvencyAt).to.be.closeTo(now + BigInt(60 * DAY), BigInt(DAY))
+
+      // Once underwater there is nothing left to project.
+      await time.increase(90 * DAY)
+      const [nowLiquidatable, , , , later] = await c.mm.subjectToLiquidationExtended(0)
+      expect(nowLiquidatable).to.eq(true)
+      expect(later).to.eq(0n)
+    })
   })
 
   describe('positionClose', () => {
