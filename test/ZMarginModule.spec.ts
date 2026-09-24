@@ -2,6 +2,7 @@ import { ethers } from 'hardhat'
 import { expect } from 'chai'
 import { loadFixture, time } from '@nomicfoundation/hardhat-network-helpers'
 import { completeFixture } from './shared/completeFixture'
+import { useRealTimePoolLib } from './shared/realTimePoolLib'
 import { encodePriceSqrt, expandTo18Decimals, FeeAmount, getMaxTick, getMinTick, TICK_SPACINGS } from './shared/utilities'
 
 /**
@@ -14,8 +15,10 @@ describe('MarginModule', () => {
   async function fx() {
     const { factory, router, tokens, converter, weth9, nft } = await loadFixture(completeFixture)
     const [wallet, other] = await ethers.getSigners()
+    await useRealTimePoolLib(factory)
 
-    const oracle = await (await ethers.getContractFactory('contracts/dex-core/Dex223Oracle.sol:Oracle')).deploy(factory.target)
+    const TWAP_WINDOW = 1800
+    const oracle = await (await ethers.getContractFactory('contracts/dex-core/Dex223Oracle.sol:Oracle')).deploy(factory.target, TWAP_WINDOW)
     const mm = await (await ethers.getContractFactory('MarginModule')).deploy(factory.target, router.target)
 
     const base = tokens[0]      // baseAsset (loan currency)
@@ -63,10 +66,15 @@ describe('MarginModule', () => {
         amount0Min: 0, amount1Min: 0,
         recipient: wallet.address, deadline: BigInt(now + 3600), fee: FeeAmount.MEDIUM,
       })
-      return await factory.getPool(t0.target.toString(), t1.target.toString(), FeeAmount.MEDIUM)
+      const pool = await factory.getPool(t0.target.toString(), t1.target.toString(), FeeAmount.MEDIUM)
+      // The oracle prices over a TWAP window, so the pool needs an observation ring that reaches
+      // back that far: grow the ring (anyone can) and let the window elapse once.
+      await (await ethers.getContractAt('contracts/interfaces/IUniswapV3Pool.sol:IUniswapV3Pool', pool)).increaseObservationCardinalityNext(16)
+      await time.increase(TWAP_WINDOW)
+      return pool
     }
 
-    return { mm, oracle, factory, router, converter, weth9, nft, base, collat, wallet, other, orderParams, whitelistId, now, seedPool }
+    return { mm, oracle, factory, router, converter, weth9, nft, base, collat, wallet, other, orderParams, whitelistId, now, seedPool, TWAP_WINDOW }
   }
 
   describe('token lists', () => {

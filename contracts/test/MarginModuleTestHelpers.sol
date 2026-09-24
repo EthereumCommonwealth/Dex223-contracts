@@ -236,7 +236,8 @@ contract UtilityModuleCfg is IOrderParams, IMintParams, IExactInputSingleParams
         token1 = HE_token;
         liq_token = HE_token;
 
-        oracle = address(new Oracle(factory));
+        // The price oracle is not deployed here: its TWAP code would push this contract over EIP-170.
+        // Deploy Dex223Oracle separately and pass it through set() or step0_SetPriceOracle().
     }
 
     function set(address _factory, address _mm, address _oracle, address _converter, address _nfpm, address _router, address _tkn0, address _tkn1, address _liq) public
@@ -353,9 +354,9 @@ contract UtilityModuleCfg is IOrderParams, IMintParams, IExactInputSingleParams
         oracle = address(new PureOracle(_factory));
     }
 
-    function step0_MakePriceOracle(address _factory) public 
+    function step0_SetPriceOracle(address _oracle) public 
     {
-        oracle = address(new Oracle(_factory));
+        oracle = _oracle;
     }
 
     event Step1(bytes32);
@@ -909,7 +910,8 @@ contract UtilityModuleCfg2 is IOrderParams, IMintParams, IExactInputSingleParams
         test_group[0].token0 = XE_token;
         test_group[0].token1 = HE_token;
 
-        oracle = address(new Oracle(factory));
+        // The price oracle is not deployed here: its TWAP code would push this contract over EIP-170.
+        // Deploy Dex223Oracle separately and pass it through set() or step0_SetPriceOracle().
     }
 
     function set(address _factory, address _mm, address _oracle, address _converter, address _nfpm, address _router, address _tkn0, address _tkn1, address _liq) public
@@ -1613,7 +1615,8 @@ contract UtilityBulkPositionCreator is IOrderParams, IMintParams, IExactInputSin
         liq_token = address(new ERC20Token("Liquidation Token", "LIQ2", 18, 7511100 * 10**18));
         IERC20(liq_token).mint(msg.sender, 10000 * 10**18);
 
-        oracle = address(new Oracle(factory));
+        // The price oracle is not deployed here: its TWAP code would push this contract over EIP-170.
+        // Deploy Dex223Oracle separately and pass it through set() or step0_SetPriceOracle().
     }
 
     function set(address _factory, address _mm, address _oracle, address _converter, address _nfpm, address _router, address _tkn0, address _tkn1, address _liq) public

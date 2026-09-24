@@ -2,6 +2,7 @@
 pragma solidity ^0.7.6;
 
 import "./interfaces/IUniswapV3Pool.sol";
+import "../libraries/TickMath.sol";
 
 interface IUniswapV3Factory {
     function getPool(address tokenA, address tokenB, uint24 fee) external view returns (address pool);
@@ -38,10 +39,26 @@ contract Oracle {
     uint24 private constant FEE_TIER_2 = 10000;
     uint256 private constant NUM_FEE_TIERS = 3;
 
-    constructor (address _factory) {
+    // Length of the time-weighted average window, in seconds, that getAmountOut prices over.
+    //
+    // The margin module uses this oracle for the leverage check at takeLoan, the liquidation
+    // trigger and the close check. A price read from slot0 (the spot price) moves within a single
+    // transaction, so a borrower could inflate their collateral's value with a swap, borrow against
+    // it and swap back, and a liquidator could crash a healthy position below the line for one block.
+    // A TWAP over `twapWindow` costs an attacker sustained capital for the whole window instead.
+    //
+    // Pools must be able to answer for the full window: their observation ring must reach back at
+    // least `twapWindow` seconds (see poolCanServeWindow). A fresh pool has a ring of one slot, so
+    // call increaseObservationCardinalityNext() on it and let `twapWindow` pass before orders can be
+    // priced against it; anyone may grow the ring.
+    uint32 public immutable twapWindow;
+
+    constructor (address _factory, uint32 _twapWindow) {
         require(_factory != address(0), "Oracle: zero factory");
+        require(_twapWindow > 0, "Oracle: zero window");
         factory = IUniswapV3Factory(_factory);
         pricePrecisionDecimals = 5;
+        twapWindow = _twapWindow;
     }
 
     // @audit-info: Helper to return fee tier by index (replaces mutable storage array).
@@ -57,6 +74,8 @@ contract Oracle {
         return _feeTier(idx);
     }
 
+    /// @notice Current spot price from slot0. Informational only: it moves within one transaction,
+    ///         so nothing that values collateral (getAmountOut) reads it. See getTwapSqrtPriceX96.
     function getSqrtPriceX96(address poolAddress) public view returns(uint160 sqrtPriceX96) {
         // @audit-fix V3: Validate pool address is non-zero to prevent silent zero-return
         //   from a nonexistent contract (Solidity 0.7 low-level calls to EOAs return zeros).
@@ -75,6 +94,45 @@ contract Oracle {
         IUniswapV3Pool pool = IUniswapV3Pool(poolAddress);
         (, tick,,,,,) = pool.slot0();
         return tick;
+    }
+
+    /// @notice Arithmetic mean tick of `poolAddress` over the last `twapWindow` seconds.
+    /// @dev Reverts with the pool's "OLD" if the observation ring does not reach back that far;
+    ///      findPoolWithHighestLiquidity filters such pools out first.
+    function getTwapTick(address poolAddress) public view returns (int24 tick) {
+        require(poolAddress != address(0), "Oracle: zero pool");
+        uint32[] memory secondsAgos = new uint32[](2);
+        secondsAgos[0] = twapWindow;
+        secondsAgos[1] = 0;
+        (int56[] memory tickCumulatives, ) = IUniswapV3Pool(poolAddress).observe(secondsAgos);
+        int56 delta = tickCumulatives[1] - tickCumulatives[0];
+        tick = int24(delta / int56(uint56(twapWindow)));
+        // Round toward negative infinity, matching Uniswap's OracleLibrary.consult.
+        if (delta < 0 && (delta % int56(uint56(twapWindow)) != 0)) tick--;
+    }
+
+    /// @notice sqrt price (Q64.96) that getAmountOut values positions at: the TWAP over `twapWindow`.
+    function getTwapSqrtPriceX96(address poolAddress) public view returns (uint160 sqrtPriceX96) {
+        sqrtPriceX96 = TickMath.getSqrtRatioAtTick(getTwapTick(poolAddress));
+        require(sqrtPriceX96 > 0, "Oracle: pool not initialized");
+    }
+
+    /// @notice True when `poolAddress` holds an observation at least `twapWindow` seconds old, so a
+    ///         TWAP over the full window can be computed. Mirrors OracleLibrary.getOldestObservationSecondsAgo.
+    function poolCanServeWindow(address poolAddress) public view returns (bool) {
+        IUniswapV3Pool pool = IUniswapV3Pool(poolAddress);
+        (, , uint16 observationIndex, uint16 observationCardinality, , , ) = pool.slot0();
+        if (observationCardinality == 0) return false;
+
+        // The oldest slot is the one after the current index; if the ring has not wrapped yet
+        // that slot is still empty and the oldest observation is slot 0.
+        (uint32 observationTimestamp, , , bool initialized) =
+            pool.observations((observationIndex + 1) % observationCardinality);
+        if (!initialized) {
+            (observationTimestamp, , , ) = pool.observations(0);
+        }
+        // uint32 wrap-around safe, like the pool's own time arithmetic.
+        return uint32(block.timestamp) - observationTimestamp >= twapWindow;
     }
 
     // sell token1, buy token0
@@ -117,13 +175,13 @@ contract Oracle {
             //   sqrtPriceX96 is uint160, so squaring can reach up to 2^320, which overflows uint256 (2^256).
             //   Splitting the multiplication: (sqrtPrice * sum / 2^96) * (sqrtPrice / 2^96)
             //   keeps intermediates within uint256 bounds for practical token prices.
-            uint256 sqrtPrice = uint256(getSqrtPriceX96(_pool));
+            uint256 sqrtPrice = uint256(getTwapSqrtPriceX96(_pool));
             amountBought = _safePriceCalc(sqrtPrice, sum);
             amountBought = amountBought * 10**slashed_zeros;
         }
         else
         {
-            uint256 sqrtPrice = uint256(getSqrtPriceX96(_pool));
+            uint256 sqrtPrice = uint256(getTwapSqrtPriceX96(_pool));
             amountBought = _safePriceCalc(sqrtPrice, amountToSell);
         }
 
@@ -157,13 +215,13 @@ contract Oracle {
                 sum = sum / 10;
             }
             // @audit-fix V6: Use safe price calculation to prevent intermediate overflow.
-            uint256 sqrtPrice = uint256(getSqrtPriceX96(_pool));
+            uint256 sqrtPrice = uint256(getTwapSqrtPriceX96(_pool));
             amountBought = _safePriceCalc(sqrtPrice, sum);
             amountBought = amountBought * 10**slashed_zeros;
         }
         else
         {
-            uint256 sqrtPrice = uint256(getSqrtPriceX96(_pool));
+            uint256 sqrtPrice = uint256(getTwapSqrtPriceX96(_pool));
             amountBought = _safePriceCalc(sqrtPrice, amountToSell);
         }
 
@@ -207,7 +265,10 @@ contract Oracle {
 
         for (uint256 i = 0; i < NUM_FEE_TIERS; i++) {
             address pool = factory.getPool(token0, token1, _feeTier(i));
-            if (pool != address(0)) {
+            // Only pools that can answer for the whole TWAP window are candidates. A pool that
+            // gained liquidity but has no history would otherwise win the selection and then
+            // revert every valuation with "OLD", which would block liquidations.
+            if (pool != address(0) && poolCanServeWindow(pool)) {
                 uint128 currentLiquidity = IUniswapV3Pool(pool).liquidity();
                 if (currentLiquidity >= liquidity) {
                     liquidity = currentLiquidity;
