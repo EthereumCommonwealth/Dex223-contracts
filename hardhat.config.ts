@@ -224,7 +224,7 @@ const config: HardhatUserConfig = {
       // in the source produces a bare revert on chain with no reason data - the message you read in
       // the source is NOT what a caller sees. Do not spend time adding descriptive messages here
       // expecting them to surface; put user-facing validation in Dex223TokenValidator instead, which
-      // keeps its strings. Same treatment as Dex223MarginModule, for the same reason.
+      // keeps its strings.
       //
       // It is needed because the pool's audit hardening (#36) added ~13 `require`s, and each one with
       // a reason costs roughly 200 bytes. Dex223Factory embeds type(Dex223Pool).creationCode, so pool
@@ -243,13 +243,19 @@ const config: HardhatUserConfig = {
         version: "0.7.6",
         settings: { optimizer: { enabled: true, runs: 1 }, debug: { revertStrings: "strip" } }
       },
+      // MarginModule keeps its revert strings: 24,333 bytes at runs: 1, 243 under the limit. It used
+      // to be compiled with revertStrings: "strip" only because the test scaffolding
+      // (UtilityModuleCfg and friends) shared its file and was 383 bytes over even at runs: 1. That
+      // scaffolding now lives in contracts/test/MarginModuleTestHelpers.sol with the squeezed
+      // settings; the deployable module gets its reasons back. Headroom is thin: re-run
+      // scripts/check-contract-sizes.ts after any change here.
       "contracts/dex-core/Dex223MarginModule.sol": {
         version: "0.7.6",
-        settings: {
-          optimizer: { enabled: true, runs: 1 },
-          // UtilityModuleCfg is still 383 bytes over at runs: 1; dropping revert strings closes the gap.
-          debug: { revertStrings: "strip" }
-        }
+        settings: { optimizer: { enabled: true, runs: 1 } }
+      },
+      "contracts/test/MarginModuleTestHelpers.sol": {
+        version: "0.7.6",
+        settings: { optimizer: { enabled: true, runs: 1 }, debug: { revertStrings: "strip" } }
       },
       "contracts/test/MaliciousRevenuePool.sol": {
         version: "0.7.6",
