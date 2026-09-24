@@ -376,10 +376,9 @@ describe('MarginModule', () => {
 
       expect(await evil.reentered(), 'the token never re-entered').to.eq(true)
       expect(await evil.innerSucceeded(), 'nested takeLoan executed despite the guard').to.eq(false)
-      // NOTE: hardhat.config.ts compiles Dex223MarginModule.sol with debug.revertStrings: "strip"
-      // (needed to fit UtilityModuleCfg under EIP-170), so require() messages are erased and the
-      // revert arrives with no reason data - hence "unknown" rather than "REENTRANCY".
-      expect(await evil.innerError()).to.be.oneOf(['REENTRANCY', 'unknown'])
+      // Revert strings are kept on MarginModule now that the test scaffolding lives in its own
+      // file (contracts/test/MarginModuleTestHelpers.sol), so the reason must come through.
+      expect(await evil.innerError()).to.eq('REENTRANCY')
 
       // exactly one position, one loan drawn
       expect(await mm.positionIndex()).to.eq(1n)
