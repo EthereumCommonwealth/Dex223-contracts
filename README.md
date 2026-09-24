@@ -21,7 +21,10 @@ On 2026-09-23, before any pool existed, the factory's pool library was replaced 
 | FREE_AUTOLISTING      | [0xCc46E110426958E83e9298d46a50572691065eC5](https://etherscan.io/address/0xCc46E110426958E83e9298d46a50572691065eC5#code) |
 | AUTOLISTINGS_REGISTRY | [0x105F43A70aFCEd0493545D04C1d5687DF4b3f48f](https://etherscan.io/address/0x105F43A70aFCEd0493545D04C1d5687DF4b3f48f#code) |
 | ERC223_TOKEN_DEPLOYER | [0xe3391c70A6b71bC26D6F77437590306006aD0ddb](https://etherscan.io/address/0xe3391c70A6b71bC26D6F77437590306006aD0ddb#code) |
+| REVENUE (V1)          | [0xbA75fA26BB88BccEB74a967E4cA2FBfe99d6CE6e](https://etherscan.io/address/0xbA75fA26BB88BccEB74a967E4cA2FBfe99d6CE6e#code) |
 | POOL_INIT_CODE_HASH   | 0xe125afe94932872c7162b66e1bb1587d6fc76d525d248bb20e9e0484a99ec486 |
+
+RevenueV1 stakes D223 (ERC-20 `0x675e…DD67` / ERC-223 `0x0908…80dd`) and its `factory` is `0xeA0A…`. Do not `factory.setOwner(Revenue)`. No pools exist yet; once they do, the factory owner runs `scripts/revenue-enable-fees.ts`, then `scripts/revenue-collect.ts` with `REVENUE=0xbA75…`.
 
 ## Ethereum mainnet deployment (previous, superseded 2026-09-22)
 
