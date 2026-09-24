@@ -715,6 +715,10 @@ contract MarginModule is Multicall, IOrderParams
             } else {
                 _receiveAsset(rewardAsset, rewardAmount);
             }
+
+            // Whatever was not consumed as collateral or reward would otherwise stay in the
+            // contract with no one able to claim it.
+            require(receivedEth == 0, "Excess ETH");
         }
 
         // Make sure position is not subject to liquidation right after it was created.
