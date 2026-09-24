@@ -225,17 +225,18 @@ describe('Dex223 adversarial / security', () => {
 
   // ------------------------------------------------------------------ known limitation
   describe('ERC-223 delivery to code-bearing recipients (EIP-7702 exposure)', () => {
-    it('DOCUMENTS: output delivery reverts if the recipient has code but no tokenReceived', async () => {
+    it('output delivery to a recipient with code but no tokenReceived reverts with the library reason', async () => {
       const { pool, token0_223 } = await loadFixture(fx)
       // Any address with code is treated as a contract by Address.isContract(), including an EOA that
       // has an EIP-7702 delegation. If its code does not implement tokenReceived, ERC-223 delivery
-      // reverts and the swap fails. Recorded so the behaviour is tracked, not endorsed.
+      // reverts and the swap fails. The pool relays the library's reason through swapExactInput and
+      // tokenReceived instead of collapsing it to "23F".
       const noHook = await (await ethers.getContractFactory('RogueERC223')).deploy() // has code, no tokenReceived
       const amt = expandTo18Decimals(1) / 100n
       await expect(
         token0_223['transfer(address,uint256,bytes)'](
           pool.target, amt, swapPayload(pool, await noHook.getAddress(), amt))
-      ).to.be.reverted
+      ).to.be.revertedWith('LIB: RECIPIENT_REJECTED')
     })
 
     it('an ERC-20 payout to the same recipient succeeds (the ERC-223 leg is the problem)', async () => {
@@ -317,6 +318,37 @@ describe('Dex223 adversarial / security', () => {
       await harness.deliver(erc20.target, recipient.address, 100n)
       expect(await erc20.balanceOf(recipient.address)).to.eq(100n)
       expect(await erc223.balanceOf(harness.target)).to.eq(900n)
+    })
+  })
+  // ------------------------------------------------------------------ library revert reasons
+  describe('pool relays pool_lib revert reasons', () => {
+    it('on the production Dex223Pool, a direct ERC-223 deposit relays the library reason through swapExactInput', async () => {
+      // MockTimeDex223Pool overrides swapExactInput, so the tests above never run the production one.
+      // Build a real pool through the factory and send the same rejected delivery through it.
+      const { factory, token0, token1, token0_223, token1_223, swapTargetCallee } = await loadFixture(fx)
+      await factory.createPool(token0.target, token1.target, token0_223.target, token1_223.target, FeeAmount.MEDIUM)
+      const real: any = await ethers.getContractAt('Dex223Pool',
+        await factory.getPool(token0.target, token1.target, FeeAmount.MEDIUM))
+      expect(await ethers.provider.getCode(real.target)).to.not.eq('0x')
+      await real.initialize(encodePriceSqrt(1n, 1n))
+      await swapTargetCallee.mint(real.target, (await ethers.getSigners())[0].address,
+        getMinTick(TS), getMaxTick(TS), expandTo18Decimals(10))
+      const noHook = await (await ethers.getContractFactory('RogueERC223')).deploy()
+      const amt = expandTo18Decimals(1) / 100n
+      await expect(
+        token0_223['transfer(address,uint256,bytes)'](real.target, amt, swapPayload(real, await noHook.getAddress(), amt))
+      ).to.be.revertedWith('LIB: RECIPIENT_REJECTED')
+    })
+
+    it('burn of a position that does not exist reverts with the library reason, not empty', async () => {
+      const { pool, other } = await loadFixture(fx)
+      // `other` holds no liquidity (the fixture's position belongs to `wallet`).
+      await expect(pool.connect(other).burn(getMinTick(TS), getMaxTick(TS), 1n)).to.be.revertedWith('LS')
+    })
+
+    it('mint with inverted ticks reverts with the library reason, not empty', async () => {
+      const { pool, wallet } = await loadFixture(fx)
+      await expect(pool.mint(wallet.address, TS, 0, 1n, '0x')).to.be.revertedWith('TLU')
     })
   })
 })
