@@ -1032,26 +1032,26 @@ contract MarginModule is Multicall, IOrderParams
 
         require(position.frozenTime == 0, "Position frozen");
         require(subjectToLiquidation(positionId) == false, "Subject to liquidation");
-        position.open = false;
 
-        uint256 requiredAmount = _paybackBaseAsset(position);
-        if (requiredAmount > 0) {
-            // Start from 1 as 0 is base asset
-            for (uint256 i = 1; i < position.assets.length && requiredAmount > 0; i++) 
-            {
-                address asset = position.assets[i];
-                uint256 balance = position.balances[i];
-                
-                if (balance == 0) continue;
-                
-                uint256 baseAssetReceived = _swapToBaseAsset(positionId, asset, balance);
-            }
-            
-            // Final attempt to pay back after all swaps
-            requiredAmount = _paybackBaseAsset(position);
-            
-            require(requiredAmount == 0, "Insufficient funds to close");
+        // If the base asset alone does not cover the debt, sell other holdings until it does, then
+        // settle once. (Settling first and again after the swaps charged the debt twice, because
+        // _paybackBaseAsset recomputes the full amount from initialBalance each time.)
+        // Walk from the end, because a fully sold asset is removed by swap-and-pop
+        // (reduceAsset -> removeAsset), which moves the last element into the freed slot; a forward
+        // walk would skip that element. Index 0 is the base asset and is never sold. The position
+        // must still be open here: the swap credits proceeds through addAsset(), which requires it.
+        uint256 debt = calculateDebtAmount(position);
+        for (uint256 i = position.assets.length; i > 1 && position.balances[0] < debt; ) {
+            i--;
+            uint256 balance = position.balances[i];
+            if (balance == 0) continue;
+            _swapToBaseAsset(positionId, position.assets[i], balance);
         }
+        require(_paybackBaseAsset(position) == 0, "Insufficient funds to close");
+
+        // Closed before the first external transfer below (the reward payout hands control to
+        // msg.sender), same ordering as _liquidate.
+        position.open = false;
 
         // Autowithdraw the liquidation fee as soon as position is closed.
         _payReward(position.orderId, msg.sender);
@@ -1114,13 +1114,14 @@ contract MarginModule is Multicall, IOrderParams
     function _liquidate(uint256 positionId, address _receiver) internal {
         Position storage position = positions[positionId];
 
-        for (uint256 i = 1; i < position.assets.length; i++) {
-                address asset = position.assets[i];
-                uint256 balance = position.balances[i];
-                
-                if (balance == 0) continue;
-                
-                uint256 baseAssetReceived = _swapToBaseAsset(positionId, asset, balance);
+        // Sell every non-base holding. Walk from the end: a fully sold asset is removed by
+        // swap-and-pop, which moves the last element into the freed slot, so a forward walk
+        // skipped one asset whenever a position held three or more and left it unsold.
+        for (uint256 i = position.assets.length; i > 1; ) {
+            i--;
+            uint256 balance = position.balances[i];
+            if (balance == 0) continue;
+            _swapToBaseAsset(positionId, position.assets[i], balance);
         }
         _paybackBaseAsset(position);
 
