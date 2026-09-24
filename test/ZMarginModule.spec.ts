@@ -288,6 +288,22 @@ describe('MarginModule', () => {
       await expect(mm.takeLoan(0, expandTo18Decimals(50), 0, expandTo18Decimals(1))).to.be.reverted
     })
 
+    it('does not round the leverage ratio down (5x order, 1 collateral: 4.5 loan is 5.5x)', async () => {
+      const { mm } = await ready()
+      // The old check computed uint8((1 + 4.5) / 1) = 5 and let this through.
+      await expect(mm.takeLoan(0, expandTo18Decimals(45) / 10n, 0, expandTo18Decimals(1)))
+        .to.be.revertedWith('Leverage error')
+      // Comfortably within 5x: (1 + 3.9) / 1 = 4.9x.
+      await mm.takeLoan(0, expandTo18Decimals(39) / 10n, 0, expandTo18Decimals(1))
+      expect((await mm.positions(0)).open).to.eq(true)
+    })
+
+    it('rejects a loan with zero collateral instead of dividing by zero', async () => {
+      const { mm } = await ready()
+      // The oracle refuses the quote first; the module keeps its own guard in case that changes.
+      await expect(mm.takeLoan(0, expandTo18Decimals(1), 0, 0n)).to.be.revertedWith('Oracle: zero amount')
+    })
+
     it('two sequential loans get distinct position ids', async () => {
       const { mm } = await ready()
       await mm.takeLoan(0, expandTo18Decimals(1), 0, expandTo18Decimals(1))
