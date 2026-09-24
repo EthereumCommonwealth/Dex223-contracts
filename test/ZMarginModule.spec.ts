@@ -1113,16 +1113,16 @@ describe('MarginModule', () => {
       expect((await c.mm.orders(0)).balance).to.be.closeTo(expandTo18Decimals(105) / 10n, expandTo18Decimals(1) / 100000n)
     })
 
-    it('DOCUMENTS: Ether sent beyond collateral plus reward is not refunded', async () => {
+    it('takeLoan rejects Ether beyond collateral plus reward instead of keeping it', async () => {
       const c = await ethOrder()
       const collateral = expandTo18Decimals(1)
       const reward = expandTo18Decimals(1) / 100n
-      const surplus = expandTo18Decimals(1)
-      const before = await ethers.provider.getBalance(c.mm.target)
-      await c.mm.takeLoan(0, expandTo18Decimals(1), 0, collateral, { value: collateral + reward + surplus })
-      expect(await ethers.provider.getBalance(c.mm.target)).to.eq(before + collateral + reward + surplus)
-      // Neither the position nor the order account for the surplus; it stays in the contract.
-      expect((await c.mm.getPositionBalances(0))[0]).to.eq(expandTo18Decimals(2))
+      await expect(c.mm.takeLoan(0, expandTo18Decimals(1), 0, collateral, { value: collateral + reward + 1n }))
+        .to.be.revertedWith('Excess ETH')
+      // A token order takes no Ether at all.
+      const t = await fundedOrder()
+      await expect(t.mm.takeLoan(0, expandTo18Decimals(1), 0, expandTo18Decimals(1), { value: 1n }))
+        .to.be.revertedWith('Excess ETH')
     })
   })
 
