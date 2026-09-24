@@ -45,13 +45,15 @@ describe('MarginModule', () => {
       collateral: [collat.target.toString()],
     }
 
-    // A pool with liquidity between collateral and base asset, so the Oracle can price the position.
-    async function seedPool() {
+    const third = tokens[2]     // a second collateral-like asset, for multi-asset positions
+
+    // A pool with liquidity between `other` and the base asset, so the Oracle can price the position.
+    async function seedPoolWith(other: typeof collat, otherTwin: typeof collat) {
       const TS = TICK_SPACINGS[FeeAmount.MEDIUM]
-      const [t0, t1] = base.target.toString().toLowerCase() < collat.target.toString().toLowerCase()
-        ? [base, collat] : [collat, base]
-      const [w0, w1] = base.target.toString().toLowerCase() < collat.target.toString().toLowerCase()
-        ? [tokens[3], tokens[4]] : [tokens[4], tokens[3]]
+      const [t0, t1] = base.target.toString().toLowerCase() < other.target.toString().toLowerCase()
+        ? [base, other] : [other, base]
+      const [w0, w1] = base.target.toString().toLowerCase() < other.target.toString().toLowerCase()
+        ? [tokens[3], otherTwin] : [otherTwin, tokens[3]]
       await nft.createAndInitializePoolIfNecessary(
         t0.target.toString(), t1.target.toString(),
         w0.target.toString(), w1.target.toString(),
@@ -73,8 +75,10 @@ describe('MarginModule', () => {
       await time.increase(TWAP_WINDOW)
       return pool
     }
+    const seedPool = () => seedPoolWith(collat, tokens[4])
+    const seedThirdPool = () => seedPoolWith(third, tokens[5])
 
-    return { mm, oracle, factory, router, converter, weth9, nft, base, collat, wallet, other, orderParams, whitelistId, now, seedPool, TWAP_WINDOW }
+    return { mm, oracle, factory, router, converter, weth9, nft, base, collat, third, wallet, other, orderParams, whitelistId, now, seedPool, seedThirdPool, TWAP_WINDOW }
   }
 
   describe('token lists', () => {
@@ -651,6 +655,77 @@ describe('MarginModule', () => {
         mm.marginSwap(0, 1, idCollat, idBase, expandTo18Decimals(1) / 10n,
           base.target, FeeAmount.MEDIUM, expandTo18Decimals(1000), 0)
       ).to.be.reverted
+    })
+  })
+
+  describe('closing and liquidating positions that hold more than the base asset', () => {
+    // base + collat + third, whitelist covers all three, pools for both non-base assets.
+    async function threeAssetPosition(interestRate: bigint) {
+      const c = await loadFixture(fx)
+      await c.seedPool()
+      await c.seedThirdPool()
+      const list = [c.base.target.toString(), c.collat.target.toString(), c.third.target.toString()]
+      await c.mm.addTokenlist(list, false)
+      await c.mm.createOrder({
+        ...c.orderParams, interestRate, duration: BigInt(365 * DAY),
+        whitelistId: await c.mm.predictTokenListsID(list, false),
+      })
+      await c.mm.setOrderStatus(0, true)
+      await c.base.approve(c.mm.target, ethers.MaxUint256)
+      await c.collat.approve(c.mm.target, ethers.MaxUint256)
+      await c.third.approve(c.mm.target, ethers.MaxUint256)
+      await c.mm.orderDepositToken(0, expandTo18Decimals(100))
+      await c.mm.takeLoan(0, expandTo18Decimals(1), 0, expandTo18Decimals(1))
+      await c.mm.positionDeposit(0, c.third.target, 2, expandTo18Decimals(1))
+      expect((await c.mm.getPositionAssets(0)).length).to.eq(3)
+      return c
+    }
+
+    it('positionClose sells collateral when the base asset does not cover the debt', async () => {
+      const c = await loadFixture(fx)
+      await c.seedPool()
+      // 50% per 30 days: after 30 days the debt is 1.5 base and the position holds 1 base + 1 collat.
+      await c.mm.createOrder({ ...c.orderParams, interestRate: 5000n, duration: BigInt(365 * DAY) })
+      await c.mm.setOrderStatus(0, true)
+      await c.base.approve(c.mm.target, ethers.MaxUint256)
+      await c.collat.approve(c.mm.target, ethers.MaxUint256)
+      await c.mm.orderDepositToken(0, expandTo18Decimals(100))
+      await c.mm.takeLoan(0, expandTo18Decimals(1), 0, expandTo18Decimals(1))
+      await time.increase(30 * DAY)
+
+      const baseBefore = await c.base.balanceOf(c.wallet.address)
+      await c.mm.positionClose(0, true)
+      expect((await c.mm.positions(0)).open).to.eq(false)
+      // The lender got principal plus interest back into the order.
+      expect((await c.mm.orders(0)).balance).to.be.closeTo(expandTo18Decimals(100) + expandTo18Decimals(1) / 2n, expandTo18Decimals(1) / 1000n)
+      // Owner received the leftover base (≈1 + 0.997 - 1.5) plus the liquidation reward, and holds no collat in the position.
+      expect(await c.base.balanceOf(c.wallet.address)).to.be.gt(baseBefore)
+      expect((await c.mm.getPositionAssets(0)).length).to.eq(1)
+    })
+
+    it('positionClose stops selling once the base asset covers the debt', async () => {
+      const c = await threeAssetPosition(5000n)
+      await time.increase(30 * DAY) // debt 1.5; holds 1 base, 1 collat, 1 third
+      const collatBefore = await c.collat.balanceOf(c.wallet.address)
+      await c.mm.positionClose(0, true)
+      // Selling one non-base asset (≈0.997 base) was enough; the other came back untouched.
+      expect(await c.collat.balanceOf(c.wallet.address)).to.be.gte(collatBefore)
+      const thirdBack = (await c.third.balanceOf(c.wallet.address))
+      // Exactly one of the two was sold. (Walk order is from the end, so `third` is sold first.)
+      expect(thirdBack).to.be.lt(await c.collat.balanceOf(c.wallet.address))
+    })
+
+    it('liquidation sells every non-base asset of a three-asset position', async () => {
+      const c = await threeAssetPosition(10000n)
+      await time.increase(120 * DAY) // debt 5 vs ~3 of value: underwater
+      expect(await c.mm.subjectToLiquidation(0)).to.eq(true)
+      await c.mm.liquidate(0, c.wallet.address)
+      await time.increase(60)
+      await c.mm.liquidate(0, c.wallet.address)
+      expect((await c.mm.positions(0)).open).to.eq(false)
+      // Nothing left behind: the forward walk used to skip one asset after the first swap-and-pop.
+      expect((await c.mm.getPositionAssets(0)).length).to.eq(1)
+      expect((await c.mm.getPositionBalances(0))[0]).to.eq(0n)
     })
   })
 })
