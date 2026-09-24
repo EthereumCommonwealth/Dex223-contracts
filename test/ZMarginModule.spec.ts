@@ -46,6 +46,7 @@ describe('MarginModule', () => {
     }
 
     const third = tokens[2]     // a second collateral-like asset, for multi-asset positions
+    const collat223 = tokens[4] // ERC-223 wrapper of `collat` (the pool's other side)
 
     // A pool with liquidity between `other` and the base asset, so the Oracle can price the position.
     async function seedPoolWith(other: typeof collat, otherTwin: typeof collat) {
@@ -78,7 +79,7 @@ describe('MarginModule', () => {
     const seedPool = () => seedPoolWith(collat, tokens[4])
     const seedThirdPool = () => seedPoolWith(third, tokens[5])
 
-    return { mm, oracle, factory, router, converter, weth9, nft, base, collat, third, wallet, other, orderParams, whitelistId, now, seedPool, seedThirdPool, TWAP_WINDOW }
+    return { mm, oracle, factory, router, converter, weth9, nft, base, collat, third, collat223, wallet, other, orderParams, whitelistId, now, seedPool, seedThirdPool, TWAP_WINDOW }
   }
 
   describe('token lists', () => {
@@ -867,6 +868,296 @@ describe('MarginModule', () => {
       } else {
         await expect(c.mm.positionClose(0, true)).to.be.revertedWith('Subject to liquidation')
       }
+    })
+  })
+
+  // Order and position with a base-asset pool, 100 base deposited, ERC-20 approvals in place.
+  async function fundedOrder(overrides: Record<string, unknown> = {}) {
+    const c = await loadFixture(fx)
+    await c.seedPool()
+    await c.mm.createOrder({ ...c.orderParams, ...overrides })
+    await c.mm.setOrderStatus(0, true)
+    await c.base.approve(c.mm.target, ethers.MaxUint256)
+    await c.collat.approve(c.mm.target, ethers.MaxUint256)
+    await c.mm.orderDepositToken(0, expandTo18Decimals(100))
+    return c
+  }
+
+  describe('interest accrual', () => {
+    it('debt grows linearly with time at interestRate per 30 days', async () => {
+      const c = await fundedOrder({ interestRate: 10000n, duration: BigInt(365 * DAY) }) // 100% per 30 days
+      await c.mm.takeLoan(0, expandTo18Decimals(1), 0, expandTo18Decimals(1))
+      const [debt0] = await c.mm.getPositionStatus(0)
+      expect(debt0).to.eq(expandTo18Decimals(1))
+
+      await time.increase(15 * DAY)
+      const [debt15] = await c.mm.getPositionStatus(0)
+      expect(debt15).to.be.closeTo(expandTo18Decimals(15) / 10n, expandTo18Decimals(1) / 100000n)
+
+      await time.increase(15 * DAY)
+      const [debt30] = await c.mm.getPositionStatus(0)
+      expect(debt30).to.be.closeTo(expandTo18Decimals(2), expandTo18Decimals(1) / 100000n)
+    })
+
+    it('positionClose pays principal plus accrued interest back into the order', async () => {
+      const c = await fundedOrder({ interestRate: 10000n, duration: BigInt(365 * DAY) })
+      await c.mm.takeLoan(0, expandTo18Decimals(1), 0, expandTo18Decimals(1))
+      // Top the position up so it can repay without selling collateral.
+      await c.mm.positionDeposit(0, c.base.target, 0, expandTo18Decimals(1))
+      await time.increase(15 * DAY)
+      await c.mm.positionClose(0, true)
+      // 100 deposited - 1 lent + 1.5 repaid.
+      expect((await c.mm.orders(0)).balance).to.be.closeTo(expandTo18Decimals(1005) / 10n, expandTo18Decimals(1) / 100000n)
+    })
+
+    it('a zero-interest loan repays exactly the principal', async () => {
+      const c = await fundedOrder({ interestRate: 0n, duration: BigInt(365 * DAY) })
+      await c.mm.takeLoan(0, expandTo18Decimals(1), 0, expandTo18Decimals(1))
+      await time.increase(200 * DAY)
+      const [debt] = await c.mm.getPositionStatus(0)
+      expect(debt).to.eq(expandTo18Decimals(1))
+      await c.mm.positionClose(0, true)
+      expect((await c.mm.orders(0)).balance).to.eq(expandTo18Decimals(100))
+    })
+  })
+
+  describe('modifyOrder', () => {
+    const args = (c: Awaited<ReturnType<typeof fx>>, whitelist: string) => [
+      0, whitelist, 777n, BigInt(7 * DAY), 5n, 3, 4, c.oracle.target, 1n, c.base.target, BigInt(c.now + 30 * DAY),
+    ] as const
+
+    it('only the owner can modify', async () => {
+      const c = await fundedOrder()
+      await expect(c.mm.connect(c.other).modifyOrder(...args(c, c.whitelistId))).to.be.reverted
+    })
+
+    it('rewrites every field on an order without positions', async () => {
+      const c = await fundedOrder()
+      await c.mm.modifyOrder(...args(c, c.whitelistId))
+      const o = await c.mm.orders(0)
+      expect(o.interestRate).to.eq(777n)
+      expect(o.duration).to.eq(BigInt(7 * DAY))
+      expect(o.minLoan).to.eq(5n)
+      expect(o.currencyLimit).to.eq(3n)
+      expect(o.leverage).to.eq(4n)
+      const [rewardAmount, rewardAsset, deadline] = await c.mm.getOrderExpirationData(0)
+      expect(rewardAmount).to.eq(1n)
+      expect(rewardAsset).to.eq(c.base.target)
+      expect(deadline).to.eq(BigInt(c.now + 30 * DAY))
+      // Balance and base asset are untouched.
+      expect(o.balance).to.eq(expandTo18Decimals(100))
+      expect(o.baseAsset).to.eq(c.base.target)
+    })
+
+    it('is blocked while the order has an open position', async () => {
+      const c = await fundedOrder()
+      await c.mm.takeLoan(0, expandTo18Decimals(1), 0, expandTo18Decimals(1))
+      await expect(c.mm.modifyOrder(...args(c, c.whitelistId))).to.be.revertedWith('Order has active positions')
+      await c.mm.positionDeposit(0, c.base.target, 0, expandTo18Decimals(1))
+      await c.mm.positionClose(0, true)
+      await c.mm.modifyOrder(...args(c, c.whitelistId))
+      expect((await c.mm.orders(0)).interestRate).to.eq(777n)
+    })
+
+    it('orderSetCollaterals is likewise blocked with open positions and rejects an empty list', async () => {
+      const c = await fundedOrder()
+      await expect(c.mm.orderSetCollaterals(0, [])).to.be.revertedWith('Order needs a collateral')
+      await c.mm.takeLoan(0, expandTo18Decimals(1), 0, expandTo18Decimals(1))
+      await expect(c.mm.orderSetCollaterals(0, [c.third.target])).to.be.revertedWith('Order has active positions')
+    })
+  })
+
+  describe('currencyLimit', () => {
+    it('caps the number of distinct assets a position may hold', async () => {
+      const c = await loadFixture(fx)
+      await c.seedPool()
+      await c.seedThirdPool()
+      const list = [c.base.target.toString(), c.collat.target.toString(), c.third.target.toString()]
+      await c.mm.addTokenlist(list, false)
+      // Limit 2: base + collateral fill it; a third asset must be refused.
+      await c.mm.createOrder({ ...c.orderParams, whitelistId: await c.mm.predictTokenListsID(list, false), currencyLimit: 2n })
+      await c.mm.setOrderStatus(0, true)
+      await c.base.approve(c.mm.target, ethers.MaxUint256)
+      await c.collat.approve(c.mm.target, ethers.MaxUint256)
+      await c.third.approve(c.mm.target, ethers.MaxUint256)
+      await c.mm.orderDepositToken(0, expandTo18Decimals(100))
+      await c.mm.takeLoan(0, expandTo18Decimals(1), 0, expandTo18Decimals(1))
+
+      await expect(c.mm.positionDeposit(0, c.third.target, 2, expandTo18Decimals(1))).to.be.reverted
+      // Adding to an asset the position already holds does not count against the limit.
+      await c.mm.positionDeposit(0, c.collat.target, 1, expandTo18Decimals(1))
+      expect((await c.mm.getPositionAssets(0)).length).to.eq(2)
+    })
+
+    it('positionDeposit rejects assets outside the whitelist', async () => {
+      const c = await fundedOrder()
+      await c.mm.takeLoan(0, expandTo18Decimals(1), 0, expandTo18Decimals(1))
+      await c.third.approve(c.mm.target, ethers.MaxUint256)
+      await expect(c.mm.positionDeposit(0, c.third.target, 0, expandTo18Decimals(1))).to.be.reverted
+      await expect(c.mm.positionDeposit(0, c.third.target, 1, expandTo18Decimals(1))).to.be.reverted
+    })
+  })
+
+  describe('ERC-223 assets in a position', () => {
+    // Whitelist: base, collat (ERC-20) and collat223. The position receives collat223 through
+    // tokenReceived() and swaps it back to the base asset via the ERC-223 pool side.
+    async function positionWith223Collateral() {
+      const c = await loadFixture(fx)
+      await c.seedPool()
+      const list = [c.base.target.toString(), c.collat.target.toString(), c.collat223.target.toString()]
+      await c.mm.addTokenlist(list, false)
+      await c.mm.createOrder({ ...c.orderParams, whitelistId: await c.mm.predictTokenListsID(list, false) })
+      await c.mm.setOrderStatus(0, true)
+      await c.base.approve(c.mm.target, ethers.MaxUint256)
+      await c.collat.approve(c.mm.target, ethers.MaxUint256)
+      await c.mm.orderDepositToken(0, expandTo18Decimals(100))
+      await c.mm.takeLoan(0, expandTo18Decimals(1), 0, expandTo18Decimals(1))
+
+      const amount = expandTo18Decimals(1)
+      await c.collat223['transfer(address,uint256)'](c.mm.target, amount)   // credits erc223deposit[wallet][collat223]
+      expect(await c.mm.erc223deposit(c.wallet.address, c.collat223.target)).to.eq(amount)
+      await c.mm.positionDeposit(0, c.collat223.target, 2, amount)
+      expect(await c.mm.erc223deposit(c.wallet.address, c.collat223.target)).to.eq(0n)
+      expect((await c.mm.getPositionAssets(0)).length).to.eq(3)
+      return { ...c, amount }
+    }
+
+    it('an ERC-223 transfer followed by positionDeposit credits the position', async () => {
+      const c = await positionWith223Collateral()
+      const id = await c.mm.getAssetId(0, c.collat223.target)
+      expect((await c.mm.getPositionBalances(0))[Number(id)]).to.eq(c.amount)
+    })
+
+    it('marginSwap223 sells the ERC-223 asset into the base asset', async () => {
+      const c = await positionWith223Collateral()
+      const id = await c.mm.getAssetId(0, c.collat223.target)
+      const baseBefore = (await c.mm.getPositionBalances(0))[0]
+      await c.mm.marginSwap223(0, id, 2, 0, c.amount, c.base.target, FeeAmount.MEDIUM)
+      const balances = await c.mm.getPositionBalances(0)
+      expect(balances[0]).to.be.gt(baseBefore)
+      expect(balances[0] - baseBefore, 'roughly 1:1 minus the 0.3% fee').to.be.closeTo(c.amount, c.amount / 100n)
+      // Fully sold: the asset was removed from the position.
+      expect((await c.mm.getPositionAssets(0)).length).to.eq(2)
+    })
+
+    it('marginSwap223 is owner-only', async () => {
+      const c = await positionWith223Collateral()
+      const id = await c.mm.getAssetId(0, c.collat223.target)
+      await expect(c.mm.connect(c.other).marginSwap223(0, id, 2, 0, c.amount, c.base.target, FeeAmount.MEDIUM))
+        .to.be.revertedWith('Not position owner')
+    })
+
+    it('the ERC-223 asset is priced through the oracle like any other holding', async () => {
+      const c = await positionWith223Collateral()
+      // The position holds 1 base, 1 collat, 1 collat223 against a debt of ~1: every leg is priced.
+      const [debt, value] = await c.mm.getPositionStatus(0)
+      expect(value).to.be.closeTo(expandTo18Decimals(3), expandTo18Decimals(1) / 100n)
+      expect(debt).to.be.closeTo(expandTo18Decimals(1), expandTo18Decimals(1) / 1000n)
+    })
+  })
+
+  describe('Ether orders', () => {
+    const ETH = ethers.ZeroAddress
+    async function ethOrder() {
+      const c = await loadFixture(fx)
+      await c.mm.addTokenlist([ETH], false)
+      await c.mm.createOrder({
+        ...c.orderParams,
+        whitelistId: await c.mm.predictTokenListsID([ETH], false),
+        asset: ETH, collateral: [ETH],
+        liquidationRewardAsset: ETH, liquidationRewardAmount: expandTo18Decimals(1) / 100n,
+        interestRate: 10000n, duration: BigInt(365 * DAY),
+      })
+      await c.mm.setOrderStatus(0, true)
+      await c.mm.orderDepositEth(0, { value: expandTo18Decimals(10) })
+      return c
+    }
+
+    it('orderDepositEth credits the order and orderWithdraw returns Ether', async () => {
+      const c = await ethOrder()
+      expect((await c.mm.orders(0)).balance).to.eq(expandTo18Decimals(10))
+      const before = await ethers.provider.getBalance(c.wallet.address)
+      const tx = await c.mm.orderWithdraw(0, expandTo18Decimals(4))
+      const rc = await tx.wait()
+      const gas = rc!.gasUsed * rc!.gasPrice
+      expect(await ethers.provider.getBalance(c.wallet.address)).to.eq(before + expandTo18Decimals(4) - gas)
+      expect((await c.mm.orders(0)).balance).to.eq(expandTo18Decimals(6))
+    })
+
+    it('orderDepositEth is refused on a token order and orderDepositToken on an Ether order', async () => {
+      const c = await ethOrder()
+      await expect(c.mm.orderDepositToken(0, 1n)).to.be.reverted
+      const t = await fundedOrder()
+      await expect(t.mm.orderDepositEth(0, { value: 1n })).to.be.reverted
+    })
+
+    it('takeLoan with Ether collateral and reward, then positionClose pays out in Ether', async () => {
+      const c = await ethOrder()
+      const collateral = expandTo18Decimals(1)
+      const reward = expandTo18Decimals(1) / 100n
+      await expect(c.mm.takeLoan(0, expandTo18Decimals(1), 0, collateral, { value: collateral }))
+        .to.be.revertedWith('ETH reward reception error')
+      await c.mm.takeLoan(0, expandTo18Decimals(1), 0, collateral, { value: collateral + reward })
+      // Ether is both base and collateral, so the position holds a single 2 ETH balance.
+      expect((await c.mm.getPositionAssets(0)).length).to.eq(1)
+      expect((await c.mm.getPositionBalances(0))[0]).to.eq(expandTo18Decimals(2))
+
+      await time.increase(15 * DAY) // debt 1.5
+      const before = await ethers.provider.getBalance(c.wallet.address)
+      const tx = await c.mm.positionClose(0, true)
+      const rc = await tx.wait()
+      const gas = rc!.gasUsed * rc!.gasPrice
+      // Owner gets 2 - 1.5 leftover plus the reward back.
+      const expected = before - gas + expandTo18Decimals(5) / 10n + reward
+      expect(await ethers.provider.getBalance(c.wallet.address)).to.be.closeTo(expected, expandTo18Decimals(1) / 100000n)
+      expect((await c.mm.orders(0)).balance).to.be.closeTo(expandTo18Decimals(105) / 10n, expandTo18Decimals(1) / 100000n)
+    })
+
+    it('DOCUMENTS: Ether sent beyond collateral plus reward is not refunded', async () => {
+      const c = await ethOrder()
+      const collateral = expandTo18Decimals(1)
+      const reward = expandTo18Decimals(1) / 100n
+      const surplus = expandTo18Decimals(1)
+      const before = await ethers.provider.getBalance(c.mm.target)
+      await c.mm.takeLoan(0, expandTo18Decimals(1), 0, collateral, { value: collateral + reward + surplus })
+      expect(await ethers.provider.getBalance(c.mm.target)).to.eq(before + collateral + reward + surplus)
+      // Neither the position nor the order account for the surplus; it stays in the contract.
+      expect((await c.mm.getPositionBalances(0))[0]).to.eq(expandTo18Decimals(2))
+    })
+  })
+
+  describe('WETH9 orders', () => {
+    it('orderDepositWETH9 wraps the Ether and credits the order', async () => {
+      const c = await loadFixture(fx)
+      const weth = c.weth9.target.toString()
+      await c.mm.addTokenlist([weth], false)
+      await c.mm.createOrder({
+        ...c.orderParams, whitelistId: await c.mm.predictTokenListsID([weth], false),
+        asset: weth, collateral: [weth], liquidationRewardAsset: weth,
+      })
+      await c.mm.setOrderStatus(0, true)
+      await c.mm.orderDepositWETH9(0, weth, { value: expandTo18Decimals(3) })
+      expect((await c.mm.orders(0)).balance).to.eq(expandTo18Decimals(3))
+      expect(await c.weth9.balanceOf(c.mm.target)).to.eq(expandTo18Decimals(3))
+    })
+
+    it('orderDepositWETH9 rejects a WETH address that is not the order base asset', async () => {
+      const c = await fundedOrder()
+      await expect(c.mm.orderDepositWETH9(0, c.weth9.target, { value: 1n })).to.be.reverted
+    })
+  })
+
+  describe('positionWithdraw', () => {
+    it('is refused while the position is open and works after a close without autoWithdraw', async () => {
+      const c = await fundedOrder({ interestRate: 0n })
+      await c.mm.takeLoan(0, expandTo18Decimals(1), 0, expandTo18Decimals(1))
+      await expect(c.mm.positionWithdraw(0, c.collat.target)).to.be.revertedWith('Position still open')
+      await c.mm.positionClose(0, false)
+      const before = await c.collat.balanceOf(c.wallet.address)
+      await c.mm.positionWithdraw(0, c.collat.target)
+      expect(await c.collat.balanceOf(c.wallet.address)).to.eq(before + expandTo18Decimals(1))
+      await expect(c.mm.positionWithdraw(0, c.collat.target)).to.be.revertedWith('Asset not found in position')
+      await expect(c.mm.connect(c.other).positionWithdraw(0, c.base.target)).to.be.revertedWith('Not position owner')
     })
   })
 })
