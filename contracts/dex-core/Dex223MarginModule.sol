@@ -59,7 +59,6 @@ interface IWETH9
 
 contract MarginModule is Multicall, IOrderParams
 {
-    uint256 constant private MAX_UINT8 = 255;
     uint256 constant private MAX_FREEZE_DURATION = 1 hours;
     // Swaps the module performs on a position's behalf during liquidate() and positionClose()
     // (see _swapToBaseAsset) must return at least this share of the order oracle's quote. Without a
@@ -635,11 +634,11 @@ contract MarginModule is Multicall, IOrderParams
 
         // leverage validation:
         // (collateral + loaned_asset) / collateral <= order.leverage
+        // Checked as a multiplication so nothing is truncated: the old integer division rounded
+        // the ratio down, so a 3x order accepted (collateral + loan) up to just under 4x collateral.
         uint256 collateralEquivalentInBaseAsset = _getEquivalentInBaseAsset(order.collateralAssets[_collateralIdx], _collateralAmount, order.baseAsset, _orderId);
-        
-        //uint256 leverage = (collateralEquivalentInBaseAsset + _amount) / collateralEquivalentInBaseAsset;  // Can't use specified variable to avoid "stack too deep" error.
-        require((collateralEquivalentInBaseAsset + _amount) / collateralEquivalentInBaseAsset <= MAX_UINT8, "Leverage exceeds maxuint8");
-        require(uint8((collateralEquivalentInBaseAsset + _amount) / collateralEquivalentInBaseAsset) <= order.leverage, "Leverage error");
+        require(collateralEquivalentInBaseAsset > 0, "Collateral error");
+        require(collateralEquivalentInBaseAsset + _amount <= uint256(order.leverage) * collateralEquivalentInBaseAsset, "Leverage error");
 
         address[] memory _assets;
         uint256[] memory _balances;
