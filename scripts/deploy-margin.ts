@@ -20,6 +20,10 @@
  * Options (environment):
  *   FACTORY, ROUTER      override the per-network defaults below
  *   TWAP_WINDOW          oracle window in seconds, default 1800
+ *   KNOWN_POOL           any pool of the factory, used to prove the router derives this factory's pool
+ *                        addresses (otherwise discovered from PoolCreated logs); SKIP_ROUTER_POOL_CHECK=1
+ *                        to proceed on a factory without pools
+ *   STATE_FILE           override deployments/<network>.json (rehearsals)
  *   ALLOW_SEPOLIA_COLLISION=1
  *                        mainnet only: proceed even if the predicted address already holds a
  *                        contract on Sepolia (see the layout note in scripts/deploy-mainnet.ts)
@@ -48,12 +52,15 @@ const FQN = {
 }
 
 // Per-network factory and router the module is bound to. Mainnet values come from deployments/mainnet.json
-// (deploy-mainnet.ts); Sepolia values are the current README "Quoteswap supported" set.
+// (deploy-mainnet.ts); Sepolia values are the README "Quoteswap supported" set.
+// NOT the later Sepolia router 0x1f61…a4dd: it reports this factory but was compiled with a different
+// POOL_INIT_CODE_HASH, so it derives pool addresses that do not exist and every swap reverts.
+// preflight() catches that class of mismatch for whatever router is passed.
 const DEFAULTS: Record<string, { factory?: string; router?: string }> = {
-  sepolia: { factory: '0x5D63230470AB553195dfaf794de3e94C69d150f9', router: '0x1f611e17c3a45f87d3edd14acd42b2113db9a4dd' },
+  sepolia: { factory: '0x5D63230470AB553195dfaf794de3e94C69d150f9', router: '0x99504dbaa0f9368e9341c15f67377d55ed4ac690' },
 }
 
-const STATE_FILE = path.join(process.cwd(), 'deployments', `${network.name}.json`)
+const STATE_FILE = process.env.STATE_FILE || path.join(process.cwd(), 'deployments', `${network.name}.json`)
 type State = Record<string, string>
 const load = (): State => (fs.existsSync(STATE_FILE) ? JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')) : {})
 let state: State = load()
@@ -105,12 +112,53 @@ async function preflight(inputs: { factory: string; router: string }) {
   const router = await ethers.getContractAt('contracts/dex-periphery/SwapRouter.sol:ERC223SwapRouter', inputs.router)
   const routerFactory: string = await (router as any).factory()
   if (!eq(routerFactory, inputs.factory)) fail(`router ${inputs.router} belongs to factory ${routerFactory}, not ${inputs.factory}`)
+  await checkRouterDerivesPools(inputs.factory, inputs.router)
 
   for (const fqn of Object.values(FQN)) {
     const size = ((await artifacts.readArtifact(fqn)).deployedBytecode.length - 2) / 2
     if (size > EIP170) fail(`${fqn} is ${size} bytes, over the EIP-170 limit of ${EIP170}`)
     console.log(`size       ${fqn.split(':')[1].padEnd(14)} ${size} bytes (${EIP170 - size} under the limit)`)
   }
+}
+
+/// A router only reports its factory. This repo's SwapRouter (and mainnet's) resolves pools with CREATE2
+/// from its own compiled POOL_INIT_CODE_HASH; if that constant does not match the pools this factory
+/// creates, every swap reverts (it calls a non-contract address), and with it every ERC-20 margin swap
+/// and liquidation. Sepolia's 0x1f61…a4dd router fails exactly this way against factory 0x5D63….
+/// Older routers (Sepolia 0x9950…) ask the factory with getPool() instead and cannot be wrong.
+/// The hash is a 32-byte constant in the bytecode, so test every 32-byte window against one real pool.
+async function checkRouterDerivesPools(factory: string, router: string) {
+  const code = (await ethers.provider.getCode(router)).slice(2)
+  const usesGetPool = code.includes(ethers.id('getPool(address,address,uint24)').slice(2, 10))
+  const pool = await findOnePool(factory)
+  if (!pool) {
+    if (usesGetPool) { console.log('router     resolves pools through factory.getPool()'); return }
+    if (process.env.SKIP_ROUTER_POOL_CHECK === '1') { console.log('router     WARN no pool found to check pool-address derivation (SKIP_ROUTER_POOL_CHECK=1)'); return }
+    return fail(`no pool of ${factory} found to check the router's pool-address derivation. Set KNOWN_POOL=0x... (any pool of this factory) or SKIP_ROUTER_POOL_CHECK=1`)
+  }
+  const p = new ethers.Contract(pool, ['function token0() view returns (address,address)', 'function token1() view returns (address,address)', 'function fee() view returns (uint24)'], ethers.provider)
+  const [t0] = await p.token0(); const [t1] = await p.token1(); const fee = await p.fee()
+  const salt = ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(['address', 'address', 'uint24'], [t0, t1, fee]))
+  for (let i = 0; i + 64 <= code.length; i += 2) {
+    const h = '0x' + code.slice(i, i + 64)
+    if (eq(ethers.getCreate2Address(factory, salt, h), pool)) { console.log(`router     derives ${factory}'s pools (init code hash ${h})`); return }
+  }
+  if (usesGetPool) { console.log(`router     resolves pools through factory.getPool() (checked against ${pool})`); return }
+  fail(`router ${router} cannot derive pool ${pool} of factory ${factory}: its POOL_INIT_CODE_HASH belongs to a different pool bytecode. Use a router built for this factory.`)
+}
+
+async function findOnePool(factory: string): Promise<string | undefined> {
+  if (process.env.KNOWN_POOL) return ethers.getAddress(process.env.KNOWN_POOL)
+  const f = new ethers.Contract(factory, ['event PoolCreated(address indexed token0_erc20, address indexed token1_erc20, address token0_erc223, address token1_erc223, uint24 indexed fee, int24 tickSpacing, address pool)'], ethers.provider)
+  const latest = await ethers.provider.getBlockNumber()
+  const CHUNK = 45_000
+  for (let to = latest, n = 0; to > 0 && n < 100; to -= CHUNK, n++) {
+    const from = Math.max(0, to - CHUNK + 1)
+    let logs: any[] = []
+    try { logs = await f.queryFilter(f.filters.PoolCreated(), from, to) } catch { continue }
+    if (logs.length) return (logs[logs.length - 1] as any).args.pool as string
+  }
+  return undefined
 }
 
 async function signer() {
@@ -143,6 +191,7 @@ async function deployOne(s: any, key: keyof typeof FQN, args: any[]) {
   if (state[doneKey] && state[key]) {
     const code = await ethers.provider.getCode(state[key])
     if (code === '0x') fail(`${key} is recorded at ${state[key]} but there is no code there; remove the entry from ${STATE_FILE} to redeploy`)
+    if (state[`args:${key}`] !== JSON.stringify(args)) fail(`${key} at ${state[key]} was deployed with args ${state[`args:${key}`]}, not ${JSON.stringify(args)}; remove its entries from ${STATE_FILE} to redeploy`)
     console.log(`  skip  ${key} already at ${state[key]}`)
     return state[key]
   }
