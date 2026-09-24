@@ -5,6 +5,7 @@
 .env
 /node_modules/
 .sepolia-reentrancy-state.json
+.sepolia-margin-e2e-state.json
 
 .playwright-mcp/
 dex223-sepolia-fixed.png
