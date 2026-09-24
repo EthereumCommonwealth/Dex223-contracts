@@ -61,6 +61,15 @@ contract MarginModule is Multicall, IOrderParams
 {
     uint256 constant private MAX_UINT8 = 255;
     uint256 constant private MAX_FREEZE_DURATION = 1 hours;
+    // Swaps the module performs on a position's behalf during liquidate() and positionClose()
+    // (see _swapToBaseAsset) must return at least this share of the order oracle's quote. Without a
+    // floor those swaps ran with amountOutMinimum = 0 and no price limit, so anyone watching the
+    // mempool could sandwich a liquidation and the lender absorbed the difference.
+    // 10000 = 100%. If the market has moved further than this from the TWAP, the liquidator can
+    // still finish the job: after the freeze, marginSwap() lets the liquidator swap the position's
+    // assets with their own limits, and a position holding only the base asset liquidates without
+    // any swap.
+    uint256 constant private FORCED_SWAP_MIN_OUT_BPS = 9500;
     uint256 constant private INTEREST_RATE_PRECISION = 10000; 
     IDex223Factory public factory;
     ISwapRouter public router;
@@ -861,7 +870,7 @@ contract MarginModule is Multicall, IOrderParams
         // Only allow the owner of the position to perform trading operations with it.
         _requirePositionOwner(_positionId);
 
-        _marginSwap223Internal(_positionId, _assetId1, _whitelistId1, _whitelistId2, _amount, _asset2, _feeTier);
+        _marginSwap223Internal(_positionId, _assetId1, _whitelistId1, _whitelistId2, _amount, _asset2, _feeTier, 0);
     }
 
     function _marginSwap223Internal(uint256 _positionId,
@@ -870,7 +879,8 @@ contract MarginModule is Multicall, IOrderParams
         uint256 _whitelistId2,
         uint256 _amount,
         address _asset2,
-        uint24 _feeTier) internal {
+        uint24 _feeTier,
+        uint256 _minAmountOut) internal {
         address _asset1 = positions[_positionId].assets[_assetId1];
 
         _validateAsset(_positionId, _asset1, _whitelistId1);
@@ -885,6 +895,20 @@ contract MarginModule is Multicall, IOrderParams
         address pool = factory.getPool(_asset1, _asset2, _feeTier);
         require(pool != address(0));
 
+        uint256 amountOut = _execute223Swap(pool, _asset1, _feeTier, _amount);
+        require(amountOut > 0);
+        require(amountOut >= _minAmountOut, "Too little received");
+
+        // add new (received) asset to Position
+        addAsset(_positionId, _asset2, amountOut);
+        reduceAsset(_positionId, _asset1, _amount);
+        emit MarginSwap(_positionId, _asset1, _asset2, _amount, amountOut);
+    }
+
+    /// @dev ERC-223 leg of a margin swap, split out of _marginSwap223Internal to keep that
+    /// function within the EVM stack limit. Resolves the pool's ERC-20 addresses for both sides
+    /// and swaps `_amount` of `_asset1` (ERC-223) through `pool`.
+    function _execute223Swap(address pool, address _asset1, uint24 _feeTier, uint256 _amount) internal returns (uint256) {
         address _asset1_20;
         address _asset2_20;
 
@@ -899,7 +923,7 @@ contract MarginModule is Multicall, IOrderParams
             _asset1_20 = token1_20;
         }
 
-        uint256 amountOut = executeSwapWithDeposit(
+        return executeSwapWithDeposit(
             _amount,
             address(this),
             SwapCallbackData({path: abi.encodePacked(_asset1_20, _feeTier, _asset2_20), payer: address(this)}),
@@ -914,12 +938,6 @@ contract MarginModule is Multicall, IOrderParams
                 sqrtPriceLimitX96: 0
             })
         );
-        require(amountOut > 0);
-
-        // add new (received) asset to Position
-        addAsset(_positionId, _asset2, amountOut);
-        reduceAsset(_positionId, _asset1, _amount);
-        emit MarginSwap(_positionId, _asset1, _asset2, _amount, amountOut);
     }
     
 
@@ -1214,7 +1232,7 @@ contract MarginModule is Multicall, IOrderParams
     // and liquidations. It surfaced as "reverted without a reason string" rather than the message,
     // because this contract is compiled with debug.revertStrings: "strip" to fit under EIP-170.
     function _sendAsset(address asset, uint256 amount, address receiver) internal {
-        require(asset != address(0), "R1");
+        require(asset != address(0)); // _transferOut routes address(0) to _sendEth
 
         bool success = IERC20Minimal(asset).transfer(receiver, amount);
         require(success, "ERC20 transfer failed");
@@ -1278,6 +1296,13 @@ contract MarginModule is Multicall, IOrderParams
     }
     
 
+    /// @dev True when `asset` is the ERC-223 address of one of `pool`'s two tokens.
+    function _isErc223SideOf(address pool, address asset) internal view returns (bool) {
+        (, address token0) = IDex223Pool(pool).token0();
+        (, address token1) = IDex223Pool(pool).token1();
+        return token0 == asset || token1 == asset;
+    }
+
     // @audit-fix V5: Use internal swap functions instead of public ones to avoid
     //   reentrancy guard conflicts and msg.sender ownership check failures
     //   when called from _liquidate or positionClose.
@@ -1286,19 +1311,16 @@ contract MarginModule is Multicall, IOrderParams
         Order storage order = orders[position.orderId];
         Oracle oracle = Oracle(order.oracle);
 
+        // findPoolWithHighestLiquidity reverts with "Oracle: no pool found" when nothing is eligible.
         (address pool,, uint24 fee) = oracle.findPoolWithHighestLiquidity(asset, order.baseAsset);
-        require(pool != address(0), "No pool available");
 
-        (, address token0) = IDex223Pool(pool).token0();
-        (, address token1) = IDex223Pool(pool).token1();
+        // Floor the output at FORCED_SWAP_MIN_OUT_BPS of the oracle's TWAP quote for this amount.
+        uint256 minOut = oracle.getAmountOut(order.baseAsset, asset, amount) * FORCED_SWAP_MIN_OUT_BPS / 10000;
 
-        uint256 idInWl0 = getIdFromTokenlist(order.whitelist, asset);
-        uint256 idInWl1 = getIdFromTokenlist(order.whitelist, order.baseAsset);
-
-        if (token0 == asset || token1 == asset) {
-            _marginSwap223Internal(positionId, getAssetId(positionId, asset), idInWl0, idInWl1, amount, order.baseAsset, fee);
+        if (_isErc223SideOf(pool, asset)) {
+            _marginSwap223Internal(positionId, getAssetId(positionId, asset), getIdFromTokenlist(order.whitelist, asset), getIdFromTokenlist(order.whitelist, order.baseAsset), amount, order.baseAsset, fee, minOut);
         } else {
-            _marginSwapInternal(positionId, getAssetId(positionId, asset), idInWl0, idInWl1, amount, order.baseAsset, fee, 0, 0);
+            _marginSwapInternal(positionId, getAssetId(positionId, asset), getIdFromTokenlist(order.whitelist, asset), getIdFromTokenlist(order.whitelist, order.baseAsset), amount, order.baseAsset, fee, minOut, 0);
         }
 
         // Return new base asset balance

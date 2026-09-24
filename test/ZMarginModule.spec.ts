@@ -728,4 +728,89 @@ describe('MarginModule', () => {
       expect((await c.mm.getPositionBalances(0))[0]).to.eq(0n)
     })
   })
+
+  describe('forced swaps (liquidate / positionClose) are floored at the oracle quote', () => {
+    // Order with a punitive rate so a healthy two-asset position becomes liquidatable through
+    // interest alone, without touching the pool price.
+    async function underwaterWithCollateral() {
+      const c = await loadFixture(fx)
+      await c.seedPool()
+      await c.mm.createOrder({ ...c.orderParams, interestRate: 10000n, duration: BigInt(365 * DAY) })
+      await c.mm.setOrderStatus(0, true)
+      await c.base.approve(c.mm.target, ethers.MaxUint256)
+      await c.collat.approve(c.mm.target, ethers.MaxUint256)
+      await c.mm.orderDepositToken(0, expandTo18Decimals(100))
+      await c.mm.takeLoan(0, expandTo18Decimals(1), 0, expandTo18Decimals(1))
+      await time.increase(90 * DAY)
+      expect(await c.mm.subjectToLiquidation(0)).to.eq(true)
+      return c
+    }
+
+    // Dump 30% of the pool's collateral reserve in one block: spot collapses, the TWAP has not moved.
+    async function crashCollateralSpot(c: Awaited<ReturnType<typeof fx>>) {
+      await c.collat.approve(c.router.target, ethers.MaxUint256)
+      await c.router.exactInputSingle({
+        tokenIn: c.collat.target, tokenOut: c.base.target, fee: FeeAmount.MEDIUM, recipient: c.wallet.address,
+        deadline: BigInt((await time.latest()) + 3600), amountIn: expandTo18Decimals(300),
+        amountOutMinimum: 0, sqrtPriceLimitX96: 0, prefer223Out: false,
+      })
+    }
+
+    it('liquidation swaps the collateral in a quiet market and closes the position', async () => {
+      const { mm, wallet } = await underwaterWithCollateral()
+      await mm.liquidate(0, wallet.address)              // freeze
+      await time.increase(60)
+      await mm.liquidate(0, wallet.address)              // liquidate: swaps collat -> base at ~1:1
+      expect((await mm.positions(0)).open).to.eq(false)
+      expect((await mm.order_status(0)).positions).to.eq(0n)
+    })
+
+    it('liquidation refuses a swap that returns less than 95% of the TWAP quote', async () => {
+      const c = await underwaterWithCollateral()
+      await c.mm.liquidate(0, c.wallet.address)          // freeze
+      await crashCollateralSpot(c)
+      // Spot is now far below the 30-minute TWAP the floor is derived from.
+      await expect(c.mm.liquidate(0, c.wallet.address)).to.be.revertedWith('Too little received')
+      expect((await c.mm.positions(0)).open).to.eq(true)
+    })
+
+    it('the liquidator can still finish with their own limits: marginSwap then liquidate', async () => {
+      const c = await underwaterWithCollateral()
+      await c.mm.liquidate(0, c.wallet.address)          // freeze, wallet is now the liquidator
+      await crashCollateralSpot(c)
+      // Liquidator swaps the collateral at whatever the market gives, with an explicit floor of 0.
+      await c.mm.marginSwap(0, 1, 1, 0, expandTo18Decimals(1), c.base.target, FeeAmount.MEDIUM, 0, 0)
+      expect((await c.mm.getPositionAssets(0)).length).to.eq(1)
+      await time.increase(60)
+      await c.mm.liquidate(0, c.wallet.address)          // only the base asset is left: no swap needed
+      expect((await c.mm.positions(0)).open).to.eq(false)
+    })
+
+    it('positionClose applies the same floor when it has to sell collateral', async () => {
+      const c = await loadFixture(fx)
+      await c.seedPool()
+      // 50% per 30 days: after 30 days the debt (1.5) exceeds the base held (1), so closing must sell collateral.
+      await c.mm.createOrder({ ...c.orderParams, interestRate: 5000n, duration: BigInt(365 * DAY) })
+      await c.mm.setOrderStatus(0, true)
+      await c.base.approve(c.mm.target, ethers.MaxUint256)
+      await c.collat.approve(c.mm.target, ethers.MaxUint256)
+      await c.mm.orderDepositToken(0, expandTo18Decimals(100))
+      await c.mm.takeLoan(0, expandTo18Decimals(1), 0, expandTo18Decimals(1))
+      await time.increase(30 * DAY)
+      expect(await c.mm.subjectToLiquidation(0)).to.eq(false)
+
+      await crashCollateralSpot(c)
+      await expect(c.mm.positionClose(0, true)).to.be.revertedWith('Too little received')
+
+      // Once the TWAP reflects the crash the quote and the market agree again and the close goes through.
+      await time.increase(c.TWAP_WINDOW)
+      // Cheaper collateral may no longer cover the debt; if it does, the close must succeed.
+      if (!(await c.mm.subjectToLiquidation(0))) {
+        await c.mm.positionClose(0, true)
+        expect((await c.mm.positions(0)).open).to.eq(false)
+      } else {
+        await expect(c.mm.positionClose(0, true)).to.be.revertedWith('Subject to liquidation')
+      }
+    })
+  })
 })
