@@ -8,5 +8,17 @@
   "revenueStakingTokenErc20": "0x1DEf777468F76ed1E74fC87bD32334d3Ccb520d0",
   "revenueStakingTokenErc223": "0x0a67Cc4D3Ac29a133a597b5Bef3fe9A6028ACad2",
   "revenueFactory": "0x5D63230470AB553195dfaf794de3e94C69d150f9",
-  "revenueDeployer": "0x9467a00F2DFBF392254133ff36c291c618dF6f54"
+  "revenueDeployer": "0x9467a00F2DFBF392254133ff36c291c618dF6f54",
+  "marginOracle": "0x5DaD3C2D6741Fce6cD20B05a04116120A414C4AA",
+  "fqn:marginOracle": "contracts/dex-core/Dex223Oracle.sol:Oracle",
+  "args:marginOracle": "[\"0x5D63230470AB553195dfaf794de3e94C69d150f9\",1800]",
+  "done:marginOracle": "0xcf929496eb79b5cd62db5844dcf696ca699c026ae07315922902952a7cdfeb3e",
+  "block:marginOracle": "11772112",
+  "superseded:marginModule": "0xd28b7a588aA384BCBCD80Ab18bA8D4e34c37A67b",
+  "superseded:args:marginModule": "[\"0x5D63230470AB553195dfaf794de3e94C69d150f9\",\"0x1F611e17c3a45F87D3edD14Acd42B2113Db9a4dd\"]",
+  "superseded:done:marginModule": "0x01bbdf76916996d64191888992c56a205de7ed084059a0a80ef974fcf0fdab8d",
+  "superseded:block:marginModule": "11772113",
+  "superseded:why:marginModule": "router 0x1F61...a4dd derives pool addresses from a POOL_INIT_CODE_HASH that does not match factory 0x5D63...'s pools, so every swap and liquidation reverts; redeploy with router 0x9950...c690",
+  "marginFactory": "0x5D63230470AB553195dfaf794de3e94C69d150f9",
+  "marginTwapWindow": "1800"
 }

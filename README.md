@@ -56,6 +56,8 @@ Do not use for new integrations. Its position manager did not bind `collect()` t
 - RevenueV1 [0xB5581C5500B3b68c5F3855518e7646304e84f9D2](https://sepolia.etherscan.io/address/0xB5581C5500B3b68c5F3855518e7646304e84f9D2#code). Staking tokens: RED ERC-20 `0x1DEf…` / ERC-223 `0x0a67…`. Do not `factory.setOwner(Revenue)`; the factory owner runs `scripts/revenue-enable-fees.ts` and `scripts/revenue-collect.ts`. Record: `deployments/sepolia.json`.
 - Revenue contract (testnet, legacy Revenue_old, not used by the Revenue UI) [0x4e38fB6f9243d2aC91C490230375FeDE1E0aD7F2](https://sepolia.etherscan.io/address/0x4e38fB6f9243d2aC91C490230375FeDE1E0aD7F2#code)
 - Router (tokenReceived restricted) [0x1f611e17c3a45f87d3edd14acd42b2113db9a4dd](https://sepolia.etherscan.io/address/0x1f611e17c3a45f87d3edd14acd42b2113db9a4dd#code)
+- Margin Oracle (verified, TWAP window 1800 s) [0x5DaD3C2D6741Fce6cD20B05a04116120A414C4AA](https://sepolia.etherscan.io/address/0x5DaD3C2D6741Fce6cD20B05a04116120A414C4AA#code)
+- Margin Module: redeploy pending with `npx hardhat run scripts/deploy-margin.ts --network sepolia` (router 0x9950...c690). The first deploy at [0xd28b7a588aA384BCBCD80Ab18bA8D4e34c37A67b](https://sepolia.etherscan.io/address/0xd28b7a588aA384BCBCD80Ab18bA8D4e34c37A67b#code) is bound to router 0x1f61...a4dd, which cannot reach this factory's pools, so its swaps and liquidations revert. Do not use it.
 
 ## Sepolia testnet deployment (deprecated)
 
