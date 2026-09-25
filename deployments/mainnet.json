@@ -71,6 +71,7 @@
   "revenueStakingTokenErc223": "0x0908078Da2935A14BC7a17770292818C85b580dd",
   "revenueFactory": "0xeA0A163e0196Bf1500B1B41d3ADdA0476dC137eb",
   "revenueDeployer": "0x9467a00F2DFBF392254133ff36c291c618dF6f54",
+  "revenueClaimDelay": "864000",
   "fqn:revenue": "contracts/dex-periphery/RevenueV1.sol:Revenue",
   "args:revenue": "[\"0x675eb5922604F434bcaAC4B4B433D8668925DD67\",\"0x0908078Da2935A14BC7a17770292818C85b580dd\"]"
 }
