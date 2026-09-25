@@ -24,7 +24,7 @@ On 2026-09-23, before any pool existed, the factory's pool library was replaced 
 | REVENUE (V1)          | [0xbA75fA26BB88BccEB74a967E4cA2FBfe99d6CE6e](https://etherscan.io/address/0xbA75fA26BB88BccEB74a967E4cA2FBfe99d6CE6e#code) |
 | POOL_INIT_CODE_HASH   | 0xe125afe94932872c7162b66e1bb1587d6fc76d525d248bb20e9e0484a99ec486 |
 
-RevenueV1 stakes D223 (ERC-20 `0x675e…DD67` / ERC-223 `0x0908…80dd`) and its `factory` is `0xeA0A…`. Do not `factory.setOwner(Revenue)`. No pools exist yet; once they do, the factory owner runs `scripts/revenue-enable-fees.ts`, then `scripts/revenue-collect.ts` with `REVENUE=0xbA75…`.
+RevenueV1 stakes D223 (ERC-20 `0x675e…DD67` / ERC-223 `0x0908…80dd`) and its `factory` is `0xeA0A…`. Its `claim_delay` (the lock after each stake, for both unstaking and claiming) and `assigned_avg_staking_duration` (the reward period) are both the 10 day default. Do not `factory.setOwner(Revenue)`. No pools exist yet; once they do, the factory owner runs `scripts/revenue-enable-fees.ts`, then `scripts/revenue-collect.ts` with `REVENUE=0xbA75…`.
 
 ## Ethereum mainnet deployment (previous, superseded 2026-09-22)
 
@@ -53,7 +53,7 @@ Do not use for new integrations. Its position manager did not bind `collect()` t
 - Auto-listing Registry (verified) 0x6ee7518400c14e8046252E3cC1670FC8093e618F
 - Core Testnet Auto-listing (verified / 100 SepWEI per token) 0x8a1839E6b7b4538a15de8865891FcE6e24a27ddA
 - Free Testnet Auto-listing (verified) 0xBC5fC0bbd73DF985Cc28c9367407f9FfB1FD4CC3
-- RevenueV1 [0xB5581C5500B3b68c5F3855518e7646304e84f9D2](https://sepolia.etherscan.io/address/0xB5581C5500B3b68c5F3855518e7646304e84f9D2#code). Staking tokens: RED ERC-20 `0x1DEf…` / ERC-223 `0x0a67…`. Do not `factory.setOwner(Revenue)`; the factory owner runs `scripts/revenue-enable-fees.ts` and `scripts/revenue-collect.ts`. Record: `deployments/sepolia.json`.
+- RevenueV1 [0xB5581C5500B3b68c5F3855518e7646304e84f9D2](https://sepolia.etherscan.io/address/0xB5581C5500B3b68c5F3855518e7646304e84f9D2#code). Staking tokens: RED ERC-20 `0x1DEf…` / ERC-223 `0x0a67…`. `claim_delay` (the lock) and `assigned_avg_staking_duration` (the reward period) are both set to 5 minutes (300 s) for testing; mainnet uses the 10 day default for both. Do not `factory.setOwner(Revenue)`; the factory owner runs `scripts/revenue-enable-fees.ts` and `scripts/revenue-collect.ts`. Record: `deployments/sepolia.json`.
 - Revenue contract (testnet, legacy Revenue_old, not used by the Revenue UI) [0x4e38fB6f9243d2aC91C490230375FeDE1E0aD7F2](https://sepolia.etherscan.io/address/0x4e38fB6f9243d2aC91C490230375FeDE1E0aD7F2#code)
 - Router (tokenReceived restricted) [0x1f611e17c3a45f87d3edd14acd42b2113db9a4dd](https://sepolia.etherscan.io/address/0x1f611e17c3a45f87d3edd14acd42b2113db9a4dd#code)
 - Margin Oracle (verified, TWAP window 1800 s) [0x5DaD3C2D6741Fce6cD20B05a04116120A414C4AA](https://sepolia.etherscan.io/address/0x5DaD3C2D6741Fce6cD20B05a04116120A414C4AA#code)
