@@ -125,4 +125,20 @@ describe('PaymentReceiver (Safe Send)', () => {
 
     await expect(receiver.rescue(await spoof.getAddress(), other.address, 1n)).to.be.revertedWith('NOT_SURPLUS')
   })
+
+  it('withdraws a credited token whose transfer returns nothing', async () => {
+    const { merchant, receiver } = await loadFixture(fixture)
+    const NoReturn = await ethers.getContractFactory('TestNoReturnERC223')
+    const token = await NoReturn.deploy(1000n)
+    await token.waitForDeployment()
+    const tokenAddr = await token.getAddress()
+
+    await (await token['transfer(address,uint256,bytes)'](await receiver.getAddress(), 300n, '0x')).wait()
+    expect(await receiver.credited(tokenAddr)).to.eq(300n)
+
+    await (await receiver.withdraw(tokenAddr, 100n)).wait()
+    await (await receiver.withdrawAll(tokenAddr)).wait()
+    expect(await token.balanceOf(merchant.address)).to.eq(300n)
+    expect(await receiver.credited(tokenAddr)).to.eq(0n)
+  })
 })
