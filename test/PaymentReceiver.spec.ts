@@ -141,4 +141,31 @@ describe('PaymentReceiver (Safe Send)', () => {
     expect(await token.balanceOf(merchant.address)).to.eq(300n)
     expect(await receiver.credited(tokenAddr)).to.eq(0n)
   })
+
+  it('moves ownership only after the nominee accepts', async () => {
+    const { owner, payer, other, receiver } = await loadFixture(fixture)
+
+    await expect(receiver.transferOwnership(other.address))
+      .to.emit(receiver, 'OwnershipTransferStarted')
+      .withArgs(owner.address, other.address)
+    expect(await receiver.owner()).to.eq(owner.address)
+    expect(await receiver.pendingOwner()).to.eq(other.address)
+
+    await expect(receiver.connect(payer).acceptOwnership()).to.be.revertedWith('NOT_PENDING_OWNER')
+    await expect(receiver.connect(other).acceptOwnership())
+      .to.emit(receiver, 'OwnershipTransferred')
+      .withArgs(owner.address, other.address)
+    expect(await receiver.owner()).to.eq(other.address)
+    expect(await receiver.pendingOwner()).to.eq(ethers.ZeroAddress)
+    await expect(receiver.setPayout(other.address)).to.be.revertedWith('NOT_OWNER')
+  })
+
+  it('lets the owner replace a mistyped nominee before it is accepted', async () => {
+    const { payer, other, receiver } = await loadFixture(fixture)
+    await (await receiver.transferOwnership(payer.address)).wait()
+    await (await receiver.transferOwnership(other.address)).wait()
+    await expect(receiver.connect(payer).acceptOwnership()).to.be.revertedWith('NOT_PENDING_OWNER')
+    await (await receiver.connect(other).acceptOwnership()).wait()
+    expect(await receiver.owner()).to.eq(other.address)
+  })
 })

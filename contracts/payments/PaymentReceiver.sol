@@ -14,6 +14,7 @@ import '../libraries/TransferHelper.sol';
 ///      signal and confirm token balances before shipping goods.
 contract PaymentReceiver is IERC223Recipient {
     address public owner;
+    address public pendingOwner;
     address public payout;
 
     /// @dev token => credited balance available to withdraw
@@ -23,6 +24,7 @@ contract PaymentReceiver is IERC223Recipient {
     mapping(address => bool) public acceptedToken;
     bool public whitelistEnabled;
 
+    event OwnershipTransferStarted(address indexed previousOwner, address indexed newOwner);
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
     event PayoutUpdated(address indexed payout);
     event TokenAccepted(address indexed token, bool accepted);
@@ -53,10 +55,19 @@ contract PaymentReceiver is IERC223Recipient {
         emit PayoutUpdated(_payout);
     }
 
+    /// @notice Nominate a new owner. Ownership only moves once `newOwner` calls
+    ///         `acceptOwnership`, so a mistyped address cannot take control of the funds.
     function transferOwnership(address newOwner) external onlyOwner {
         require(newOwner != address(0), 'ZERO_OWNER');
-        emit OwnershipTransferred(owner, newOwner);
-        owner = newOwner;
+        pendingOwner = newOwner;
+        emit OwnershipTransferStarted(owner, newOwner);
+    }
+
+    function acceptOwnership() external {
+        require(msg.sender == pendingOwner, 'NOT_PENDING_OWNER');
+        emit OwnershipTransferred(owner, msg.sender);
+        owner = msg.sender;
+        pendingOwner = address(0);
     }
 
     function setPayout(address _payout) external onlyOwner {
