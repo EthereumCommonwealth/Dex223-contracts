@@ -39,5 +39,11 @@
   "block:safeSendRouter": "11777711",
   "safeSendCommit": "9a64abb",
   "superseded:paymentReceiver": "0x3a6f5D3a126f8951e4C2Ade758359F8Ac89C2f86",
-  "superseded:safeSendRouter": "0x85523a36d3b9361ab5d0F2adC58da5583AFD8a95"
+  "superseded:safeSendRouter": "0x85523a36d3b9361ab5d0F2adC58da5583AFD8a95",
+  "feeCollector": "0x92Aca4ef663069d1e6CECA32F1326c904b470586",
+  "fqn:feeCollector": "contracts/dex-periphery/ProtocolFeeCollector.sol:ProtocolFeeCollector",
+  "args:feeCollector": "[\"0xeA0A163e0196Bf1500B1B41d3ADdA0476dC137eb\",\"0xB5581C5500B3b68c5F3855518e7646304e84f9D2\",\"0x9467a00F2DFBF392254133ff36c291c618dF6f54\",4,4]",
+  "block:feeCollector": "11778010",
+  "done:factory.setOwner(feeCollector)": "0x02109a5b2e173086e4440a29f2fd979f047db6d11e5076cea0b313e991309448",
+  "block:factory.setOwner(feeCollector)": "11778011"
 }
