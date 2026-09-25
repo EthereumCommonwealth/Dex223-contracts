@@ -100,14 +100,15 @@ contract PaymentReceiver is IERC223Recipient {
         return 0x8943ec02;
     }
 
-    /// @notice Pull credited tokens to the payout address. Uses ERC-223 `transfer`.
+    /// @notice Pull credited tokens to the payout address. Tokens whose `transfer` returns
+    ///         nothing are accepted, as in `rescue`, so credited funds can always leave.
     function withdraw(address token, uint256 amount) external onlyOwner {
         require(amount > 0, 'ZERO_AMOUNT');
         uint256 bal = credited[token];
         require(bal >= amount, 'INSUFFICIENT');
         credited[token] = bal - amount;
 
-        require(IERC223(token).transfer(payout, amount), 'TRANSFER_FAILED');
+        TransferHelper.safeTransfer(token, payout, amount);
         emit Withdrawn(token, payout, amount);
     }
 
@@ -136,7 +137,7 @@ contract PaymentReceiver is IERC223Recipient {
         uint256 amount = credited[token];
         require(amount > 0, 'ZERO_AMOUNT');
         credited[token] = 0;
-        require(IERC223(token).transfer(payout, amount), 'TRANSFER_FAILED');
+        TransferHelper.safeTransfer(token, payout, amount);
         emit Withdrawn(token, payout, amount);
     }
 }
