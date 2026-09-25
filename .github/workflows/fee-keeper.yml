@@ -1,0 +1,68 @@
+name: Fee keeper
+
+# Moves accrued protocol fees into Revenue through ProtocolFeeCollector (scripts/fee-keeper.ts).
+# The wallet only pays gas: collect and enableFees are callable by anyone, and collect can only
+# send to Revenue. It holds no owner rights, so a leaked key costs at most its ETH balance.
+#
+# Secrets:
+#   FEE_KEEPER_PRIVATE_KEY  gas-only wallet, funded with a little ETH
+#   MAINNET_RPC_URL         an RPC that serves eth_getLogs back to the factory deployment block
+
+on:
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Only report what would be sent
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fee-keeper
+  cancel-in-progress: false
+
+jobs:
+  keeper:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Is a collector recorded for mainnet?
+        id: recorded
+        run: |
+          if jq -e '.feeCollector' deployments/mainnet.json > /dev/null; then
+            echo "yes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No feeCollector in deployments/mainnet.json yet, nothing to do."
+            echo "yes=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-node@v4
+        if: steps.recorded.outputs.yes == 'true'
+        with:
+          node-version: 20
+          cache: yarn
+
+      - if: steps.recorded.outputs.yes == 'true'
+        run: yarn install --frozen-lockfile
+
+      - if: steps.recorded.outputs.yes == 'true'
+        run: npx hardhat compile
+
+      - name: Run keeper
+        if: steps.recorded.outputs.yes == 'true'
+        env:
+          PRIVATE_KEY: ${{ secrets.FEE_KEEPER_PRIVATE_KEY }}
+          MAINNET_RPC_URL: ${{ secrets.MAINNET_RPC_URL }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && 'true' || 'false' }}
+        run: |
+          if [ -z "$PRIVATE_KEY" ] || [ -z "$MAINNET_RPC_URL" ]; then
+            echo "::error::Set the FEE_KEEPER_PRIVATE_KEY and MAINNET_RPC_URL repository secrets."
+            exit 1
+          fi
+          npx hardhat run scripts/fee-keeper.ts --network mainnet
