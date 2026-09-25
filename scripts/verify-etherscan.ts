@@ -1,11 +1,14 @@
 /**
- * Verifies deployed contracts on Etherscan through the v2 API.
+ * Verifies deployed contracts on the chain's block explorer: Etherscan's v2 API, or the Etherscan-compatible
+ * API named for the chain in scripts/chains.ts (Routescan for Avalanche).
  *
  *   npx hardhat run scripts/verify-etherscan.ts --network mainnet
+ *   npx hardhat run scripts/verify-etherscan.ts --network base
+ *   VERIFY_WITH=fallback npx hardhat run scripts/verify-etherscan.ts --network base   # Blockscout, no key
  *
- * Reads deployments/<network>.json (or STATE_FILE), which scripts/deploy-mainnet.ts fills with each
- * contract's address, fully qualified name (`fqn:<key>`) and constructor arguments (`args:<key>`).
- * Needs ETHERSCAN_API_KEY in .env.
+ * Reads deployments/<network>.json (or STATE_FILE), which the deploy scripts fill with each contract's
+ * address, fully qualified name (`fqn:<key>`) and constructor arguments (`args:<key>`).
+ * Etherscan needs ETHERSCAN_API_KEY in .env, on a paid plan for the chains marked `paidOnly`.
  *
  * Why not `npx hardhat verify`: Etherscan shut down its v1 API, and this repo's
  * @nomicfoundation/hardhat-verify 2.0.x only speaks v1. The v2-capable 2.1.x requires Hardhat >= 2.26.
@@ -18,8 +21,12 @@
 import { ethers, network, artifacts } from 'hardhat'
 import * as fs from 'fs'
 import * as path from 'path'
+import { CHAINS } from './chains'
 
-const API = 'https://api.etherscan.io/v2/api'
+const ETHERSCAN = 'https://api.etherscan.io/v2/api'
+// Etherscan's v2 API is one endpoint for every chain and needs `chainid`; the compatible APIs are one
+// endpoint per chain and do not take it.
+let API = ETHERSCAN
 const STATE_FILE = process.env.STATE_FILE || path.join(process.cwd(), 'deployments', `${network.name}.json`)
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 const fail = (msg: string): never => { throw new Error(msg) }
@@ -41,13 +48,16 @@ async function throttled(call: () => Promise<Response>): Promise<ApiResponse> {
   }
 }
 
+const chainParam = (chainId: bigint): Record<string, string> => (API === ETHERSCAN ? { chainid: chainId.toString() } : {})
+
 async function get(chainId: bigint, params: Record<string, string>) {
-  const q = new URLSearchParams({ chainid: chainId.toString(), ...params })
+  const q = new URLSearchParams({ ...chainParam(chainId), ...params })
   return throttled(() => fetch(`${API}?${q}`))
 }
 
 async function post(chainId: bigint, params: Record<string, string>) {
-  return throttled(() => fetch(`${API}?chainid=${chainId}`, {
+  const q = new URLSearchParams(chainParam(chainId)).toString()
+  return throttled(() => fetch(q ? `${API}?${q}` : API, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams(params).toString(),
@@ -107,8 +117,26 @@ async function verifyOne(chainId: bigint, apikey: string, key: string, address: 
 }
 
 async function main() {
-  if (network.name !== 'mainnet' && network.name !== 'sepolia') fail(`nothing to verify on '${network.name}'`)
-  const apikey = process.env.ETHERSCAN_API_KEY || fail('ETHERSCAN_API_KEY is not set')
+  const chain = CHAINS[network.name]
+  if (!chain && network.name !== 'sepolia') fail(`nothing to verify on '${network.name}'`)
+  const v = chain?.verifier ?? { kind: 'etherscan' as const }
+  let apikey: string
+  if (v.kind === 'compatible') {
+    API = v.api
+    // Routescan and Blockscout accept any placeholder when no key is configured.
+    apikey = (v.keyEnv && process.env[v.keyEnv]) || 'verifyContract'
+  } else if (process.env.VERIFY_WITH === 'fallback') {
+    API = v.fallbackApi || fail(`${network.name} has no fallback explorer in scripts/chains.ts`)
+    apikey = 'verifyContract'
+  } else {
+    apikey = process.env.ETHERSCAN_API_KEY || fail('ETHERSCAN_API_KEY is not set')
+    const probe = await get(BigInt(chain?.chainId ?? 11155111), { apikey, module: 'account', action: 'balance', address: ethers.ZeroAddress })
+    if (/free api access is not supported/i.test(String(probe.result))) {
+      fail(`ETHERSCAN_API_KEY is on the free plan, which does not cover ${network.name}. Use a paid key` +
+        (v.fallbackApi ? `, or re-run with VERIFY_WITH=fallback to verify on ${v.fallbackApi}` : ''))
+    }
+  }
+  console.log(`verifying on ${API}`)
   const { chainId } = await ethers.provider.getNetwork()
   if (!fs.existsSync(STATE_FILE)) fail(`${STATE_FILE} not found`)
   const state: Record<string, string> = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'))
