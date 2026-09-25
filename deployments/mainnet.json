@@ -74,5 +74,11 @@
   "revenueClaimDelay": "864000",
   "revenueAvgStakingDuration": "864000",
   "fqn:revenue": "contracts/dex-periphery/RevenueV1.sol:Revenue",
-  "args:revenue": "[\"0x675eb5922604F434bcaAC4B4B433D8668925DD67\",\"0x0908078Da2935A14BC7a17770292818C85b580dd\"]"
+  "args:revenue": "[\"0x675eb5922604F434bcaAC4B4B433D8668925DD67\",\"0x0908078Da2935A14BC7a17770292818C85b580dd\"]",
+  "feeCollector": "0x984e217ddAE675d706509B02EedB2FAF2F6a342E",
+  "fqn:feeCollector": "contracts/dex-periphery/ProtocolFeeCollector.sol:ProtocolFeeCollector",
+  "args:feeCollector": "[\"0xeA0A163e0196Bf1500B1B41d3ADdA0476dC137eb\",\"0xbA75fA26BB88BccEB74a967E4cA2FBfe99d6CE6e\",\"0x9467a00F2DFBF392254133ff36c291c618dF6f54\",4,4]",
+  "block:feeCollector": "26053568",
+  "done:factory.setOwner(feeCollector)": "0xf05a6c65c907060fcc03097919272d1be0fcd8c578b2e47829672713cc67e8d5",
+  "block:factory.setOwner(feeCollector)": "26053569"
 }
