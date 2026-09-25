@@ -12,7 +12,9 @@
  * COLLECTOR, FACTORY and FROM_BLOCK default to `feeCollector`, `factory` and `block:factory` in
  * deployments/<network>.json. The RPC must serve eth_getLogs back to FROM_BLOCK; LOG_CHUNK (default
  * 10000) sets the block range per request. MIN_WEI (default 1) skips pools where neither side has
- * accrued more than that many base units, since collectProtocol always leaves 1 behind.
+ * accrued more than that many base units, since collectProtocol always leaves 1 behind. BATCH (default
+ * 50) caps the pools per transaction: the collector reserves a fixed gas allowance for every pool in a
+ * call, so one transaction for hundreds of pools would exceed the block gas limit.
  */
 import { ethers, network } from 'hardhat'
 import fs from 'fs'
@@ -53,6 +55,8 @@ export async function main() {
   const fromBlock = Number(process.env.FROM_BLOCK ?? state['block:factory'] ?? fail('Set FROM_BLOCK'))
   const chunk = Number(process.env.LOG_CHUNK ?? '10000')
   const minWei = BigInt(process.env.MIN_WEI ?? '1')
+  const batch = Number(process.env.BATCH ?? '50')
+  if (!Number.isInteger(batch) || batch < 1) fail('BATCH must be a positive integer')
   const dryRun = (process.env.DRY_RUN ?? 'false').toLowerCase() === 'true'
 
   const collector = await ethers.getContractAt('ProtocolFeeCollector', collectorAddr)
@@ -99,13 +103,16 @@ export async function main() {
       console.log(`${label}: would send for ${list.length} pools`)
       continue
     }
-    const tx = await send([...list])
-    const r = await tx.wait()
-    const skipped = r!.logs
-      .map((l) => { try { return collector.interface.parseLog(l) } catch { return null } })
-      .filter((l) => l?.name === 'PoolSkipped')
-    console.log(`${label}: ${tx.hash} (${list.length} pools, ${skipped.length} skipped, gas ${r!.gasUsed})`)
-    for (const s of skipped) console.log(`  skipped ${s!.args.pool}: ${s!.args.reason}`)
+    for (let i = 0; i < list.length; i += batch) {
+      const part = list.slice(i, i + batch)
+      const tx = await send(part)
+      const r = await tx.wait()
+      const skipped = r!.logs
+        .map((l) => { try { return collector.interface.parseLog(l) } catch { return null } })
+        .filter((l) => l?.name === 'PoolSkipped')
+      console.log(`${label}: ${tx.hash} (${part.length} pools, ${skipped.length} skipped, gas ${r!.gasUsed})`)
+      for (const s of skipped) console.log(`  skipped ${s!.args.pool}: ${s!.args.reason}`)
+    }
   }
 }
 
