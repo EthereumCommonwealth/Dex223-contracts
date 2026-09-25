@@ -60,6 +60,7 @@
     "hardhat:test:pool": "hardhat test ./test/UniswapV3Pool.arbitrage.spec.ts ./test/UniswapV3Pool.gas.spec.ts ./test/UniswapV3Pool.spec.ts",
     "hardhat:test:poolswaps": "hardhat test ./test/UniswapV3Pool.swaps.spec.ts",
     "hardhat:test:autolist": "hardhat test ./test/ZAutoListing.spec.ts",
+    "hardhat:test:payments": "hardhat test ./test/PaymentReceiver.spec.ts ./test/SafeSendRouter.spec.ts",
     "hardhat:test:nfpm": "hardhat test ./test/LiquidityAmounts.spec.ts ./test/PositionValue.spec.ts ./test/NonfungiblePositionManager.spec.ts",
     "lint:contracts": "yarn solhint contracts/*.sol",
     "lint:contracts:format": "yarn prettier --write contracts/*.sol",
