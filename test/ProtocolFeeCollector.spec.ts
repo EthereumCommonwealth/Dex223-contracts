@@ -114,6 +114,42 @@ describe('ProtocolFeeCollector', () => {
     })
   })
 
+  describe('gas', () => {
+    it('a pool that burns all the gas it is given is skipped without starving the next pool', async () => {
+      const f = await handedOver()
+      const burner = await (await ethers.getContractFactory('GasBurnerPool')).deploy(f.factory.target)
+
+      const enable = f.collector.connect(f.keeper).enableFees([burner.target, f.pool.target])
+      await expect(enable).to.emit(f.collector, 'PoolSkipped').withArgs(burner.target, '0x')
+      await expect(enable).to.emit(f.collector, 'PoolFeeProtocolSet').withArgs(f.pool.target, 4, 4, false)
+
+      await f.swap(expandTo18Decimals(1))
+      const accrued = (await f.pool.protocolFees()).token0
+      const collect = f.collector.connect(f.keeper).collect([burner.target, f.pool.target])
+      await expect(collect).to.emit(f.collector, 'PoolSkipped').withArgs(burner.target, '0x')
+      await expect(collect).to.emit(f.collector, 'Collected').withArgs(f.pool.target, f.revenue.target, accrued - 1n, 0n)
+    })
+
+    it('a batch sent with too little gas reverts instead of skipping pools', async () => {
+      const f = await handedOver()
+      await f.collector.enableFees([f.pool.target])
+      await f.swap(expandTo18Decimals(1))
+      await expect(f.collector.connect(f.keeper).collect([f.pool.target], { gasLimit: 200_000 })).to.be.revertedWith('OUT_OF_GAS')
+      expect((await f.pool.protocolFees()).token0).to.be.gt(1n)
+    })
+
+    it('a transaction sent with exactly the estimated gas collects every pool', async () => {
+      const f = await handedOver()
+      await f.collector.enableFees([f.pool.target])
+      await f.swap(expandTo18Decimals(1))
+      const gasLimit = await f.collector.connect(f.keeper).collect.estimateGas([f.pool.target])
+      await expect(f.collector.connect(f.keeper).collect([f.pool.target], { gasLimit }))
+        .to.emit(f.collector, 'Collected')
+        .and.not.to.emit(f.collector, 'PoolSkipped')
+      expect((await f.pool.protocolFees()).token0).to.eq(1n)
+    })
+  })
+
   describe('owner powers stay with the owner', () => {
     it('the previous factory owner can no longer act on pools directly', async () => {
       const f = await handedOver()
