@@ -40,10 +40,13 @@
   "safeSendCommit": "9a64abb",
   "superseded:paymentReceiver": "0x3a6f5D3a126f8951e4C2Ade758359F8Ac89C2f86",
   "superseded:safeSendRouter": "0x85523a36d3b9361ab5d0F2adC58da5583AFD8a95",
-  "feeCollector": "0x92Aca4ef663069d1e6CECA32F1326c904b470586",
+  "superseded:feeCollector": "0x92Aca4ef663069d1e6CECA32F1326c904b470586",
+  "superseded:block:feeCollector": "11778010",
+  "superseded:why:feeCollector": "built before the per-pool gas caps (#90), so gas estimation could skip pools; it handed the factory to the fixed collector through execute(factory.setOwner)",
+  "feeCollector": "0x9B96be5B9668747Bb50Ff32029140bb7EAea69A5",
   "fqn:feeCollector": "contracts/dex-periphery/ProtocolFeeCollector.sol:ProtocolFeeCollector",
   "args:feeCollector": "[\"0xeA0A163e0196Bf1500B1B41d3ADdA0476dC137eb\",\"0xB5581C5500B3b68c5F3855518e7646304e84f9D2\",\"0x9467a00F2DFBF392254133ff36c291c618dF6f54\",4,4]",
-  "block:feeCollector": "11778010",
-  "done:factory.setOwner(feeCollector)": "0x02109a5b2e173086e4440a29f2fd979f047db6d11e5076cea0b313e991309448",
-  "block:factory.setOwner(feeCollector)": "11778011"
+  "block:feeCollector": "11778529",
+  "done:factory.setOwner(feeCollector)": "0xcf8c68be05b71d1b50e02407815605e31b842e6f1c21b219d14bf826435d8032",
+  "block:factory.setOwner(feeCollector)": "11778540"
 }
