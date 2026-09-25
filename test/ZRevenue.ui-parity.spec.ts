@@ -71,7 +71,7 @@ describe('Revenue: behaviour the UI relies on', () => {
   })
 
   describe('lock', () => {
-    it('lasts claim_delay (10 days), not 21', async () => {
+    it('claim_delay defaults to 10 days, not 21 (owner-configurable; Sepolia uses 5 minutes)', async () => {
       const f = await loadFixture(fixture)
       expect(await f.revenue.claim_delay()).to.eq(BigInt(10 * DAY))
       expect(await f.revenue.assigned_avg_staking_duration()).to.eq(BigInt(10 * DAY))
