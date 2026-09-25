@@ -26,5 +26,18 @@
   "superseded:block:marginModule": "11772113",
   "superseded:why:marginModule": "router 0x1F61...a4dd derives pool addresses from a POOL_INIT_CODE_HASH that does not match factory 0x5D63...'s pools, so every swap and liquidation reverts; redeploy with router 0x9950...c690",
   "marginFactory": "0x5D63230470AB553195dfaf794de3e94C69d150f9",
-  "marginTwapWindow": "1800"
+  "marginTwapWindow": "1800",
+  "paymentReceiver": "0x32480C1Edc5e51eca39FfF766cDdd9087DfC34E9",
+  "fqn:paymentReceiver": "contracts/payments/PaymentReceiver.sol:PaymentReceiver",
+  "args:paymentReceiver": "[\"0x9467a00F2DFBF392254133ff36c291c618dF6f54\"]",
+  "done:paymentReceiver": "0x62f49ca38a148649e2b2d08d5c4c464c0512c529ba761802d3c85a7675a7fca0",
+  "block:paymentReceiver": "11777710",
+  "safeSendRouter": "0x7b58D9B037C4AC84eE06208Bc0fF95Ba9b84AC7e",
+  "fqn:safeSendRouter": "contracts/payments/SafeSendRouter.sol:SafeSendRouter",
+  "args:safeSendRouter": "[\"0x5847f5C0E09182d9e75fE8B1617786F62fee0D9F\"]",
+  "done:safeSendRouter": "0x66f673b2528ea5c4f75d6e28c669719af8497bc7057148cce5a5885616024f0e",
+  "block:safeSendRouter": "11777711",
+  "safeSendCommit": "9a64abb",
+  "superseded:paymentReceiver": "0x3a6f5D3a126f8951e4C2Ade758359F8Ac89C2f86",
+  "superseded:safeSendRouter": "0x85523a36d3b9361ab5d0F2adC58da5583AFD8a95"
 }
