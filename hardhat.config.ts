@@ -5,8 +5,10 @@ import "@nomicfoundation/hardhat-chai-matchers";
 // import "@nomicfoundation/hardhat-toolbox";
 
 import { HardhatUserConfig, task } from "hardhat/config";
+import { NetworksUserConfig } from "hardhat/types";
 import fs from "fs";
 import path from "path";
+import { CHAINS, rpcUrl } from "./scripts/chains";
 
 require("dotenv").config();
 
@@ -17,10 +19,11 @@ const ETHERSCAN_API_KEY = process.env.ETHERSCAN_API_KEY || "";
 const COINMARKETCAP_API_KEY = process.env.COINMARKETCAP_API_KEY || "";
 const SEPOLIA_RPC_URL =
   process.env.SEPOLIA_RPC_URL || "https://ethereum-sepolia-rpc.publicnode.com";
-const MAINNET_RPC_URL =
-  process.env.MAINNET_RPC_URL || "https://ethereum-rpc.publicnode.com";
-// Local anvil fork of mainnet used to rehearse the mainnet deployment. See scripts/deploy-mainnet.ts.
+// Local anvil fork used to rehearse a deployment. FORK_CHAIN names the chain it forks (a key of
+// scripts/chains.ts, default mainnet), so `fork` expects that chain's id.
 const FORK_RPC_URL = process.env.FORK_RPC_URL || "http://127.0.0.1:8546";
+const FORK_CHAIN = process.env.FORK_CHAIN || "mainnet";
+if (!CHAINS[FORK_CHAIN]) throw new Error(`FORK_CHAIN '${FORK_CHAIN}' is not in scripts/chains.ts`);
 
 // Accept either a raw private key or a seed phrase, so a single key can be supplied via .env.
 const PRIVATE_KEY = process.env.PRIVATE_KEY;
@@ -322,29 +325,28 @@ const config: HardhatUserConfig = {
       chainId: 11155111,
       accounts: ACCOUNTS,
     },
-    mainnet: {
-      // Deploy with scripts/deploy-mainnet.ts only. That script refuses to run here unless
-      // CONFIRM_MAINNET is set, checks the deployer and its starting nonce, and verifies
-      // POOL_INIT_CODE_HASH and every contract size before sending anything.
-      url: MAINNET_RPC_URL,
-      chainId: 1,
-      accounts: ACCOUNTS,
-      // NOTE: no gasMultiplier here on purpose. hardhat-ethers 3 fills gasLimit with the raw estimate itself,
-      // so a network-level gasMultiplier is silently ignored. deploy-mainnet.ts applies its own 20% margin.
-    },
+    // mainnet, base, bsc, arbitrum, polygon, avalanche, optimism, monad: one network per entry in
+    // scripts/chains.ts, each with its RPC overridable through the env var named there.
+    // Mainnet was deployed with scripts/deploy-mainnet.ts, which refuses to run without CONFIRM_MAINNET.
+    // NOTE: no gasMultiplier on purpose. hardhat-ethers 3 fills gasLimit with the raw estimate itself,
+    // so a network-level gasMultiplier is silently ignored. The deploy scripts apply their own 20% margin.
+    ...Object.fromEntries(
+      Object.entries(CHAINS).map(([name, c]) => [name, { url: rpcUrl(c), chainId: c.chainId, accounts: ACCOUNTS }])
+    ) as NetworksUserConfig,
     fork: {
-      // A local fork of mainnet, for rehearsing the mainnet deployment against real state (the live
-      // ERC-7417 converter, WETH9, USDC, USDT). Start it with chain id 1 so chain-dependent logic such
-      // as the position NFT's permit domain behaves exactly as on mainnet:
+      // A local fork of FORK_CHAIN, for rehearsing a deployment against real state (the wrapped native
+      // token, stablecoins and, on mainnet, the live ERC-7417 converter). Start it with the forked chain's
+      // own id so chain-dependent logic such as the position NFT's permit domain behaves as it will live:
       //
       //   ~/.foundry/bin/anvil --fork-url https://ethereum-rpc.publicnode.com --chain-id 1 --port 8546
+      //   FORK_CHAIN=base ~/.foundry/bin/anvil --fork-url https://base-rpc.publicnode.com --chain-id 8453 --port 8546
       //
       // Use anvil, not `hardhat node --fork`: this repo's Hardhat 2.22 / EDR 0.5 cannot parse post-Prague
       // block headers (`requestsHash`) and panics with "Must be present as this is not a pending block".
       //
       // No accounts: the rehearsal impersonates the real deployer, so the private key is never used here.
       url: FORK_RPC_URL,
-      chainId: 1,
+      chainId: CHAINS[FORK_CHAIN].chainId,
       timeout: 600000,
     },
     tbnb: {
