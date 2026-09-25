@@ -58,6 +58,7 @@ Do not use for new integrations. Its position manager did not bind `collect()` t
 - Router (tokenReceived restricted) [0x1f611e17c3a45f87d3edd14acd42b2113db9a4dd](https://sepolia.etherscan.io/address/0x1f611e17c3a45f87d3edd14acd42b2113db9a4dd#code)
 - Margin Oracle (verified, TWAP window 1800 s) [0x5DaD3C2D6741Fce6cD20B05a04116120A414C4AA](https://sepolia.etherscan.io/address/0x5DaD3C2D6741Fce6cD20B05a04116120A414C4AA#code)
 - Margin Module: redeploy pending with `npx hardhat run scripts/deploy-margin.ts --network sepolia` (router 0x9950...c690). The first deploy at [0xd28b7a588aA384BCBCD80Ab18bA8D4e34c37A67b](https://sepolia.etherscan.io/address/0xd28b7a588aA384BCBCD80Ab18bA8D4e34c37A67b#code) is bound to router 0x1f61...a4dd, which cannot reach this factory's pools, so its swaps and liquidations revert. Do not use it.
+- Safe Send PaymentReceiver (verified, owner and payout `0x9467…6f54`) [0x32480C1Edc5e51eca39FfF766cDdd9087DfC34E9](https://sepolia.etherscan.io/address/0x32480C1Edc5e51eca39FfF766cDdd9087DfC34E9#code) and SafeSendRouter (verified, converter 0x5847...0D9F) [0x7b58D9B037C4AC84eE06208Bc0fF95Ba9b84AC7e](https://sepolia.etherscan.io/address/0x7b58D9B037C4AC84eE06208Bc0fF95Ba9b84AC7e#code), deployed from `main` at 9a64abb (#79, #81, #82, #83). They replace the earlier #79 build at 0x3a6f...2f86 / 0x8552...8a95, whose receiver cannot withdraw tokens whose `transfer` returns nothing and moves ownership in one step. Do not use it.
 
 ## Sepolia testnet deployment (deprecated)
 
