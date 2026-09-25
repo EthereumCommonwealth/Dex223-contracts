@@ -27,6 +27,9 @@ contract PaymentReceiver is IERC223Recipient {
     event PayoutUpdated(address indexed payout);
     event TokenAccepted(address indexed token, bool accepted);
     event WhitelistEnabled(bool enabled);
+    /// @dev `payer` is the direct ERC-223 sender. For payments wrapped by SafeSendRouter that is
+    ///      the router, not the user: take the user from the router's `WrappedAndSent.from` in
+    ///      the same transaction, or identify the payment by `invoiceId`.
     event PaymentReceived(
         address indexed token,
         address indexed payer,

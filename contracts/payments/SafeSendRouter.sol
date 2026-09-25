@@ -10,6 +10,8 @@ import '../libraries/TransferHelper.sol';
 ///         Dex223 converter, then forward with optional invoice `data`.
 /// @dev Users approve this router for the exact amount only (never unlimited). ERC-20 calls go
 ///      through TransferHelper so tokens that return nothing (mainnet USDT) work too.
+///      The router is the ERC-223 sender, so a PaymentReceiver records it as `payer`. The user
+///      is `from` in `WrappedAndSent`.
 contract SafeSendRouter {
     ITokenStandardConverter public immutable converter;
 

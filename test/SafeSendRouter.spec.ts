@@ -40,12 +40,17 @@ describe('SafeSendRouter', () => {
 
     await (await token20.connect(payer).approve(await router.getAddress(), amount)).wait()
 
-    await expect(
-      router.connect(payer).wrapAndSend(await token20.getAddress(), await receiver.getAddress(), amount, invoiceId)
-    ).to.emit(router, 'WrappedAndSent')
+    const tx = router.connect(payer).wrapAndSend(await token20.getAddress(), await receiver.getAddress(), amount, invoiceId)
+    const token223Addr = await converter.predictWrapperAddress(await token20.getAddress(), true)
+    await expect(tx)
+      .to.emit(router, 'WrappedAndSent')
+      .withArgs(await token20.getAddress(), token223Addr, payer.address, await receiver.getAddress(), amount, invoiceId)
+    // The receiver sees the router as the payer; the user is only in WrappedAndSent.
+    await expect(tx)
+      .to.emit(receiver, 'PaymentReceived')
+      .withArgs(token223Addr, await router.getAddress(), amount, invoiceId, invoiceId)
 
-    const token223Addr = await converter.getERC223WrapperFor(await token20.getAddress())
-    expect(token223Addr).to.not.eq(ethers.ZeroAddress)
+    expect(await converter.getERC223WrapperFor(await token20.getAddress())).to.eq(token223Addr)
     expect(await receiver.credited(token223Addr)).to.eq(amount)
 
     const Token223 = await ethers.getContractFactory('ERC223HybridToken')
