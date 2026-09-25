@@ -31,6 +31,20 @@ function fail(msg: string): never {
   throw new Error(msg)
 }
 
+/// Pruned RPCs (publicnode among them) answer eth_getLogs for old blocks with an empty list instead of an
+/// error, which would make every run look like "nothing to do".
+async function assertLogsServed(block: number) {
+  const b = await ethers.provider.getBlock(block)
+  for (const hash of (b?.transactions ?? []).slice(0, 25)) {
+    const receipt = await ethers.provider.getTransactionReceipt(hash)
+    if (!receipt?.logs.length) continue
+    const logs = await ethers.provider.getLogs({ address: receipt.logs[0].address, fromBlock: block, toBlock: block })
+    if (logs.length) return
+    fail(`the RPC returns no logs for block ${block}, which has some. Use an RPC that serves eth_getLogs back to FROM_BLOCK.`)
+  }
+  fail(`could not confirm the RPC serves logs at block ${block}. Use an RPC that serves eth_getLogs back to FROM_BLOCK.`)
+}
+
 export async function main() {
   const statePath = path.join(process.cwd(), process.env.STATE_FILE ?? `deployments/${network.name}.json`)
   const state: Record<string, string> = fs.existsSync(statePath) ? JSON.parse(fs.readFileSync(statePath, 'utf8')) : {}
@@ -47,6 +61,7 @@ export async function main() {
     fail(`factory owner is ${await factory.owner()}, not the collector ${collectorAddr}. Hand it over first.`)
   }
 
+  await assertLogsServed(fromBlock)
   const latest = await ethers.provider.getBlockNumber()
   const pools: string[] = []
   for (let from = fromBlock; from <= latest; from += chunk) {
