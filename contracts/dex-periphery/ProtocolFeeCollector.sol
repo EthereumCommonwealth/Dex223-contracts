@@ -33,6 +33,14 @@ contract ProtocolFeeCollector {
     /// @notice Pools whose protocol fee the owner set by hand. `enableFees` leaves them alone.
     mapping(address => bool) public customFeeProtocol;
 
+    /// @notice Gas each pool call may use. Anyone can create a pool with a token that burns all the
+    ///         gas it is given; capped, such a pool is skipped without starving the rest of the batch.
+    ///         A pool that needs more can still be collected by the owner through `execute`.
+    uint256 public constant COLLECT_GAS = 300_000;
+    uint256 public constant SET_FEE_GAS = 100_000;
+    uint256 public constant FACTORY_CHECK_GAS = 30_000;
+    uint256 private constant RESERVE_OVERHEAD = 20_000;
+
     event OwnershipTransferStarted(address indexed previousOwner, address indexed newOwner);
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
     event RevenueUpdated(address indexed revenue);
@@ -71,8 +79,9 @@ contract ProtocolFeeCollector {
     // permissionless //
 
     /// @notice Sends every pool's accrued protocol fees, in their ERC-20 versions, to `revenue`.
-    ///         A pool that reverts (not from this factory, or a token that refuses the transfer) is
-    ///         skipped so it cannot block the others.
+    ///         A pool that reverts or exceeds COLLECT_GAS (not from this factory, or a token that
+    ///         refuses the transfer) is skipped so it cannot block the others. Reverts with
+    ///         OUT_OF_GAS if the transaction cannot give every pool its full allowance.
     function collect(address[] calldata pools) external {
         address _revenue = revenue;
         for (uint256 i = 0; i < pools.length; i++) {
@@ -80,7 +89,8 @@ contract ProtocolFeeCollector {
                 emit PoolSkipped(pools[i], 'NOT_FACTORY_POOL');
                 continue;
             }
-            try IFeeCollectorPool(pools[i]).collectProtocol(_revenue, type(uint128).max, type(uint128).max, false, false) returns (
+            reserveGas(COLLECT_GAS);
+            try IFeeCollectorPool(pools[i]).collectProtocol{gas: COLLECT_GAS}(_revenue, type(uint128).max, type(uint128).max, false, false) returns (
                 uint128 amount0,
                 uint128 amount1
             ) {
@@ -104,7 +114,8 @@ contract ProtocolFeeCollector {
                 emit PoolSkipped(pools[i], 'NOT_FACTORY_POOL');
                 continue;
             }
-            try IFeeCollectorPool(pools[i]).setFeeProtocol(fp0, fp1) {
+            reserveGas(SET_FEE_GAS);
+            try IFeeCollectorPool(pools[i]).setFeeProtocol{gas: SET_FEE_GAS}(fp0, fp1) {
                 emit PoolFeeProtocolSet(pools[i], fp0, fp1, false);
             } catch (bytes memory reason) {
                 emit PoolSkipped(pools[i], reason);
@@ -180,11 +191,19 @@ contract ProtocolFeeCollector {
             size := extcodesize(pool)
         }
         if (size == 0) return false;
-        try IFeeCollectorPool(pool).factory() returns (address f) {
+        reserveGas(FACTORY_CHECK_GAS);
+        try IFeeCollectorPool(pool).factory{gas: FACTORY_CHECK_GAS}() returns (address f) {
             return f == factory;
         } catch {
             return false;
         }
+    }
+
+    /// Reverts unless `callGas` can be forwarded in full (EIP-150 keeps back 1/64) with room left for the
+    /// loop. A pool call that then runs out of gas did so within its own allowance, and gas estimation
+    /// for a batch has to cover every pool instead of settling on a limit that starves the last ones.
+    function reserveGas(uint256 callGas) internal view {
+        require(gasleft() > (callGas * 64) / 63 + RESERVE_OVERHEAD, 'OUT_OF_GAS');
     }
 
     function validFeeProtocol(uint8 feeProtocol) internal pure returns (bool) {
