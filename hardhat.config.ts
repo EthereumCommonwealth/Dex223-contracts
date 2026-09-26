@@ -211,6 +211,11 @@ const config: HardhatUserConfig = {
         version: "0.8.19",
         settings: { optimizer: { enabled: true, runs: 5000 } }
       },
+      // Byte-identical to mainnet D223 0x0908078Da2935A14BC7a17770292818C85b580dd (0.8.19, 5000 runs, paris).
+      "contracts/tokens/D223Token.sol": {
+        version: "0.8.19",
+        settings: { optimizer: { enabled: true, runs: 5000 } }
+      },
       // --- EIP-170 (24576-byte runtime limit) ---
       // Rarely-called / deploy-time code, so a low `runs` buys the size needed to deploy at all.
       // Re-check with `npx hardhat run scripts/check-contract-sizes.ts` before raising these.
