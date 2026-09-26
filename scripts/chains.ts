@@ -171,6 +171,20 @@ export const CHAINS: Record<string, Chain> = {
     listingToken: { symbol: 'USDT0', address: '0x779Ded0c9e1022225f8E0630b35a9b54bE713736', decimals: 6 },
     verifier: { kind: 'etherscan' },
   },
+  // The Vaulta Foundation shut down EOS EVM's public RPC, explorer and bridge on 2025-10-08; the chain
+  // itself still runs. EOSEVM_RPC_URL must point at our own node, and its explorer API at a self-hosted
+  // Blockscout before verifying. The addresses below could not be read back on-chain without an RPC:
+  // check them against the node before the first deploy (deploy-chain.ts preflight reads them too).
+  eosevm: {
+    chainId: 17777,
+    rpcEnv: 'EOSEVM_RPC_URL',
+    defaultRpc: 'http://127.0.0.1:8545',
+    wrappedNative: '0xc00592aA41D32D137dC480d9f6d0Df19b860104F',
+    // Gas token switched from EOS to A (Vaulta) on 2025-10-01.
+    nativeSymbol: 'A',
+    listingToken: { symbol: 'USDT', address: '0x33B57dC70014FD7AA6e1ed3080eeD2B619632B8e', decimals: 6 },
+    verifier: { kind: 'compatible', api: 'https://explorer.evm.eosnetwork.com/api' },
+  },
 }
 
 export const rpcUrl = (c: Chain) => process.env[c.rpcEnv] || c.defaultRpc
