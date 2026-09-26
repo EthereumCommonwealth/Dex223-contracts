@@ -9,6 +9,7 @@
  *   yarn hardhat run scripts/deploy-fee-collector.ts --network sepolia
  *   HANDOVER=true yarn hardhat run scripts/deploy-fee-collector.ts --network sepolia
  *   CONFIRM_MAINNET=deploy-fee-collector HANDOVER=true yarn hardhat run scripts/deploy-fee-collector.ts --network mainnet
+ *   CONFIRM_DEPLOY=base HANDOVER=true yarn hardhat run scripts/deploy-fee-collector.ts --network base
  *
  * FACTORY and REVENUE default to `factory` and `revenue` in deployments/<network>.json.
  * OWNER defaults to the signer. FEE_PROTOCOL0/1 default to 4 (1/4 of swap fees; 0 disables, 4..10 allowed).
@@ -17,6 +18,7 @@
 import { ethers, network } from 'hardhat'
 import fs from 'fs'
 import path from 'path'
+import { CHAINS } from './chains'
 
 const CONFIRM = 'deploy-fee-collector'
 
@@ -27,6 +29,9 @@ function fail(msg: string): never {
 export async function main() {
   if (network.name === 'mainnet' && process.env.CONFIRM_MAINNET !== CONFIRM) {
     fail(`this sends mainnet transactions. Re-run with CONFIRM_MAINNET=${CONFIRM}`)
+  }
+  if (network.name !== 'mainnet' && CHAINS[network.name] && process.env.CONFIRM_DEPLOY !== network.name) {
+    fail(`this sends ${network.name} transactions. Re-run with CONFIRM_DEPLOY=${network.name}`)
   }
 
   const statePath = path.join(process.cwd(), process.env.STATE_FILE ?? `deployments/${network.name}.json`)
