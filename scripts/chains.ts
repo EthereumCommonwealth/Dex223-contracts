@@ -114,6 +114,63 @@ export const CHAINS: Record<string, Chain> = {
     listingToken: { symbol: 'USDT0', address: '0xe7cd86e13AC4309349F30B3435a9d337750fC82D', decimals: 6 },
     verifier: { kind: 'etherscan' },
   },
+  unichain: {
+    chainId: 130,
+    rpcEnv: 'UNICHAIN_RPC_URL',
+    defaultRpc: 'https://mainnet.unichain.org',
+    wrappedNative: '0x4200000000000000000000000000000000000006',
+    nativeSymbol: 'ETH',
+    listingToken: { symbol: 'USDT0', address: '0x9151434b16b9763660705744891fA906F660EcC5', decimals: 6 },
+    verifier: { kind: 'etherscan' },
+  },
+  plasma: {
+    chainId: 9745,
+    rpcEnv: 'PLASMA_RPC_URL',
+    defaultRpc: 'https://rpc.plasma.to',
+    wrappedNative: '0x6100E367285b01F48D07953803A2d8dCA5D19873',
+    nativeSymbol: 'XPL',
+    listingToken: { symbol: 'USDT0', address: '0xB8CE59FC3717ada4C02eaDF9682A9e934F625ebb', decimals: 6 },
+    verifier: { kind: 'etherscan' },
+  },
+  sonic: {
+    chainId: 146,
+    rpcEnv: 'SONIC_RPC_URL',
+    defaultRpc: 'https://rpc.soniclabs.com',
+    wrappedNative: '0x039e2fB66102314Ce7b64Ce5Ce3E5183bc94aD38',
+    nativeSymbol: 'S',
+    // Sonic has no Tether-issued USDT; the stablecoin there is Circle's USDC.
+    listingToken: { symbol: 'USDC', address: '0x29219dd400f2Bf60E5a23d13Be72B486D4038894', decimals: 6 },
+    verifier: { kind: 'etherscan' },
+  },
+  linea: {
+    chainId: 59144,
+    rpcEnv: 'LINEA_RPC_URL',
+    defaultRpc: 'https://rpc.linea.build',
+    wrappedNative: '0xe5D7C2a44FfDDf6b295A15c148167daaAf5Cf34f',
+    nativeSymbol: 'ETH',
+    listingToken: { symbol: 'USDT', address: '0xA219439258ca9da29E9Cc4cE5596924745e12B93', decimals: 6 },
+    verifier: { kind: 'etherscan' },
+  },
+  ink: {
+    chainId: 57073,
+    rpcEnv: 'INK_RPC_URL',
+    defaultRpc: 'https://rpc-gel.inkonchain.com',
+    wrappedNative: '0x4200000000000000000000000000000000000006',
+    nativeSymbol: 'ETH',
+    listingToken: { symbol: 'USDT0', address: '0x0200C29006150606B650577BBE7B6248F58470c1', decimals: 6 },
+    // Not on Etherscan; Ink's explorer is Blockscout.
+    verifier: { kind: 'compatible', api: 'https://explorer.inkonchain.com/api' },
+  },
+  mantle: {
+    chainId: 5000,
+    rpcEnv: 'MANTLE_RPC_URL',
+    defaultRpc: 'https://rpc.mantle.xyz',
+    wrappedNative: '0x78c1b0C915c4FAA5FffA6CAbf0219DA63d7f4cb8',
+    nativeSymbol: 'MNT',
+    // Tether's USDT0, not the older bridged USDT at 0x201E…956aE.
+    listingToken: { symbol: 'USDT0', address: '0x779Ded0c9e1022225f8E0630b35a9b54bE713736', decimals: 6 },
+    verifier: { kind: 'etherscan' },
+  },
 }
 
 export const rpcUrl = (c: Chain) => process.env[c.rpcEnv] || c.defaultRpc
