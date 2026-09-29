@@ -5,9 +5,10 @@
 // The periphery MUST be built from the same branch as the pools: PoolAddress embeds
 // POOL_INIT_CODE_HASH, so periphery compiled against different pool bytecode derives
 // the wrong pool address and every call fails.
-import { ethers } from 'hardhat'
+import { ethers, network } from 'hardhat'
 import fs from 'fs'
 import path from 'path'
+import { assertPoolHash, recordedPoolHash } from './pool-hash'
 
 const STATE = process.env.STATE_FILE || path.join(process.cwd(), '.sepolia-final-state.json')
 const WETH9 = process.env.WETH9 || '0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14' // canonical Sepolia WETH9
@@ -19,6 +20,8 @@ async function main() {
   console.log(`balance  : ${ethers.formatEther(await ethers.provider.getBalance(signer))} ETH`)
   console.log(`factory  : ${state.factory}`)
   console.log(`WETH9    : ${WETH9}`)
+  // Refuse before deploying anything unless this build's pools are the pools this factory creates.
+  console.log(`pool hash: ${await assertPoolHash(recordedPoolHash(network.name, state.factory))}`)
 
   const deployOnce = async (key: string, name: string, args: any[]) => {
     if (state[key]) { console.log(`  reuse  ${name.padEnd(30)} ${state[key]}`); return state[key] }
