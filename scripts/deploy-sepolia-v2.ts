@@ -5,7 +5,8 @@
  * Run it from a checkout of a316246 (the #60 merge): mainnet's router, position manager, quoter and
  * autolistings, plus the pool library mainnet upgraded to (0x7219…5001). Later commits change the pool
  * bytecode (#61), and periphery built from them derives the wrong pool addresses for this factory. The
- * script refuses to run unless the compiled pool hashes to the factory's POOL_INIT_CODE_HASH below.
+ * script refuses to run unless the compiled pool hashes to the factory's poolInitCodeHash recorded in
+ * deployments/sepolia.json.
  *
  * Two signers:
  *   - A Sepolia-only deployer (1Password "DEX223 SEPOLIA DEPLOYER KEY") creates every contract. Contract
@@ -28,9 +29,10 @@
  * Resumable: every address and completed call is written to STATE_FILE right away, and calls check chain
  * state before sending. Then run scripts/deploy-margin.ts with FACTORY and ROUTER set to the new pair.
  */
-import { ethers, network, artifacts } from 'hardhat'
+import { ethers, network } from 'hardhat'
 import * as fs from 'fs'
 import * as path from 'path'
+import { assertPoolHash, recordedPoolHash } from './pool-hash'
 
 const FACTORY = '0xeA0A163e0196Bf1500B1B41d3ADdA0476dC137eb'
 const COLLECTOR = '0x9B96be5B9668747Bb50Ff32029140bb7EAea69A5'
@@ -40,7 +42,7 @@ const DEPLOYER = '0x1b305f986F8015DB6B42fFb4D231C77B3d5Af982'
 const CONVERTER = '0x5847f5C0E09182d9e75fE8B1617786F62fee0D9F' // the converter the UI, Safe Send and the old stack use
 const WETH9 = '0xb16F35c0Ae2912430DAc15764477E179D9B9EbEa' // the WETH9 the UI and the old router use
 const REGISTRY = '0x6ee7518400c14e8046252E3cC1670FC8093e618F'
-const POOL_INIT_CODE_HASH = '0xe125afe94932872c7162b66e1bb1587d6fc76d525d248bb20e9e0484a99ec486'
+const POOL_INIT_CODE_HASH = recordedPoolHash('sepolia', FACTORY)
 // Same prices as the old core autolisting 0x8a18…7ddA: 100 wei of ETH, 1 RED, 14.5 TOT1.
 const CORE_PRICES: [string, bigint][] = [
   [ethers.ZeroAddress, 100n],
@@ -56,7 +58,6 @@ const FQN = {
   freeAutolisting: 'contracts/dex-core/Autolisting.sol:Dex223AutoListing',
   coreAutolisting: 'contracts/dex-core/Autolisting.sol:Dex223CoreAutoListing',
 }
-const POOL_FQN = 'contracts/dex-core/Dex223Pool.sol:Dex223Pool'
 
 const STATE_FILE = process.env.STATE_FILE || path.join(process.cwd(), 'deployments', 'sepolia.json')
 const state: Record<string, string> = fs.existsSync(STATE_FILE) ? JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')) : {}
@@ -86,10 +87,7 @@ async function preflight() {
   if (network.name !== 'sepolia') fail(`run with --network sepolia, got '${network.name}'`)
   const net = await ethers.provider.getNetwork()
   if (net.chainId !== 11155111n) fail(`chainId is ${net.chainId}, expected 11155111`)
-  const hash = ethers.keccak256((await artifacts.readArtifact(POOL_FQN)).bytecode)
-  if (!eq(hash, POOL_INIT_CODE_HASH)) fail(`compiled pool hashes to ${hash}, not the factory's ${POOL_INIT_CODE_HASH}: check out a316246`)
-  const src = fs.readFileSync(path.join(process.cwd(), 'contracts/dex-periphery/base/PoolAddress.sol'), 'utf8')
-  if (!src.toLowerCase().includes(POOL_INIT_CODE_HASH)) fail('PoolAddress.sol does not declare the factory pool hash')
+  await assertPoolHash(POOL_INIT_CODE_HASH) // this factory's pools come from a316246
   for (const [n, a] of [['factory', FACTORY], ['collector', COLLECTOR], ['revenue', REVENUE], ['converter', CONVERTER], ['WETH9', WETH9], ['registry', REGISTRY]]) {
     if ((await ethers.provider.getCode(a)) === '0x') fail(`no code at ${n} ${a}`)
   }

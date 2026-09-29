@@ -56,6 +56,7 @@ import { ethers, network, artifacts } from 'hardhat'
 import * as fs from 'fs'
 import * as path from 'path'
 import { CHAINS, Chain, listingPrice } from './chains'
+import { assertPoolHash } from './pool-hash'
 
 const DEPLOYER = '0x9467a00F2DFBF392254133ff36c291c618dF6f54'
 const FEE_TIERS: [number, number][] = [[500, 10], [3000, 60], [10000, 200]]
@@ -217,11 +218,8 @@ async function preflight() {
   }
 
   // The periphery derives pool addresses from POOL_INIT_CODE_HASH; a stale constant breaks every swap silently.
-  const pool = await artifacts.readArtifact(POOL_FQN)
-  const actual = ethers.keccak256(pool.bytecode)
-  const src = fs.readFileSync(path.join(process.cwd(), 'contracts/dex-periphery/base/PoolAddress.sol'), 'utf8')
-  const declared = (src.match(/POOL_INIT_CODE_HASH\s*=\s*(0x[a-fA-F0-9]{64})/) || fail('POOL_INIT_CODE_HASH not found'))[1]
-  if (!eq(declared, actual)) fail(`POOL_INIT_CODE_HASH is stale: declared ${declared}, compiled pool ${actual}`)
+  // On a resume the factory already exists, so the build must also match the pool hash recorded when it was made.
+  const actual = await assertPoolHash(state.poolInitCodeHash)
 
   for (const fqn of [...Object.values(FQN), POOL_FQN]) {
     const size = ((await artifacts.readArtifact(fqn)).deployedBytecode.length - 2) / 2
