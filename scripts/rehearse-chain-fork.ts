@@ -259,6 +259,44 @@ async function main() {
     return `lock held, nothing drained, deposit refunded`
   })
 
+  if (d.d223) {
+    console.log('\n-- D223 and Revenue (WITH_D223) --')
+    const deployer = await ethers.getImpersonatedSigner(d.deployer)
+    const d223 = at(d.d223, ERC223), d20 = at(d.d223Erc20, ERC20)
+    const rev: any = await ethers.getContractAt('contracts/dex-periphery/RevenueV1.sol:Revenue', d.revenue, trader)
+    const D = (n: bigint) => n * 10n ** 18n
+    await scenario('airdrop transfer: deployer sends 1,000 D223 to a holder (ERC-223 transfer to an EOA)', async () => {
+      await (await d223.connect(deployer)['transfer(address,uint256)'](me, D(1000n))).wait()
+      must(BigInt(await d223.balanceOf(me)) === D(1000n), 'holder balance wrong')
+      return `deployer keeps ${fmt(await d223.balanceOf(d.deployer), 18)} D223`
+    })
+    await scenario('stake D223 into Revenue: ERC-223 transfer, then stake()', async () => {
+      await (await d223['transfer(address,uint256)'](d.revenue, D(100n))).wait()
+      await (await rev.stake(d.d223, D(100n))).wait()
+      must(BigInt(await rev.staked(me)) === D(100n), 'stake not recorded')
+      return 'staked 100'
+    })
+    await scenario('stake the ERC-20 version: convert through the converter, approve, stake()', async () => {
+      await (await d223['transfer(address,uint256)'](d.converter, D(50n))).wait()
+      must(BigInt(await d20.balanceOf(me)) === D(50n), 'converter did not return the ERC-20 version')
+      await (await d20.approve(d.revenue, D(50n))).wait()
+      await (await rev.stake(d.d223Erc20, D(50n))).wait()
+      must(BigInt(await rev.staked(me)) === D(150n) && BigInt(await rev.total_staked()) === D(150n), 'stake not recorded')
+      return 'staked 150 total'
+    })
+    await scenario('withdraw is locked for the claim delay, then pays out both versions', async () => {
+      let locked = false
+      try { await rev.withdraw.staticCall(d.d223, D(100n)) } catch { locked = true }
+      must(locked, 'withdraw was allowed inside the claim delay')
+      await ethers.provider.send('evm_increaseTime', [Number(await rev.claim_delay()) + 1]); await ethers.provider.send('evm_mine', [])
+      await (await rev.withdraw(d.d223, D(100n))).wait()
+      await (await rev.withdraw(d.d223Erc20, D(50n))).wait()
+      must(BigInt(await rev.staked(me)) === 0n, 'stake left over')
+      must(BigInt(await d223.balanceOf(me)) === D(950n) && BigInt(await d20.balanceOf(me)) === D(50n), 'balances not restored')
+      return `unlocked after ${Number(await rev.claim_delay()) / 86400} days`
+    })
+  }
+
   const failed = results.filter((r) => !r[1])
   console.log('\n' + '='.repeat(90))
   console.log(`${results.length - failed.length}/${results.length} scenarios passed on ${chainName}`)

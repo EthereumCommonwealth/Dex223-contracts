@@ -37,6 +37,14 @@
  *                the hash per chain; it is recorded as poolInitCodeHash in the state file.
  *   nonces 2, 8  burned with a zero-value self-transfer, as on mainnet.
  *   nonce 14     coreAutolisting.setPaymentPrice.
+ * With WITH_D223=true (can run later, after the core deploy):
+ *   nonce 15     D223Token, byte-identical to mainnet's. Its constructor mints the whole 8,000,000,000 D223
+ *                supply to the deployer; there is no mint function. The address cannot match mainnet's
+ *                (Dexaran deployed that one from his own key), but it is the same on every new chain.
+ *   nonce 16     converter.createERC20Wrapper(D223): D223's ERC-20 version, as on mainnet.
+ *   nonce 17     Revenue(D223 ERC-20 version, D223), the staking contract deploy-fee-collector.ts pays into.
+ *   nonce 18     revenue.set_factory(factory). Revenue's defaults (10-day claim delay and staking duration)
+ *                already match mainnet.
  * EXPECTED pins the result; the script refuses any other layout. If the deployer has already been used on
  * the target chain, stop: the layout cannot be reproduced there.
  *
@@ -55,6 +63,8 @@ const EIP170 = 24576
 const LIVE = network.name !== 'fork'
 const CHAIN_NAME = LIVE ? network.name : (process.env.FORK_CHAIN || 'mainnet')
 const chain: Chain = CHAINS[CHAIN_NAME] ?? (() => { throw new Error(`'${CHAIN_NAME}' is not in scripts/chains.ts`) })()
+const WITH_D223 = process.env.WITH_D223 === 'true'
+const D223_SUPPLY = ethers.parseEther('8000000000')
 
 const STATE_FILE = path.join(process.cwd(), 'deployments', `${network.name}.json`)
 type State = Record<string, string>
@@ -83,7 +93,10 @@ const EXPECTED: Record<string, string> = {
   quoter: '0x2C44c27a41BCE8BF679b306284d68C1245eE4c52', //          nonce 11, same address as mainnet
   freeAutolisting: '0xCc46E110426958E83e9298d46a50572691065eC5', // nonce 12, same address as mainnet
   coreAutolisting: '0x83E1e7f47536515db9Ec4D7C4024e7395CD11A48', // nonce 13, same address as mainnet
+  d223: '0x7219ebDfFD7EF54d3d1F1B7C174ce470f3825001', //            nonce 15, WITH_D223 only
+  revenue: '0xbA75fA26BB88BccEB74a967E4cA2FBfe99d6CE6e', //         nonce 17, WITH_D223 only
 }
+const D223_KEYS = ['d223', 'revenue']
 
 const FQN = {
   converter: 'contracts/converter/TokenConverter.sol:TokenStandardConverter',
@@ -97,17 +110,36 @@ const FQN = {
   quoter: 'contracts/dex-periphery/lens/Quoter223.sol:ERC223Quoter',
   freeAutolisting: 'contracts/dex-core/Autolisting.sol:Dex223AutoListing',
   coreAutolisting: 'contracts/dex-core/Autolisting.sol:Dex223CoreAutoListing',
+  d223: 'contracts/tokens/D223Token.sol:D223Token',
+  revenue: 'contracts/dex-periphery/RevenueV1.sol:Revenue',
 }
+const ERC20_WRAPPER_FQN = 'contracts/converter/TokenConverter.sol:ERC20WrapperToken'
 const POOL_FQN = 'contracts/dex-core/Dex223Pool.sol:Dex223Pool'
 
 const reuseConverter = !!chain.converter
 const PRICE = listingPrice(chain)
 const LISTING = chain.listingToken.address
 const WNATIVE = chain.wrappedNative
+let d223Erc20 = '' // CREATE2 address of D223's ERC-20 version, set in main()
 
 function plan(addr: Record<string, string>): Step[] {
   const at = (key: keyof typeof FQN) => ethers.getContractAt(FQN[key], addr[key])
   const converter = () => chain.converter ?? addr.converter
+  const conv = () => ethers.getContractAt('contracts/interfaces/ITokenConverter.sol:ITokenStandardConverter', converter()) as Promise<any>
+  const d223: Step[] = [
+    { kind: 'deploy', key: 'd223', fqn: FQN.d223, args: () => [] },
+    {
+      kind: 'call', key: 'converter.createERC20Wrapper(D223)',
+      send: async (s, o) => (await conv()).connect(s).createERC20Wrapper(addr.d223, o),
+      done: async () => eq(await (await conv()).getERC20WrapperFor(addr.d223), d223Erc20),
+    },
+    { kind: 'deploy', key: 'revenue', fqn: FQN.revenue, args: () => [d223Erc20, addr.d223] },
+    {
+      kind: 'call', key: 'revenue.set_factory(factory)',
+      send: async (s, o) => ((await at('revenue')).connect(s) as any).set_factory(addr.factory, o),
+      done: async () => eq(await (await at('revenue') as any).factory(), addr.factory),
+    },
+  ]
   return [
     reuseConverter ? { kind: 'burn', key: 'burn nonce 0' } : { kind: 'deploy', key: 'converter', fqn: FQN.converter, args: () => [] },
     { kind: 'deploy', key: 'registry', fqn: FQN.registry, args: () => [] },
@@ -139,6 +171,7 @@ function plan(addr: Record<string, string>): Step[] {
         return prices.some((p) => eq(p[0], LISTING) && BigInt(p[1]) === PRICE)
       },
     },
+    ...(WITH_D223 ? d223 : []),
   ]
 }
 
@@ -242,10 +275,22 @@ async function main() {
   })
   const expected = { ...EXPECTED }
   if (reuseConverter) delete expected.converter
+  if (!WITH_D223) for (const k of D223_KEYS) delete expected[k]
   for (const k of Object.keys(addr)) if (!expected[k] || !eq(expected[k], addr[k])) fail(`${k} would deploy at ${addr[k]}, but the pinned layout says ${expected[k]}`)
   if (Object.keys(expected).length !== Object.keys(addr).length) fail('EXPECTED and the plan disagree on which contracts are deployed')
   for (const k of Object.keys(addr)) if (state[k] && !eq(state[k], addr[k])) fail(`state has ${k}=${state[k]} but the nonce schedule predicts ${addr[k]}`)
   const converter = chain.converter ?? addr.converter
+  if (WITH_D223) {
+    if (reuseConverter) {
+      const conv: any = await ethers.getContractAt('contracts/converter/TokenConverter.sol:TokenStandardConverter', converter)
+      d223Erc20 = await conv.predictWrapperAddress(addr.d223, false)
+    } else {
+      const salt = ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(['address'], [addr.d223]))
+      d223Erc20 = ethers.getCreate2Address(converter, salt, ethers.keccak256((await artifacts.readArtifact(ERC20_WRAPPER_FQN)).bytecode))
+    }
+    if (state.d223Erc20 && !eq(state.d223Erc20, d223Erc20)) fail(`state has d223Erc20=${state.d223Erc20} but the converter predicts ${d223Erc20}`)
+    state.d223Erc20 = d223Erc20; save()
+  }
 
   const fee = await ethers.provider.getFeeData()
   const gwei = Number(ethers.formatUnits(fee.maxFeePerGas ?? fee.gasPrice ?? 0n, 'gwei'))
@@ -259,6 +304,7 @@ async function main() {
 
   console.log('\nplanned addresses:')
   for (const [k, a] of Object.entries(addr)) console.log(`  ${k.padEnd(18)} ${a}`)
+  if (WITH_D223) console.log(`  ${'d223Erc20'.padEnd(18)} ${d223Erc20}  (converter CREATE2)`)
 
   const steps = plan(addr)
   const confirmations = LIVE ? 2 : 1
@@ -331,6 +377,16 @@ async function main() {
   }
   checks.push(['burned nonces created no contract', async () => (await Promise.all(burned.map((a) => ethers.provider.getCode(a)))).every((x) => x === '0x')])
   checks.push([`coreAutolisting price ${ethers.formatUnits(PRICE, chain.listingToken.decimals)} ${chain.listingToken.symbol}`, async () => (await c('coreAutolisting')).getPrices().then((p: any[]) => p.some((q) => eq(q[0], LISTING) && BigInt(q[1]) === PRICE))])
+  if (WITH_D223) {
+    const d: any = await c('d223')
+    const rev: any = await c('revenue')
+    const conv: any = await ethers.getContractAt('contracts/interfaces/ITokenConverter.sol:ITokenStandardConverter', converter)
+    checks.push(['d223 supply 8,000,000,000 / owner == deployer', async () => BigInt(await d.totalSupply()) === D223_SUPPLY && eq(await d.owner(), DEPLOYER)])
+    checks.push(['converter ERC-20 version of D223', async () => eq(await conv.getERC20WrapperFor(addr.d223), d223Erc20) && eq(await conv.getERC223OriginFor(d223Erc20), addr.d223)])
+    checks.push(['revenue staking tokens / factory / owner', async () =>
+      eq(await rev.staking_token_erc20(), d223Erc20) && eq(await rev.staking_token_erc223(), addr.d223) &&
+      eq(await rev.factory(), addr.factory) && eq(await rev.revenue_contract_owner(), DEPLOYER)])
+  }
   let bad = 0
   for (const [label, fn] of checks) {
     let ok = false
