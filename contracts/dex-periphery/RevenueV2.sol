@@ -6,8 +6,8 @@ import '../libraries/FullMath08.sol';
 import '../interfaces/IERC20Minimal.sol';
 
 /// @title Dex223 revenue sharing
-/// @notice Stakers of the staking token (one token with an ERC-20 and an ERC-223 version, interchangeable
-///         1:1) earn the protocol fees that ProtocolFeeCollector sends here.
+/// @notice Stakers of the staking token (one token with an ERC-20 and an ERC-223 version; each stake is
+///         returned in the version it was staked in) earn the protocol fees that ProtocolFeeCollector sends here.
 ///
 /// Why this replaces RevenueV1. V1 paid each claimer a share of the contract's *current* balance, scaled by
 /// how long ago that claimer last claimed. Nothing tied a payout to the stake that was actually in place
@@ -57,9 +57,13 @@ contract RevenueV2 {
     /// @notice An increase of the lock only applies this long after it is announced, so the owner cannot
     ///         raise it in front of someone's stake.
     uint256 public constant CLAIM_DELAY_NOTICE = 7 days;
-    /// @dev Most revenue one sync takes in. Far above any real token supply; it only keeps
-    ///      `incoming * STREAM_SCALE` from overflowing and bricking a token with an absurd balance.
-    uint256 private constant MAX_SYNC = 1e50;
+    /// @dev Most revenue one sync takes in (the rest waits for the next sync): 1e22 whole 18-decimal tokens,
+    ///      far above any real fee. Together with MIN_STAKE_FLOOR it bounds the per-share accumulator so that
+    ///      even a hostile listed token reporting absurd balances needs ~1e19 syncs to overflow it.
+    uint256 private constant MAX_SYNC = 1e40;
+    uint256 public constant MIN_STAKE_FLOOR = 1e6;
+    /// @dev Gas allowed for a reward token's balanceOf in sync, so a token that burns gas cannot stall others.
+    uint256 private constant BALANCE_GAS = 100_000;
 
     struct RewardData {
         bool listed;
@@ -88,6 +92,11 @@ contract RevenueV2 {
 
     uint256 public total_staked;
     mapping(address => uint256) public staked;
+    /// @notice A position split by the version it was staked in: user => token version => amount. Each
+    ///         part is withdrawn in its own version, which this contract always holds in full, so no one
+    ///         can convert one version into the other through it and leave a staker unable to exit.
+    mapping(address => mapping(address => uint256)) public staked_by_version;
+    mapping(address => uint256) public total_staked_by_version;
     mapping(address => uint256) public staking_timestamp; // last time the user staked
     mapping(address => uint256) public unlock_time;
 
@@ -101,9 +110,13 @@ contract RevenueV2 {
     mapping(address => mapping(address => uint256)) public owed;                       // user => token
 
     bool private locked;
+    /// @dev Set only around stake()'s own transferFrom, the one time tokens may arrive while locked.
+    bool private pulling;
 
     event Staked(address indexed user, address indexed token, uint256 amount);
     event Withdrawn(address indexed user, address indexed token, uint256 amount);
+    event EmergencyWithdrawn(address indexed user, uint256 amount);
+    event RewardTokenUnreadable(address indexed token);
     event Claimed(address indexed user, address indexed token, uint256 amount);
     event Deposited(address indexed user, address indexed token, uint256 amount);
     event DepositWithdrawn(address indexed user, address indexed token, uint256 amount);
@@ -143,7 +156,7 @@ contract RevenueV2 {
             'Reward duration out of range'
         );
         require(_claim_delay <= MAX_CLAIM_DELAY, 'Claim delay too long');
-        require(_min_stake != 0, 'Minimum stake must be non-zero');
+        require(_min_stake >= MIN_STAKE_FLOOR, 'Minimum stake too small');
 
         staking_token_erc20 = _staking_token_erc20;
         staking_token_erc223 = _staking_token_erc223;
@@ -174,7 +187,9 @@ contract RevenueV2 {
         } else {
             // Credit what actually arrived, not what was asked for.
             uint256 before = IERC20Minimal(_token).balanceOf(address(this));
+            pulling = true;
             TransferHelper.safeTransferFrom(_token, msg.sender, address(this), _amount);
+            pulling = false;
             received = IERC20Minimal(_token).balanceOf(address(this)) - before;
             require(received != 0, 'Nothing received');
         }
@@ -183,43 +198,57 @@ contract RevenueV2 {
         require(position >= min_stake, 'Below minimum stake');
         staked[msg.sender] = position;
         total_staked += received;
+        staked_by_version[msg.sender][_token] += received;
+        total_staked_by_version[_token] += received;
         staking_timestamp[msg.sender] = block.timestamp;
         unlock_time[msg.sender] = block.timestamp + claim_delay();
 
         emit Staked(msg.sender, _token, received);
     }
 
-    /// @notice Withdraw staked tokens once the position is unlocked, preferably in the `_token` version.
-    ///         Whatever this contract does not hold of that version is paid in the other one: stakes are
-    ///         fungible across versions, so a run on one version (by accident or on purpose) must not be able
-    ///         to freeze anyone. The remaining position must be zero or at least `min_stake`. Earned rewards
-    ///         stay claimable.
+    /// @notice Withdraw staked tokens once the position is unlocked, in the version they were staked in
+    ///         (see staked_by_version). The remaining position must be zero or at least `min_stake`. Earned
+    ///         rewards stay claimable.
     function withdraw(address _token, uint256 _amount) external nonReentrant {
         require(_isStakingToken(_token), 'Trying to withdraw a wrong token');
         require(_amount != 0, 'Zero amount');
         require(block.timestamp >= unlock_time[msg.sender], 'Tokens are frozen for a specified duration after the last staking');
-        uint256 position = staked[msg.sender];
-        require(position >= _amount, 'Withdrawing more than staked');
+        require(staked_by_version[msg.sender][_token] >= _amount, 'Withdrawing more than staked in this version');
         _checkpoint(msg.sender);
 
-        position -= _amount;
+        uint256 position = staked[msg.sender] - _amount;
         require(position == 0 || position >= min_stake, 'Remaining stake below minimum');
         staked[msg.sender] = position;
         total_staked -= _amount;
+        _payStake(msg.sender, _token, _amount);
+    }
 
-        uint256 first = _min(_amount, _availableStake(_token));
-        uint256 rest = _amount - first;
-        if (first != 0) {
-            TransferHelper.safeTransfer(_token, msg.sender, first);
-            emit Withdrawn(msg.sender, _token, first);
-        }
-        if (rest != 0) {
-            address other = _token == staking_token_erc20 ? staking_token_erc223 : staking_token_erc20;
-            // Cannot fail while stakes are fully backed: both versions together always cover total_staked.
-            require(_availableStake(other) >= rest, 'Stake is not fully backed');
-            TransferHelper.safeTransfer(other, msg.sender, rest);
-            emit Withdrawn(msg.sender, other, rest);
-        }
+    /// @notice Withdraw the whole position, in the versions it was staked in, without touching any reward
+    ///         accounting, for use if reward bookkeeping ever reverts (it cannot under the configured bounds,
+    ///         but principal must never depend on it). Rewards already settled to the caller stay claimable;
+    ///         anything accrued since the caller's last stake, withdraw or claim is forfeited and stays in the
+    ///         contract. Same lock as withdraw().
+    function emergency_withdraw() external nonReentrant {
+        require(block.timestamp >= unlock_time[msg.sender], 'Tokens are frozen for a specified duration after the last staking');
+        uint256 amount = staked[msg.sender];
+        require(amount != 0, 'Nothing staked');
+        // Lowering total_staked without accruing first only re-spreads the not-yet-accrued slice over the
+        // remaining stakers; liabilities still never exceed what was streamed, so solvency holds.
+        staked[msg.sender] = 0;
+        total_staked -= amount;
+        uint256 part20 = staked_by_version[msg.sender][staking_token_erc20];
+        uint256 part223 = staked_by_version[msg.sender][staking_token_erc223];
+        if (part20 != 0) _payStake(msg.sender, staking_token_erc20, part20);
+        if (part223 != 0) _payStake(msg.sender, staking_token_erc223, part223);
+        emit EmergencyWithdrawn(msg.sender, amount);
+    }
+
+    /// @dev Pays `_amount` of `user`'s stake in `_token`, the version it was staked in.
+    function _payStake(address user, address _token, uint256 _amount) private {
+        staked_by_version[user][_token] -= _amount;
+        total_staked_by_version[_token] -= _amount;
+        TransferHelper.safeTransfer(_token, user, _amount);
+        emit Withdrawn(user, _token, _amount);
     }
 
     /// @notice Pay out everything the caller has earned in `tokens`, after taking in any newly arrived
@@ -262,13 +291,14 @@ contract RevenueV2 {
     ///         back instead of being stranded here.
     function tokenReceived(address _from, uint256 _value, bytes calldata) external returns (bytes4) {
         require(msg.sender == staking_token_erc223, 'Only the ERC-223 staking token is accepted');
-        // While locked, this contract is itself pulling the token in stake(), which credits the measured
-        // balance change. Crediting a deposit here as well would count the same tokens twice.
-        if (!locked) {
-            erc223deposit[_from][msg.sender] += _value;
-            total_erc223_deposits += _value;
-            emit Deposited(_from, msg.sender, _value);
-        }
+        // During stake()'s own transferFrom the measured balance change is credited; crediting a deposit
+        // here as well would count the same tokens twice. Any other arrival while a call is in progress
+        // (e.g. a recipient re-depositing from inside a payout) bounces rather than going uncredited.
+        if (pulling) return 0x8943ec02;
+        require(!locked, 'Reentrancy error');
+        erc223deposit[_from][msg.sender] += _value;
+        total_erc223_deposits += _value;
+        emit Deposited(_from, msg.sender, _value);
         return 0x8943ec02;
     }
 
@@ -357,16 +387,12 @@ contract RevenueV2 {
         require(to != address(0), 'Zero recipient');
         require(!reward_data[token].listed, 'Reward tokens cannot be swept');
         if (_isStakingToken(token)) {
-            uint256 held = IERC20Minimal(staking_token_erc20).balanceOf(address(this)) +
-                IERC20Minimal(staking_token_erc223).balanceOf(address(this));
-            uint256 liabilities = total_staked + total_erc223_deposits;
-            require(held >= liabilities + amount, 'Only surplus staking tokens can be swept');
-            if (token == staking_token_erc223) {
-                require(
-                    IERC20Minimal(token).balanceOf(address(this)) >= total_erc223_deposits + amount,
-                    'Would take unstaked deposits'
-                );
-            }
+            uint256 liabilities = total_staked_by_version[token];
+            if (token == staking_token_erc223) liabilities += total_erc223_deposits;
+            require(
+                IERC20Minimal(token).balanceOf(address(this)) >= liabilities + amount,
+                'Only surplus staking tokens can be swept'
+            );
         }
         TransferHelper.safeTransfer(token, to, amount);
         emit Swept(token, to, amount);
@@ -385,14 +411,6 @@ contract RevenueV2 {
     }
 
     // --------------------------------------------------------------- internal
-
-    /// @dev Balance of one staking token version that backs stakes. Unstaked ERC-223 deposits sit in the
-    ///      same balance and belong to their depositors.
-    function _availableStake(address token) private view returns (uint256) {
-        uint256 bal = IERC20Minimal(token).balanceOf(address(this));
-        if (token != staking_token_erc223) return bal;
-        return bal > total_erc223_deposits ? bal - total_erc223_deposits : 0;
-    }
 
     function _isStakingToken(address token) private view returns (bool) {
         return token == staking_token_erc20 || token == staking_token_erc223;
@@ -469,10 +487,20 @@ contract RevenueV2 {
 
     /// @dev Accrue, take in newly arrived revenue, then start or fold a stream. Taking revenue in before
     ///      starting means a leftover rounding carry can never start a stream of its own ahead of it.
+    ///      A token whose balanceOf reverts, runs out of its gas allowance or returns garbage is skipped
+    ///      for this sync, so it cannot stall syncAll() for the other tokens.
     function _sync(address token) private {
         _accrue(token);
         RewardData storage r = reward_data[token];
-        uint256 bal = IERC20Minimal(token).balanceOf(address(this));
+        (bool ok, bytes memory data) = token.staticcall{gas: BALANCE_GAS}(
+            abi.encodeWithSelector(IERC20Minimal.balanceOf.selector, address(this))
+        );
+        if (!ok || data.length < 32) {
+            emit RewardTokenUnreadable(token);
+            _startStream(token);
+            return;
+        }
+        uint256 bal = abi.decode(data, (uint256));
         if (bal > r.accounted) {
             uint256 incoming = _min(bal - r.accounted, MAX_SYNC);
             r.accounted += incoming;
