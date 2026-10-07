@@ -82,7 +82,7 @@
   "done:factory.setOwner(feeCollector)": "0xf05a6c65c907060fcc03097919272d1be0fcd8c578b2e47829672713cc67e8d5",
   "block:factory.setOwner(feeCollector)": "26053569",
   "revenuePrevious": "0xbA75fA26BB88BccEB74a967E4cA2FBfe99d6CE6e",
-  "revenueRewardTokens": "[\"0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2\",\"0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48\"]",
+  "revenueRewardTokens": "[\"0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2\", \"0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48\", \"0xdAC17F958D2ee523a2206206994597C13D831ec7\"]",
   "done:collector.setRevenue(0xFDE47dE2fe7c98688373b6D2F3BD628A5Da0Df3D)": "0x063a096427106b596c7c773a1c1c298be6b13d6c24b9b67a4080236e42236d79",
   "verified:revenue": "etherscan"
 }
