@@ -20,6 +20,12 @@ interface IDex223PoolQuotable
     ) external returns (int256 delta);
 }
 
+/// Dex223 pools report each side as (ERC-20 address, ERC-223 address).
+interface IDex223PoolTokens
+{
+    function token0() external view returns (address, address);
+}
+
 contract Oracle {
 
     // @audit-fix V1: Made immutable to prevent storage manipulation and save gas.
@@ -141,7 +147,7 @@ contract Oracle {
         uint256 priceX96 = uint256(sqrtPriceX96) * uint256(sqrtPriceX96);
 
         // if buy token0 rather than token1, need to invert the price
-        bool needToInverse = sell < buy;
+        bool needToInverse = !_isToken0(poolAddress, sell);
 
         return (priceX96, needToInverse);
     }
@@ -185,7 +191,11 @@ contract Oracle {
             amountBought = _safePriceCalc(sqrtPrice, amountToSell);
         }
 
-        if(sell > buy)
+        // The pool's price is token1 per token0, and the pool orders its sides by ERC-20 address.
+        // `sell` may be either version of its token, and an ERC-223 address can sort the other way
+        // round, so the direction comes from the pool, not from comparing the two addresses. Comparing
+        // them inverted every quote that named an ERC-223 asset (p came back as 1/p).
+        if(!_isToken0(_pool, sell))
         {
             // @audit-fix V7: Division-by-zero guard.
             //   If amountBought == 0 (possible for tiny amounts or extreme prices), this division reverts
@@ -225,13 +235,23 @@ contract Oracle {
             amountBought = _safePriceCalc(sqrtPrice, amountToSell);
         }
 
-        if(sell > buy)
+        // The pool's price is token1 per token0, and the pool orders its sides by ERC-20 address.
+        // `sell` may be either version of its token, and an ERC-223 address can sort the other way
+        // round, so the direction comes from the pool, not from comparing the two addresses. Comparing
+        // them inverted every quote that named an ERC-223 asset (p came back as 1/p).
+        if(!_isToken0(_pool, sell))
         {
             // @audit-fix V7: Division-by-zero guard.
             require(amountBought > 0, "Oracle: zero price result");
             amountBought = amountToSell * amountToSell / amountBought;
         }
         return (amountBought);
+    }
+
+    /// @dev True when `token` is either version of `pool`'s token0.
+    function _isToken0(address pool, address token) internal view returns (bool) {
+        (address t0_20, address t0_223) = IDex223PoolTokens(pool).token0();
+        return token == t0_20 || token == t0_223;
     }
 
     // @audit-fix V6: Internal helper that avoids intermediate overflow when computing
@@ -248,6 +268,19 @@ contract Oracle {
         // The final /2^96 brings it back down.
         uint256 intermediate = (sqrtPrice * amount) >> 96;
         return (intermediate * sqrtPrice) >> 96;
+    }
+
+    /// @notice Harmonic mean of `poolAddress`'s in-range liquidity over the last `twapWindow` seconds.
+    ///         Mirrors OracleLibrary.consult. Liquidity held for a moment barely moves it.
+    function harmonicMeanLiquidity(address poolAddress) public view returns (uint128) {
+        uint32[] memory secondsAgos = new uint32[](2);
+        secondsAgos[0] = twapWindow;
+        secondsAgos[1] = 0;
+        (, uint160[] memory secondsPerLiquidityCumulativeX128s) = IUniswapV3Pool(poolAddress).observe(secondsAgos);
+        uint160 delta = secondsPerLiquidityCumulativeX128s[1] - secondsPerLiquidityCumulativeX128s[0];
+        if (delta == 0) return 0;
+        uint192 secondsAgoX160 = uint192(twapWindow) * type(uint160).max;
+        return uint128(secondsAgoX160 / (uint192(delta) << 32));
     }
 
     function findPoolWithHighestLiquidity(
@@ -269,7 +302,10 @@ contract Oracle {
             // gained liquidity but has no history would otherwise win the selection and then
             // revert every valuation with "OLD", which would block liquidations.
             if (pool != address(0) && poolCanServeWindow(pool)) {
-                uint128 currentLiquidity = IUniswapV3Pool(pool).liquidity();
+                // Ranked by liquidity averaged over the TWAP window, not by liquidity() right now.
+                // Spot liquidity can be added and removed within one transaction, which let anyone
+                // steer the valuation to a thin pool whose TWAP they had skewed.
+                uint128 currentLiquidity = harmonicMeanLiquidity(pool);
                 if (currentLiquidity >= liquidity) {
                     liquidity = currentLiquidity;
                     poolAddress = pool;
