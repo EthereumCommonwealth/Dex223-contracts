@@ -38,7 +38,7 @@ function fail(msg: string): never {
 }
 
 async function main() {
-  const statePath = path.join(process.cwd(), process.env.STATE_FILE ?? `deployments/${network.name}.json`)
+  const statePath = path.resolve(process.cwd(), process.env.STATE_FILE ?? `deployments/${network.name}.json`)
   const state: Record<string, string> = fs.existsSync(statePath) ? JSON.parse(fs.readFileSync(statePath, 'utf8')) : {}
   const staking20 = process.env.STAKING_TOKEN_ERC20 ?? fail('Set STAKING_TOKEN_ERC20')
   const staking223 = process.env.STAKING_TOKEN_ERC223 ?? fail('Set STAKING_TOKEN_ERC223')
