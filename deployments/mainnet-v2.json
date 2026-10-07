@@ -62,5 +62,19 @@
   "done:quoter": "0x74df50d5c3181a076c73a3e61bae74cf2f3878d9ad27fd9f64d91440410602c5",
   "block:quoter": "26140876",
   "done:coreAutolisting.setPaymentPrice(USDT, 40 USDT)": "0x4b467e56d98e76b3a81e318bbc76c9213cb13e39fb947914ae49afe800cc8cfb",
-  "block:coreAutolisting.setPaymentPrice(USDT, 40 USDT)": "26140878"
+  "block:coreAutolisting.setPaymentPrice(USDT, 40 USDT)": "26140878",
+  "marginOracle": "0xA86BB72043a7Bc057765a934c55F73B2D127Dc83",
+  "fqn:marginOracle": "contracts/dex-core/Dex223Oracle.sol:Oracle",
+  "args:marginOracle": "[\"0x899097B427cd04e1BD07FD3445cc90493300C3a5\",1800]",
+  "done:marginOracle": "0xc6ed61374aa2200f18f82d2e503905ffe2f17a430d29616d5962d54d6ea311bc",
+  "block:marginOracle": "26140899",
+  "marginModule": "0xd48A17133900495863e93EDD4B2F3eA6015F55e4",
+  "fqn:marginModule": "contracts/dex-core/Dex223MarginModule.sol:MarginModule",
+  "args:marginModule": "[\"0x899097B427cd04e1BD07FD3445cc90493300C3a5\",\"0x14248d524850B0B47B30F4332279330Cad2846a2\",\"0xA86BB72043a7Bc057765a934c55F73B2D127Dc83\"]",
+  "done:marginModule": "0x512acb31966f11f45bca1046482f2606c40af9995e0e4630dc1da326c3da29c7",
+  "block:marginModule": "26140901",
+  "marginFactory": "0x899097B427cd04e1BD07FD3445cc90493300C3a5",
+  "marginRouter": "0x14248d524850B0B47B30F4332279330Cad2846a2",
+  "marginTwapWindow": "1800",
+  "done:burn nonce 49 (before margin)": "0xd0a4adf3effb059528555bdd5340f9b49fef85a2d5c09a583c1652b602f39770"
 }
