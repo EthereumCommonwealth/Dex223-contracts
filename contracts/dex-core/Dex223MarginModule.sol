@@ -71,6 +71,13 @@ contract MarginModule is IOrderParams
     uint256 constant private INTEREST_RATE_PRECISION = 10000; 
     IDex223Factory public factory;
     ISwapRouter public router;
+    // The only price oracle an order may name. Orders used to carry any oracle the lender chose,
+    // and that oracle alone decides solvency and the forced-sale floor, so a lender could point it
+    // at a contract that reports a crash, liquidate healthy positions and sell their assets at any
+    // price. Set once in the constructor and never written again (there is no setter); moving to a
+    // new oracle means deploying a new module. Plain storage rather than `immutable`, which would
+    // inline 32 bytes at every read and push this contract over the EIP-170 size limit.
+    address public priceOracle;
 
     mapping (uint256 => Order) public orders;
     mapping (uint256 => OrderStatus) public order_status;
@@ -300,9 +307,17 @@ contract MarginModule is IOrderParams
         }
     }
 
-    constructor(address _factory, address _router) {
+    constructor(address _factory, address _router, address _priceOracle) {
+        uint256 oracleCodeSize;
+        assembly { oracleCodeSize := extcodesize(_priceOracle) }
+        require(oracleCodeSize > 0, "Oracle has no code");
         factory = IDex223Factory(_factory);
         router = ISwapRouter(_router);
+        priceOracle = _priceOracle;
+    }
+
+    function _requirePriceOracle(address _oracle) private view {
+        require(_oracle == priceOracle, "Unsupported oracle");
     }
 
     // NOTE: deliberately no `receive()`. Every ETH inflow already arrives through a payable entry
@@ -392,6 +407,7 @@ contract MarginModule is IOrderParams
 
         require(params.leverage > 1);
         require(params.deadline > block.timestamp);
+        _requirePriceOracle(params.oracle);
 
         OrderExpiration memory expirationData = OrderExpiration(
             params.liquidationRewardAmount,
@@ -457,6 +473,7 @@ contract MarginModule is IOrderParams
     {
         Order storage order = orders[_orderId];
         require(order_status[_orderId].positions == 0, "Order has active positions");
+        _requirePriceOracle(_oracle);
 
         order.whitelist     = _whitelist;
         order.interestRate  = _interestRate;
@@ -1413,10 +1430,4 @@ contract MarginModule is IOrderParams
     }
 
 
-    function getPositionTokenlistID(uint256 _positionId) public view returns(bytes32 _whitelistId) {
-        
-        Position storage position = positions[_positionId];
-        Order storage order = orders[position.orderId];
-        return order.whitelist;
-    }
 }

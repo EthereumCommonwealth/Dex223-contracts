@@ -237,7 +237,7 @@ async function main() {
 
   console.log('\nexecuting:')
   const oracle = await deployOne(s, 'marginOracle', [inputs.factory, inputs.twapWindow])
-  const module = await deployOne(s, 'marginModule', [inputs.factory, inputs.router])
+  const module = await deployOne(s, 'marginModule', [inputs.factory, inputs.router, oracle])
   state.marginFactory = inputs.factory
   state.marginRouter = inputs.router
   state.marginTwapWindow = String(inputs.twapWindow)
@@ -251,6 +251,7 @@ async function main() {
     [`oracle.twapWindow == ${inputs.twapWindow}`, async () => BigInt(await o.twapWindow()) === BigInt(inputs.twapWindow)],
     ['module.factory == factory', async () => eq(await m.factory(), inputs.factory)],
     ['module.router == router', async () => eq(await m.router(), inputs.router)],
+    ['module.priceOracle == oracle', async () => eq(await m.priceOracle(), oracle)],
     ['module has no orders yet', async () => BigInt(await m.orderIndex()) === 0n],
   ]
   let bad = 0

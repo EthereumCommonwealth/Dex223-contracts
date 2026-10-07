@@ -160,12 +160,13 @@ async function main() {
   }
 
   await deploy('marginOracle', [factoryAddr, TWAP_WINDOW])
-  await deploy('marginModule', [factoryAddr, router])
+  await deploy('marginModule', [factoryAddr, router, state.marginOracle])
 
   const r: any = await ethers.getContractAt(FQN.router, router)
   if (!eq(await r.factory(), factoryAddr)) fail('router reports a different factory')
   const mm: any = await ethers.getContractAt(FQN.marginModule, state.marginModule)
   if (!eq(await mm.factory(), factoryAddr) || !eq(await mm.router(), router)) fail('margin module is bound to the wrong factory or router')
+  if (!eq(await mm.priceOracle(), state.marginOracle)) fail('margin module is bound to the wrong price oracle')
   console.log(`\nfactory ${factoryAddr} (owner ${await factory.owner()}), pool hash ${state.poolInitCodeHash}`)
   console.log(`router ${router}, margin ${state.marginModule}, oracle ${state.marginOracle} (window ${TWAP_WINDOW}s)`)
 }

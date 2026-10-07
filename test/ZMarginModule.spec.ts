@@ -19,7 +19,7 @@ describe('MarginModule', () => {
 
     const TWAP_WINDOW = 1800
     const oracle = await (await ethers.getContractFactory('contracts/dex-core/Dex223Oracle.sol:Oracle')).deploy(factory.target, TWAP_WINDOW)
-    const mm = await (await ethers.getContractFactory('MarginModule')).deploy(factory.target, router.target)
+    const mm = await (await ethers.getContractFactory('MarginModule')).deploy(factory.target, router.target, oracle.target)
 
     const base = tokens[0]      // baseAsset (loan currency)
     const collat = tokens[1]    // collateral
@@ -1306,6 +1306,35 @@ describe('MarginModule', () => {
       })
       const after = await c.oracle.getAmountOut(c.base.target, c.collat.target, ONE)
       expect(after).to.be.closeTo(before, before / 20n)
+    })
+
+    // The order's oracle alone decides solvency and the forced-sale floor, so a lender who could
+    // name their own could report a crash, liquidate a healthy borrower and sell at any price.
+    it('an order can only name the module\'s price oracle', async () => {
+      const c = await loadFixture(fx)
+      expect(await c.mm.priceOracle()).to.eq(c.oracle.target)
+      const rogue = await (await ethers.getContractFactory('contracts/dex-core/Dex223Oracle.sol:Oracle')).deploy(c.factory.target, c.TWAP_WINDOW)
+      await expect(c.mm.createOrder({ ...c.orderParams, oracle: rogue.target })).to.be.revertedWith('Unsupported oracle')
+      await expect(c.mm.createOrder({ ...c.orderParams, oracle: ethers.ZeroAddress })).to.be.revertedWith('Unsupported oracle')
+      await c.mm.createOrder(c.orderParams)
+      expect((await c.mm.orders(0)).oracle).to.eq(c.oracle.target)
+    })
+
+    it('modifyOrder cannot switch an order to another oracle', async () => {
+      const c = await loadFixture(fx)
+      await c.mm.createOrder(c.orderParams)
+      const rogue = await (await ethers.getContractFactory('contracts/dex-core/Dex223Oracle.sol:Oracle')).deploy(c.factory.target, c.TWAP_WINDOW)
+      const modify = (oracle: string) => c.mm.modifyOrder(
+        0, c.whitelistId, 777n, BigInt(7 * DAY), 5n, 3, 4, oracle, 1n, c.base.target, BigInt(c.now + 30 * DAY))
+      await expect(modify(rogue.target.toString())).to.be.revertedWith('Unsupported oracle')
+      await modify(c.oracle.target.toString())
+      expect((await c.mm.orders(0)).oracle).to.eq(c.oracle.target)
+    })
+
+    it('the module cannot be deployed without an oracle contract', async () => {
+      const { factory, router } = await loadFixture(completeFixture)
+      const MM = await ethers.getContractFactory('MarginModule')
+      await expect(MM.deploy(factory.target, router.target, ethers.ZeroAddress)).to.be.revertedWith('Oracle has no code')
     })
   })
 })
