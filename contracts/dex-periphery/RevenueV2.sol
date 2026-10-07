@@ -223,6 +223,22 @@ contract RevenueV2 {
         _payStake(msg.sender, _token, _amount);
     }
 
+    /// @notice Withdraw the whole position, in the versions it was staked in, with rewards settled as by
+    ///         withdraw(). Closes any position, including one split across versions where each part alone is
+    ///         below `min_stake`.
+    function withdraw_all() external nonReentrant {
+        require(block.timestamp >= unlock_time[msg.sender], 'Tokens are frozen for a specified duration after the last staking');
+        uint256 amount = staked[msg.sender];
+        require(amount != 0, 'Nothing staked');
+        _checkpoint(msg.sender);
+        staked[msg.sender] = 0;
+        total_staked -= amount;
+        uint256 part20 = staked_by_version[msg.sender][staking_token_erc20];
+        uint256 part223 = staked_by_version[msg.sender][staking_token_erc223];
+        if (part20 != 0) _payStake(msg.sender, staking_token_erc20, part20);
+        if (part223 != 0) _payStake(msg.sender, staking_token_erc223, part223);
+    }
+
     /// @notice Withdraw the whole position, in the versions it was staked in, without touching any reward
     ///         accounting, for use if reward bookkeeping ever reverts (it cannot under the configured bounds,
     ///         but principal must never depend on it). Rewards already settled to the caller stay claimable;

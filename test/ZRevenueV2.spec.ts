@@ -465,6 +465,28 @@ describe('RevenueV2', () => {
       expect((await revenue.reward_data(good.target)).period_finish).to.be.gt(0n)
     })
 
+    it('withdraw_all closes a position split across versions, each part below the minimum (invariant audit)', async () => {
+      const { signers, owner, d20, d223, revenue, stake, feesArrive, reward } = await loadFixture(fixture)
+      const alice = signers[1]
+      await stake(owner, E18) // 1.0 ERC-20
+      await d223['transfer(address,uint256)'](revenue.target, 6n * E18 / 10n)
+      await revenue.stake(d223.target, 6n * E18 / 10n) // + 0.6 ERC-223
+      await time.increase(LOCK)
+      await revenue.withdraw(d20.target, 4n * E18 / 10n) // parts now 0.6 + 0.6, each below the 1.0 minimum
+      await feesArrive(700n * E18)
+      await time.increase(LOCK)
+      await expect(revenue.withdraw(d20.target, 6n * E18 / 10n)).to.be.revertedWith('Remaining stake below minimum')
+      const before20 = await d20.balanceOf(owner.address)
+      const before223 = await d223.balanceOf(owner.address)
+      await revenue.withdraw_all()
+      expect((await d20.balanceOf(owner.address)) - before20).to.eq(6n * E18 / 10n)
+      expect((await d223.balanceOf(owner.address)) - before223).to.eq(6n * E18 / 10n)
+      expect(await revenue.staked(owner.address)).to.eq(0n)
+      expect(await revenue.earned(owner.address, reward.target)).to.be.gt(0n) // rewards settled, still claimable
+      await expect(revenue.withdraw_all()).to.be.revertedWith('Nothing staked')
+      void alice
+    })
+
     it('emergency_withdraw returns principal without touching reward accounting', async () => {
       const { signers, d20, revenue, stake, feesArrive, reward, bal } = await loadFixture(fixture)
       const [, alice, bob] = signers

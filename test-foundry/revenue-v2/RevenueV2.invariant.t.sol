@@ -21,7 +21,7 @@ contract RevenueV2InvariantTest is Test {
         s20 = h.s20();
         s223 = h.s223();
 
-        bytes4[] memory sel = new bytes4[](22);
+        bytes4[] memory sel = new bytes4[](23);
         uint256 k;
         sel[k++] = RevenueV2Handler.stake20.selector;
         sel[k++] = RevenueV2Handler.stake20.selector; // weight
@@ -31,6 +31,7 @@ contract RevenueV2InvariantTest is Test {
         sel[k++] = RevenueV2Handler.withdraw.selector;
         sel[k++] = RevenueV2Handler.withdraw.selector; // weight
         sel[k++] = RevenueV2Handler.emergencyWithdraw.selector;
+        sel[k++] = RevenueV2Handler.withdrawAll.selector;
         sel[k++] = RevenueV2Handler.withdrawDeposit.selector;
         sel[k++] = RevenueV2Handler.claim.selector;
         sel[k++] = RevenueV2Handler.claim.selector; // weight
@@ -159,14 +160,17 @@ contract RevenueV2InvariantTest is Test {
 
     /// From the current state, with every hostile reward token at its worst (paused, broken and
     /// gas-burning balanceOf, blacklisting RevenueV2, re-entering), every staker can exit in full and
-    /// every deposit can be refunded: once via withdraw() per version, once via emergency_withdraw().
+    /// every deposit can be refunded: via withdraw() per version (withdraw_all() for a position whose parts
+    /// are each below min_stake), via withdraw_all(), and via emergency_withdraw().
     /// Each exit must pay exactly the per-version principal. Run on a snapshot that is thrown away.
     function invariant_everyoneCanExit() public {
-        _exitAll(false);
-        _exitAll(true);
+        _exitAll(0);
+        _exitAll(1);
+        _exitAll(2);
     }
 
-    function _exitAll(bool emergency) internal {
+    /// mode 0: withdraw() per version; 1: withdraw_all(); 2: emergency_withdraw().
+    function _exitAll(uint8 mode) internal {
         uint256 snap = vm.snapshotState();
         uint256 t0 = block.timestamp;
 
@@ -192,7 +196,7 @@ contract RevenueV2InvariantTest is Test {
             uint256 p223 = rev.staked_by_version(a, address(s223));
             uint256 b20 = s20.balanceOf(a);
             uint256 b223 = s223.balanceOf(a);
-            if (emergency) {
+            if (mode == 2) {
                 if (p20 + p223 != 0) {
                     vm.prank(a);
                     try rev.emergency_withdraw() {} catch (bytes memory err) {
@@ -200,18 +204,26 @@ contract RevenueV2InvariantTest is Test {
                         fail();
                     }
                 }
+            } else if (mode == 1) {
+                if (p20 + p223 != 0) {
+                    vm.prank(a);
+                    try rev.withdraw_all() {} catch (bytes memory err) {
+                        emit log_named_bytes('withdraw_all exit revert', err);
+                        fail();
+                    }
+                }
             } else {
                 uint256 minStake = rev.min_stake();
                 if (p20 != 0 && p223 != 0 && p20 < minStake && p223 < minStake) {
-                    // Known limitation: each part alone is below min_stake, so withdraw() cannot take
-                    // either part first. The principal must still come out through emergency_withdraw().
+                    // Each part alone is below min_stake, so withdraw() cannot take either part first;
+                    // withdraw_all() closes the position with rewards settled.
                     vm.prank(a);
                     try rev.withdraw(address(s20), p20) {
                         fail(); // would leave a sub-minimum position: must not be allowed
                     } catch {}
                     vm.prank(a);
-                    try rev.emergency_withdraw() {} catch (bytes memory err) {
-                        emit log_named_bytes('split-position emergency exit revert', err);
+                    try rev.withdraw_all() {} catch (bytes memory err) {
+                        emit log_named_bytes('split-position withdraw_all revert', err);
                         fail();
                     }
                 } else {

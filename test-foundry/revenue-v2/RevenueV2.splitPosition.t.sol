@@ -6,10 +6,9 @@ import '../../contracts/dex-periphery/RevenueV2.sol';
 import '../../contracts/tokens/D223Token.sol';
 import './Mocks.sol';
 
-/// Finding pinned by the invariant campaign: a position split across both versions where each part is
-/// below min_stake (but the sum is not) cannot be closed with withdraw(), because every withdraw must
-/// leave 0 or >= min_stake. The principal still exits through emergency_withdraw(); claiming first
-/// keeps the rewards earned so far.
+/// Found by the invariant campaign: a position split across both versions where each part is below
+/// min_stake (but the sum is not) cannot be closed with withdraw(), because every withdraw must leave 0 or
+/// >= min_stake. withdraw_all() closes it with rewards settled; emergency_withdraw() also returns it.
 contract RevenueV2SplitPositionTest is Test {
     RevenueV2 rev;
     MockERC20 s20;
@@ -60,6 +59,20 @@ contract RevenueV2SplitPositionTest is Test {
         rev.withdraw(address(s20), 0.1e18);
         vm.stopPrank();
         assertEq(rev.staked(alice), 1e18);
+    }
+
+    function test_withdrawAllClosesSplitPositionKeepingRewards() public {
+        vm.prank(alice);
+        rev.withdraw_all();
+        assertEq(s20.balanceOf(alice), 10e18);
+        assertEq(s223.balanceOf(alice), 10e18);
+        assertEq(rev.staked(alice), 0);
+        assertGt(rev.earned(alice, address(reward)), 0); // settled, still claimable
+        address[] memory list = new address[](1);
+        list[0] = address(reward);
+        vm.prank(alice);
+        rev.claim(list);
+        assertGt(reward.balanceOf(alice), 0);
     }
 
     function test_emergencyExitReturnsPrincipalAndClaimFirstKeepsRewards() public {

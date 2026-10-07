@@ -269,6 +269,26 @@ contract RevenueV2Handler is Test {
         }
     }
 
+    function withdrawAll(uint256 actorSeed) external {
+        address a = _actor(actorSeed);
+        uint256 p20 = rev.staked_by_version(a, address(s20));
+        uint256 p223 = rev.staked_by_version(a, address(s223));
+        bool expected = rev.staked(a) != 0 && _unlocked(a);
+        uint256 b20 = s20.balanceOf(a);
+        uint256 b223 = s223.balanceOf(a);
+        vm.prank(a);
+        try rev.withdraw_all() {
+            if (!expected) _violate('withdraw_all succeeded when it should not');
+            if (s20.balanceOf(a) - b20 != p20) _violate('withdraw_all paid wrong ERC-20 amount');
+            if (s223.balanceOf(a) - b223 != p223) _violate('withdraw_all paid wrong ERC-223 amount');
+            if (rev.staked(a) != 0) _violate('withdraw_all left a position');
+            if (p20 != 0) _debitStake(a, 0, p20);
+            if (p223 != 0) _debitStake(a, 1, p223);
+        } catch {
+            if (expected) _violate('withdraw_all failed unexpectedly (freeze)');
+        }
+    }
+
     function withdrawDeposit(uint256 actorSeed, uint256 tokenSeed) external {
         address a = _actor(actorSeed);
         // Mostly the real ERC-223 token, sometimes the ERC-20 version or a reward token (must revert).
