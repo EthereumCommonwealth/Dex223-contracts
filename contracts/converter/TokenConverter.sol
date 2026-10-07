@@ -515,8 +515,15 @@ contract TokenStandardConverter is IERC223Recipient
         return address(_newERC20Wrapper);
     }
 
+    // Guards wrapERC20toERC223, which mints the balance delta across transferFrom. A token with a
+    // transfer hook (ERC-777 style) could otherwise re-enter it mid-transfer and have the inner
+    // deposit counted by both calls, minting wrappers with no backing.
+    bool private wrapping;
+
     function wrapERC20toERC223(address _ERC20token, uint256 _amount) public returns (bool)
     {
+        require(!wrapping, "Error: Reentrant wrap.");
+        wrapping = true;
         // If there is no active wrapper for a token that user wants to wrap
         // then create it.
         if(address(erc223Wrappers[_ERC20token]) == address(0))
@@ -531,6 +538,7 @@ contract TokenStandardConverter is IERC223Recipient
 
         erc223Wrappers[_ERC20token].mint(msg.sender, _amount);
 
+        wrapping = false;
         return true;
     }
 
