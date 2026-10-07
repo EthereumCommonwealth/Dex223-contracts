@@ -478,6 +478,13 @@ contract Dex223PoolLib {
                 if (_is223) revert("LIB: RECIPIENT_REJECTED");
                 revert("LIB: TRANSFER_FAILED");
             }
+            // A call to an address with no code "succeeds" without moving anything. A legitimate
+            // conversion deploys a missing wrapper before the retry, so if the token still has no code
+            // the recipient got nothing while the other version was spent: revert instead.
+            if (tokenNotExist) {
+                assembly { _tokenCodeSize := extcodesize(_token) }
+                require(_tokenCodeSize > 0, "LIB: NO_TOKEN");
+            }
         }
     }
 
