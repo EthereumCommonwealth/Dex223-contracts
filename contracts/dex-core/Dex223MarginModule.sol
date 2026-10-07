@@ -6,7 +6,6 @@ import './interfaces/IDex223Factory.sol';
 import './interfaces/IDex223Autolisting.sol';
 import '../interfaces/ITokenConverter.sol';
 import '../interfaces/IERC20Minimal.sol';
-import '../libraries/Multicall.sol';
 import '../interfaces/ISwapRouter.sol';
 import '../libraries/TickMath.sol';
 import '../tokens/interfaces/IERC223.sol';
@@ -57,16 +56,16 @@ interface IWETH9
     function withdraw(uint wad) external;
 }
 
-contract MarginModule is Multicall, IOrderParams
+contract MarginModule is IOrderParams
 {
     uint256 constant private MAX_FREEZE_DURATION = 1 hours;
     // Swaps the module performs on a position's behalf during liquidate() and positionClose()
     // (see _swapToBaseAsset) must return at least this share of the order oracle's quote. Without a
     // floor those swaps ran with amountOutMinimum = 0 and no price limit, so anyone watching the
     // mempool could sandwich a liquidation and the lender absorbed the difference.
-    // 10000 = 100%. If the market has moved further than this from the TWAP, the liquidator can
-    // still finish the job: after the freeze, marginSwap() lets the liquidator swap the position's
-    // assets with their own limits, and a position holding only the base asset liquidates without
+    // 10000 = 100%. Liquidation has no way around it: marginSwap() is owner-only. If the market has
+    // moved further than this from the TWAP, the liquidator waits for the TWAP to catch up
+    // (re-freezing if the freeze lapses); a position holding only the base asset liquidates without
     // any swap.
     uint256 constant private FORCED_SWAP_MIN_OUT_BPS = 9500;
     uint256 constant private INTEREST_RATE_PRECISION = 10000; 
@@ -87,10 +86,10 @@ contract MarginModule is Multicall, IOrderParams
     // point - `_receiveAsset` pulls a caller-chosen token, `_sendAsset` on an ERC-223 asset invokes the
     // recipient's `tokenReceived`, and `_sendEth` uses call{value:} with all gas.
     //
-    // NOTE: `marginSwap` / `marginSwap223` are deliberately NOT guarded: `_liquidate` reaches them via
-    // `_swapToBaseAsset`, so guarding them would deadlock liquidation. That path is already covered
-    // because `liquidate()` itself holds the guard. A top-level `marginSwap` is restricted to the
-    // position owner or its liquidator.
+    // NOTE: the internal swap bodies (`_marginSwapInternal` / `_marginSwap223Internal`) are not
+    // guarded: `_liquidate` and `positionClose` reach them via `_swapToBaseAsset` while already holding
+    // the guard. The public `marginSwap` / `marginSwap223` are guarded and restricted to the position
+    // owner.
     bool private _entered;
 
     modifier nonReentrant() {
@@ -283,6 +282,22 @@ contract MarginModule is Multicall, IOrderParams
     {
         require(orders[_orderId].owner == msg.sender);
         _;
+    }
+
+    /// @notice Runs several calls on this module in one transaction.
+    /// @dev Deliberately not payable, unlike the shared Multicall. Each sub-call is a delegatecall
+    /// that sees the same msg.value, so orderDepositEth, orderDepositWETH9 and takeLoan each counted
+    /// one payment again per sub-call: an order could be credited N times for one deposit, and the
+    /// surplus withdrawn from Ether held for other orders and positions.
+    function multicall(bytes[] calldata data) external returns (bytes[] memory results) {
+        results = new bytes[](data.length);
+        for (uint256 i = 0; i < data.length; i++) {
+            (bool success, bytes memory result) = address(this).delegatecall(data[i]);
+            if (!success) {
+                assembly { revert(add(result, 32), mload(result)) }
+            }
+            results[i] = result;
+        }
     }
 
     constructor(address _factory, address _router) {
@@ -479,7 +494,7 @@ contract MarginModule is Multicall, IOrderParams
     }
 
     function orderDepositWETH9(uint256 _orderId, address _WETH9) public payable 
-        onlyOrderOwner(_orderId)
+        nonReentrant onlyOrderOwner(_orderId)
     {
         _requireOrderOpen(_orderId);
         require(orders[_orderId].baseAsset == _WETH9);
@@ -758,13 +773,19 @@ contract MarginModule is Multicall, IOrderParams
         uint160 _priceLimitX96
     ) public nonReentrant {
 
-        Position storage position = positions[_positionId];
-
-        if (msg.sender != position.owner) {
-            require(msg.sender == position.liquidator && position.frozenTime > 0, "Only owner or liquidator");
-        }
-
+        // Owner only. A liquidator used to be allowed here after the freeze, with their own
+        // amountOutMinimum: that let them sell the position's assets into a pool they had skewed and
+        // keep the difference. Liquidation now always sells through _swapToBaseAsset and its floor.
+        _requirePositionOwner(_positionId);
         _marginSwapInternal(_positionId, _assetId1, _whitelistId1, _whitelistId2, _amount, _asset2, _feeTier, _minAmountOut, _priceLimitX96);
+        _requireSolventAfterSwap(_positionId);
+    }
+
+    /// @dev An owner's swap must not leave the position liquidatable. Otherwise the owner could sell
+    /// the borrowed funds into a pool they control at any price and walk away with the loan, leaving
+    /// the lender with only the collateral.
+    function _requireSolventAfterSwap(uint256 _positionId) internal view {
+        require(!subjectToLiquidation(_positionId), "Swap makes position liquidatable");
     }
 
     function _marginSwapInternal(
@@ -874,6 +895,7 @@ contract MarginModule is Multicall, IOrderParams
         _requirePositionOwner(_positionId);
 
         _marginSwap223Internal(_positionId, _assetId1, _whitelistId1, _whitelistId2, _amount, _asset2, _feeTier, 0);
+        _requireSolventAfterSwap(_positionId);
     }
 
     function _marginSwap223Internal(uint256 _positionId,
