@@ -1,0 +1,51 @@
+# Foundry is used only for the stateful invariant suites in test-foundry/. Hardhat stays the main build.
+# `src` points at test-foundry so forge compiles only what those tests import (RevenueV2, D223Token and
+# their 0.8 dependencies), never the 0.7.6 core under contracts/.
+#
+#   forge test --match-path 'test-foundry/*' -vv                           (quick, default profile)
+#   FOUNDRY_PROFILE=campaign forge test --match-path 'test-foundry/*' -vv  (long campaign)
+[profile.default]
+src = "test-foundry"
+test = "test-foundry"
+script = "test-foundry"
+out = "out-foundry"
+cache_path = "cache-foundry"
+libs = ["lib"]
+remappings = ["forge-std/=lib/forge-std/src/"]
+solc_version = "0.8.19"
+evm_version = "paris"
+optimizer = true
+optimizer_runs = 5000
+
+[profile.default.fuzz]
+failure_persist_dir = "cache-foundry/fuzz"
+
+[profile.default.invariant]
+runs = 256
+depth = 100
+fail_on_revert = false
+show_metrics = true
+failure_persist_dir = "cache-foundry/invariant"
+
+[profile.campaign]
+src = "test-foundry"
+test = "test-foundry"
+script = "test-foundry"
+out = "out-foundry"
+cache_path = "cache-foundry"
+libs = ["lib"]
+remappings = ["forge-std/=lib/forge-std/src/"]
+solc_version = "0.8.19"
+evm_version = "paris"
+optimizer = true
+optimizer_runs = 5000
+
+[profile.campaign.invariant]
+runs = 3000
+depth = 200
+fail_on_revert = false
+show_metrics = true
+failure_persist_dir = "cache-foundry/invariant"
+
+[lint]
+lint_on_build = false

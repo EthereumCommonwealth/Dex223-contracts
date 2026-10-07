@@ -12,3 +12,7 @@ dex223-sepolia-fixed.png
 
 # Fork rehearsal state is throwaway. deployments/mainnet.json is the real record and IS committed.
 deployments/fork.json
+
+# Foundry build output (invariant suites in test-foundry/)
+/out-foundry/
+/cache-foundry/

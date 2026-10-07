@@ -49,7 +49,7 @@ describe('RevenueV2', () => {
       await expect(F.deploy(d20.target, d20.target, WEEK, LOCK, 1n)).to.be.revertedWith('Staking token versions must differ')
       await expect(F.deploy(d20.target, d223.target, 59, LOCK, 1n)).to.be.revertedWith('Reward duration out of range')
       await expect(F.deploy(d20.target, d223.target, WEEK, 91 * DAY, 1n)).to.be.revertedWith('Claim delay too long')
-      await expect(F.deploy(d20.target, d223.target, WEEK, LOCK, 0n)).to.be.revertedWith('Minimum stake must be non-zero')
+      await expect(F.deploy(d20.target, d223.target, WEEK, LOCK, 10n ** 6n - 1n)).to.be.revertedWith('Minimum stake too small')
     })
   })
 
@@ -99,35 +99,36 @@ describe('RevenueV2', () => {
       await expect(revenue.withdrawDeposit(d223.target)).to.be.revertedWith('Nothing deposited')
     })
 
-    it('withdraws in either version, but never out of other users\' unstaked deposits', async () => {
+    it('each stake comes back in the version it was staked in, never out of unstaked deposits', async () => {
       const { signers, owner, d20, d223, revenue, stake } = await loadFixture(fixture)
       const alice = signers[1]
-      await stake(alice, 10n * E18) // contract holds 10 ERC-20
+      await stake(alice, 10n * E18) // ERC-20
       await d223['transfer(address,uint256)'](revenue.target, 10n * E18) // owner's deposit, not staked
       await time.increase(LOCK)
-      // The only ERC-223 the contract holds is the owner's deposit, so alice is paid in the ERC-20 version.
-      await revenue.connect(alice).withdraw(d223.target, 10n * E18)
+      await expect(revenue.connect(alice).withdraw(d223.target, 1n)).to.be.revertedWith(
+        'Withdrawing more than staked in this version',
+      )
+      await revenue.connect(alice).withdraw(d20.target, 10n * E18)
       expect(await d20.balanceOf(alice.address)).to.eq(10n * E18)
       expect(await revenue.erc223deposit(owner.address, d223.target)).to.eq(10n * E18)
       await revenue.withdrawDeposit(d223.target)
       expect(await d223.balanceOf(revenue.target)).to.eq(0n)
-      expect(await d20.balanceOf(revenue.target)).to.eq(0n)
     })
 
-    it('a run on one token version cannot freeze a smaller staker (audit F2)', async () => {
-      const { signers, owner, d20, d223, revenue, stake } = await loadFixture(fixture)
+    it('nobody can convert versions through the contract and freeze a staker (audit F2, principal audit 1)', async () => {
+      const { signers, d20, d223, revenue, stake } = await loadFixture(fixture)
       const victim = signers[1]
       await stake(victim, 100n * E18) // ERC-20
       await d223['transfer(address,uint256)'](revenue.target, 1000n * E18)
       await revenue.stake(d223.target, 1000n * E18) // attacker stakes ERC-223
       await time.increase(LOCK)
-      await revenue.withdraw(d20.target, 50n * E18) // drains the ERC-20 side down to 50
-      await revenue.withdraw(d223.target, 950n * E18) // and the ERC-223 side down to 50
+      await expect(revenue.withdraw(d20.target, 50n * E18)).to.be.revertedWith('Withdrawing more than staked in this version')
+      await revenue.withdraw(d223.target, 1000n * E18)
       await revenue.connect(victim).withdraw(d20.target, 100n * E18)
-      expect(await d20.balanceOf(victim.address)).to.eq(50n * E18)
-      expect(await d223.balanceOf(victim.address)).to.eq(50n * E18)
+      expect(await d20.balanceOf(victim.address)).to.eq(100n * E18)
       expect(await revenue.total_staked()).to.eq(0n)
-      void owner
+      expect(await revenue.total_staked_by_version(d20.target)).to.eq(0n)
+      expect(await revenue.total_staked_by_version(d223.target)).to.eq(0n)
     })
 
     it('rejects wrong tokens, zero amounts, dust positions and over-withdrawal', async () => {
@@ -138,7 +139,7 @@ describe('RevenueV2', () => {
       await expect(stake(alice, MIN_STAKE - 1n)).to.be.revertedWith('Below minimum stake')
       await stake(alice, 2n * E18)
       await time.increase(LOCK)
-      await expect(revenue.connect(alice).withdraw(d20.target, 3n * E18)).to.be.revertedWith('Withdrawing more than staked')
+      await expect(revenue.connect(alice).withdraw(d20.target, 3n * E18)).to.be.revertedWith('Withdrawing more than staked in this version')
       await expect(revenue.connect(alice).withdraw(d20.target, E18 + 1n)).to.be.revertedWith('Remaining stake below minimum')
       await revenue.connect(alice).withdraw(d20.target, E18)
       await revenue.connect(alice).withdraw(d20.target, E18)
@@ -148,12 +149,12 @@ describe('RevenueV2', () => {
       const [, alice] = await ethers.getSigners()
       const fot = await (await ethers.getContractFactory('FeeOnTransferToken')).deploy()
       const d223 = await (await ethers.getContractFactory('D223Token')).deploy()
-      const revenue = await (await ethers.getContractFactory('RevenueV2')).deploy(fot.target, d223.target, WEEK, LOCK, 1n)
-      await fot.mint(alice.address, 1000n)
-      await fot.connect(alice).approve(revenue.target, 1000n)
-      await revenue.connect(alice).stake(fot.target, 1000n)
-      expect(await revenue.staked(alice.address)).to.eq(990n)
-      expect(await revenue.total_staked()).to.eq(990n)
+      const revenue = await (await ethers.getContractFactory('RevenueV2')).deploy(fot.target, d223.target, WEEK, LOCK, 10n ** 6n)
+      await fot.mint(alice.address, 1000n * E18)
+      await fot.connect(alice).approve(revenue.target, 1000n * E18)
+      await revenue.connect(alice).stake(fot.target, 1000n * E18)
+      expect(await revenue.staked(alice.address)).to.eq(990n * E18)
+      expect(await revenue.total_staked()).to.eq(990n * E18)
     })
 
     it('a lock change does not move positions already locked, and is capped', async () => {
@@ -449,6 +450,73 @@ describe('RevenueV2', () => {
       await revenue.connect(alice).withdraw(d20.target, 10n * E18)
     })
 
+    it('a listed token whose balanceOf reverts is skipped, not fatal', async () => {
+      const { signers, revenue, stake } = await loadFixture(fixture)
+      const alice = signers[1]
+      const good = await (await ethers.getContractFactory('HostileERC20')).deploy(18)
+      // RevenueV2 itself has no balanceOf: listing it stands in for a token whose balanceOf reverts.
+      const other = await (await ethers.getContractFactory('RevenueV2')).deploy(
+        await revenue.staking_token_erc20(), await revenue.staking_token_erc223(), WEEK, LOCK, E18)
+      await revenue.add_reward_token(other.target)
+      await revenue.add_reward_token(good.target)
+      await stake(alice, E18)
+      await good.mint(revenue.target, 700n * E18)
+      await expect(revenue.syncAll()).to.emit(revenue, 'RewardTokenUnreadable').withArgs(other.target)
+      expect((await revenue.reward_data(good.target)).period_finish).to.be.gt(0n)
+    })
+
+    it('withdraw_all closes a position split across versions, each part below the minimum (invariant audit)', async () => {
+      const { signers, owner, d20, d223, revenue, stake, feesArrive, reward } = await loadFixture(fixture)
+      const alice = signers[1]
+      await stake(owner, E18) // 1.0 ERC-20
+      await d223['transfer(address,uint256)'](revenue.target, 6n * E18 / 10n)
+      await revenue.stake(d223.target, 6n * E18 / 10n) // + 0.6 ERC-223
+      await time.increase(LOCK)
+      await revenue.withdraw(d20.target, 4n * E18 / 10n) // parts now 0.6 + 0.6, each below the 1.0 minimum
+      await feesArrive(700n * E18)
+      await time.increase(LOCK)
+      await expect(revenue.withdraw(d20.target, 6n * E18 / 10n)).to.be.revertedWith('Remaining stake below minimum')
+      const before20 = await d20.balanceOf(owner.address)
+      const before223 = await d223.balanceOf(owner.address)
+      await revenue.withdraw_all()
+      expect((await d20.balanceOf(owner.address)) - before20).to.eq(6n * E18 / 10n)
+      expect((await d223.balanceOf(owner.address)) - before223).to.eq(6n * E18 / 10n)
+      expect(await revenue.staked(owner.address)).to.eq(0n)
+      expect(await revenue.earned(owner.address, reward.target)).to.be.gt(0n) // rewards settled, still claimable
+      await expect(revenue.withdraw_all()).to.be.revertedWith('Nothing staked')
+      void alice
+    })
+
+    it('emergency_withdraw returns principal without touching reward accounting', async () => {
+      const { signers, d20, revenue, stake, feesArrive, reward, bal } = await loadFixture(fixture)
+      const [, alice, bob] = signers
+      await stake(alice, 10n * E18)
+      await stake(bob, 10n * E18)
+      await feesArrive(700n * E18)
+      await expect(revenue.connect(alice).emergency_withdraw()).to.be.revertedWith(
+        'Tokens are frozen for a specified duration after the last staking')
+      await time.increase(LOCK)
+      await revenue.connect(alice).claim([reward.target]) // settles alice's rewards so far
+      const settled = await bal(alice)
+      await time.increase(DAY)
+      await revenue.connect(alice).emergency_withdraw()
+      expect(await d20.balanceOf(alice.address)).to.eq(10n * E18)
+      expect(await revenue.staked(alice.address)).to.eq(0n)
+      expect(await revenue.total_staked()).to.eq(10n * E18)
+      await expect(revenue.connect(alice).emergency_withdraw()).to.be.revertedWith('Nothing staked')
+      // The day since her last claim is forfeited; bob and solvency are unaffected.
+      await time.increase(WEEK)
+      await revenue.connect(bob).claim([reward.target])
+      await revenue.connect(alice).claim([reward.target])
+      expect(await bal(alice)).to.eq(settled)
+      const r = await revenue.reward_data(reward.target)
+      expect(await reward.balanceOf(revenue.target)).to.be.gte(r.accounted)
+      expect((await bal(alice)) + (await bal(bob))).to.be.lte(700n * E18)
+      // She can stake again normally afterwards and earns only from then.
+      await stake(alice, E18)
+      expect(await revenue.earned(alice.address, reward.target)).to.eq(0n)
+    })
+
     it('an absurd reward balance cannot brick the token (audit F3)', async () => {
       const { signers, revenue, stake, reward } = await loadFixture(fixture)
       await stake(signers[1], E18)
@@ -457,6 +525,27 @@ describe('RevenueV2', () => {
       await revenue.syncAll()
       await time.increase(DAY)
       await revenue.connect(signers[1]).claim([reward.target])
+    })
+
+    it('D223 sent back in from inside a payout bounces instead of going uncredited (principal audit 2)', async () => {
+      const { signers, d223, revenue, stake } = await loadFixture(fixture)
+      const alice = signers[1]
+      const evil = await (await ethers.getContractFactory('ReentrantRewardToken')).deploy()
+      await revenue.add_reward_token(evil.target)
+      await stake(alice, 10n * E18)
+      await evil.mint(revenue.target, 700n * E18)
+      await revenue.sync([evil.target])
+      await time.increase(WEEK + 1)
+      // evil needs D223 to re-deposit; transferFrom has no recipient callback.
+      const [owner] = signers
+      await d223.approve(owner.address, 5n * E18)
+      await d223.transferFrom(owner.address, evil.target, 5n * E18)
+      const before = await d223.balanceOf(revenue.target)
+      await evil.arm(d223.target, d223.interface.encodeFunctionData('transfer(address,uint256)', [revenue.target, 5n * E18]))
+      await revenue.connect(alice).claim([evil.target])
+      expect(await evil.reentered()).to.eq(false)
+      expect(await d223.balanceOf(revenue.target)).to.eq(before)
+      expect(await d223.balanceOf(evil.target)).to.eq(5n * E18)
     })
 
     it('a reward token cannot re-enter during a payout', async () => {
