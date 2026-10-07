@@ -22,6 +22,9 @@
  *                    call accept_ownership. Strongly recommended for mainnet.
  *   CONVERTER        ERC-7417 converter that pairs the staking token versions (default: state `converter`,
  *                    else factory.converter()). The pair is refused unless the converter maps one to the other.
+ *   MAX_FEE_GWEI     pin maxFeePerGas (and the priority fee) for every transaction. Hardhat's own estimate can
+ *                    be thousands of times the real fee on testnets, which an underfunded deployer cannot pay.
+ *   DEPLOY_GAS_LIMIT gas limit for the deploy itself, skipping estimation (some RPCs fail to estimate it)
  *   STATE_FILE       state file to record into (default deployments/<network>.json)
  */
 import { ethers, network } from 'hardhat'
@@ -79,8 +82,12 @@ async function main() {
   console.log(`reward tokens   ${rewardTokens.join(', ') || '(none yet)'}`)
   console.log(`staking pair    checked against converter ${converterAddr}`)
 
+  const maxFee = process.env.MAX_FEE_GWEI ? ethers.parseUnits(process.env.MAX_FEE_GWEI, 'gwei') : undefined
+  const fees = maxFee ? { maxFeePerGas: maxFee, maxPriorityFeePerGas: maxFee } : {}
+
   const args = [staking20, staking223, rewardDuration, claimDelay, minStake]
-  const revenue: any = await (await ethers.getContractFactory(FQN)).deploy(...args)
+  const deployGas = process.env.DEPLOY_GAS_LIMIT ? { gasLimit: BigInt(process.env.DEPLOY_GAS_LIMIT) } : {}
+  const revenue: any = await (await ethers.getContractFactory(FQN)).deploy(...args, { ...fees, ...deployGas })
   await revenue.waitForDeployment()
   // Public RPCs lag: without a couple of confirmations the next transaction can be built with a stale nonce.
   await revenue.deploymentTransaction()?.wait(2)
@@ -101,7 +108,7 @@ async function main() {
 
   for (const t of rewardTokens) {
     if ((await revenue.reward_data(t)).listed) continue
-    await (await revenue.add_reward_token(t)).wait()
+    await (await revenue.add_reward_token(t, fees)).wait()
     console.log(`listed reward   ${t}`)
   }
   state.revenueRewardTokens = JSON.stringify(await revenue.get_reward_tokens())
@@ -109,7 +116,7 @@ async function main() {
   console.log(`wrote           ${statePath}`)
 
   if (newOwner) {
-    await (await revenue.transfer_ownership(newOwner)).wait()
+    await (await revenue.transfer_ownership(newOwner, fees)).wait()
     state.revenuePendingOwner = newOwner
     save()
     console.log(`\nownership offered to ${newOwner}; it must call accept_ownership() on ${addr}`)
