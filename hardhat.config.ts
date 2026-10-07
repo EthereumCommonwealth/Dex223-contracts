@@ -211,6 +211,18 @@ const config: HardhatUserConfig = {
         version: "0.8.19",
         settings: { optimizer: { enabled: true, runs: 5000 } }
       },
+      "contracts/dex-periphery/RevenueV2.sol": {
+        version: "0.8.19",
+        settings: { optimizer: { enabled: true, runs: 5000 } }
+      },
+      "contracts/libraries/FullMath08.sol": {
+        version: "0.8.19",
+        settings: { optimizer: { enabled: true, runs: 5000 } }
+      },
+      "contracts/test/RevenueV2TestTokens.sol": {
+        version: "0.8.19",
+        settings: { optimizer: { enabled: true, runs: 5000 } }
+      },
       // Byte-identical to mainnet D223 0x0908078Da2935A14BC7a17770292818C85b580dd (0.8.19, 5000 runs, paris).
       "contracts/tokens/D223Token.sol": {
         version: "0.8.19",

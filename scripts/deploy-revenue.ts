@@ -1,69 +1,95 @@
 /**
- * Deploy RevenueV1 and point it at an existing factory.
+ * Deploy RevenueV2 and list its reward tokens.
  *
- * Factory ownership stays with the deployer EOA. Do NOT call factory.setOwner(Revenue).
- * Protocol fees are enabled/collected by the factory owner via revenue-enable-fees.ts
- * and revenue-collect.ts.
+ * RevenueV2 replaces RevenueV1, whose claim formula let a late top-up, claim order or split accounts take
+ * other stakers' rewards. It has no factory link: ProtocolFeeCollector owns the factory and sends fees
+ * here, and `sync`/`syncAll` (the fee keeper calls it) turns them into reward streams.
+ *
+ * Switching an existing chain from RevenueV1: V1 must have nothing staked (check `total_staked()`),
+ * then the collector owner calls `collector.setRevenue(<new address>)`. The script prints that call.
  *
  * Usage:
- *   STAKING_TOKEN_ERC20=0x... STAKING_TOKEN_ERC223=0x... FACTORY=0x... \
+ *   STAKING_TOKEN_ERC20=0x... STAKING_TOKEN_ERC223=0x... REWARD_TOKENS=0xWETH,0xUSDT \
  *     yarn hardhat run scripts/deploy-revenue.ts --network sepolia
  *
- * Optional: STATE_FILE=deployments/sepolia.json to append the address.
+ * Optional:
+ *   REWARD_DURATION  seconds each batch of fees is streamed over (default 604800 = 7 days)
+ *   CLAIM_DELAY      seconds a position is locked after each stake (default 864000 = 10 days, max 90 days)
+ *   MIN_STAKE        smallest non-zero position in base units (default 1e18 = 1 token)
+ *   STATE_FILE       state file to record into (default deployments/<network>.json)
  */
-import { ethers } from 'hardhat'
+import { ethers, network } from 'hardhat'
 import fs from 'fs'
 import path from 'path'
 
+const FQN = 'contracts/dex-periphery/RevenueV2.sol:RevenueV2'
+
+function fail(msg: string): never {
+  throw new Error(msg)
+}
+
 async function main() {
-  const staking20 = process.env.STAKING_TOKEN_ERC20
-  const staking223 = process.env.STAKING_TOKEN_ERC223
-  const factory = process.env.FACTORY
-  if (!staking20 || !staking223) {
-    throw new Error('Set STAKING_TOKEN_ERC20 and STAKING_TOKEN_ERC223')
+  const statePath = path.join(process.cwd(), process.env.STATE_FILE ?? `deployments/${network.name}.json`)
+  const state: Record<string, string> = fs.existsSync(statePath) ? JSON.parse(fs.readFileSync(statePath, 'utf8')) : {}
+  const staking20 = process.env.STAKING_TOKEN_ERC20 ?? fail('Set STAKING_TOKEN_ERC20')
+  const staking223 = process.env.STAKING_TOKEN_ERC223 ?? fail('Set STAKING_TOKEN_ERC223')
+  const rewardDuration = Number(process.env.REWARD_DURATION ?? 7 * 24 * 3600)
+  const claimDelay = Number(process.env.CLAIM_DELAY ?? 10 * 24 * 3600)
+  const minStake = (process.env.MIN_STAKE ?? ethers.parseEther('1').toString()).trim()
+  const rewardTokens = (process.env.REWARD_TOKENS ?? '').split(',').map((a) => a.trim()).filter(Boolean)
+  for (const a of [staking20, staking223, ...rewardTokens]) {
+    if (!ethers.isAddress(a)) fail(`not an address: ${a}`)
+    if ((await ethers.provider.getCode(a)) === '0x') fail(`no code at ${a}`)
   }
 
   const [signer] = await ethers.getSigners()
   const deployer = await signer.getAddress()
-  console.log(`deployer : ${deployer}`)
-  console.log(`balance  : ${ethers.formatEther(await ethers.provider.getBalance(signer))} ETH`)
-  console.log(`stake20  : ${staking20}`)
-  console.log(`stake223 : ${staking223}`)
-  console.log(`factory  : ${factory || '(not set; call set_factory later)'}`)
+  console.log(`network         ${network.name}`)
+  console.log(`deployer        ${deployer} (${ethers.formatEther(await ethers.provider.getBalance(signer))} ETH)`)
+  console.log(`staking tokens  ${staking20} / ${staking223}`)
+  console.log(`reward stream   ${rewardDuration}s, lock ${claimDelay}s, minimum stake ${minStake}`)
+  console.log(`reward tokens   ${rewardTokens.join(', ') || '(none yet)'}`)
 
-  const Revenue = await ethers.getContractFactory('contracts/dex-periphery/RevenueV1.sol:Revenue')
-  const revenue = await Revenue.deploy(staking20, staking223)
+  const args = [staking20, staking223, rewardDuration, claimDelay, minStake]
+  const revenue: any = await (await ethers.getContractFactory(FQN)).deploy(...args)
   await revenue.waitForDeployment()
   const addr = await revenue.getAddress()
-  console.log(`Revenue  : ${addr}`)
+  console.log(`RevenueV2       ${addr}`)
 
-  if (factory) {
-    const tx = await revenue.set_factory(factory)
-    await tx.wait()
-    console.log(`set_factory -> ${factory}`)
+  const previous = state.revenue
+  state.revenue = addr
+  state['fqn:revenue'] = FQN
+  state['args:revenue'] = JSON.stringify(args)
+  state.revenueDeployer = deployer
+  if (previous && previous.toLowerCase() !== addr.toLowerCase()) state.revenuePrevious = previous
+  const save = () => {
+    fs.mkdirSync(path.dirname(statePath), { recursive: true })
+    fs.writeFileSync(statePath, JSON.stringify(state, null, 2) + '\n')
   }
+  save()
 
-  const statePath = process.env.STATE_FILE
-  if (statePath) {
-    const abs = path.isAbsolute(statePath) ? statePath : path.join(process.cwd(), statePath)
-    let state: Record<string, unknown> = {}
-    if (fs.existsSync(abs)) {
-      state = JSON.parse(fs.readFileSync(abs, 'utf8'))
+  for (const t of rewardTokens) {
+    if ((await revenue.reward_data(t)).listed) continue
+    await (await revenue.add_reward_token(t)).wait()
+    console.log(`listed reward   ${t}`)
+  }
+  state.revenueRewardTokens = JSON.stringify(await revenue.get_reward_tokens())
+  save()
+  console.log(`wrote           ${statePath}`)
+
+  if (state.feeCollector) {
+    const collector = await ethers.getContractAt('ProtocolFeeCollector', state.feeCollector)
+    if ((await collector.revenue()).toLowerCase() !== addr.toLowerCase()) {
+      if (previous) {
+        const v1 = new ethers.Contract(previous, ['function total_staked() view returns (uint256)'], ethers.provider)
+        const staked = await v1.total_staked().catch(() => null)
+        console.log(`\nprevious revenue ${previous} total_staked: ${staked ?? 'unreadable'}`)
+        if (staked !== null && staked !== 0n) console.log('  Stakers must withdraw from it before fees are redirected.')
+      }
+      console.log(`\nNext, as the collector owner (${await collector.owner()}):`)
+      console.log(`  collector ${state.feeCollector}: setRevenue(${addr})`)
     }
-    state.revenue = addr
-    state.revenueStakingTokenErc20 = staking20
-    state.revenueStakingTokenErc223 = staking223
-    if (factory) state.revenueFactory = factory
-    state.revenueDeployer = deployer
-    fs.mkdirSync(path.dirname(abs), { recursive: true })
-    fs.writeFileSync(abs, JSON.stringify(state, null, 2) + '\n')
-    console.log(`wrote     ${abs}`)
   }
-
-  console.log('\nNext (as factory owner):')
-  console.log('  yarn hardhat run scripts/revenue-enable-fees.ts --network <net>')
-  console.log('  yarn hardhat run scripts/revenue-collect.ts --network <net>')
-  console.log('Do not factory.setOwner(Revenue). Keep factory ownership on your EOA.')
 }
 
 main().catch((e) => {
