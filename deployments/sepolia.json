@@ -104,5 +104,6 @@
   "fqn:revenue": "contracts/dex-periphery/RevenueV2.sol:RevenueV2",
   "args:revenue": "[\"0x1DEf777468F76ed1E74fC87bD32334d3Ccb520d0\",\"0x0a67Cc4D3Ac29a133a597b5Bef3fe9A6028ACad2\",3600,300,\"1000000000000000000\"]",
   "revenuePrevious": "0x624e7e0ffB81f4594921676abc9584b135277f31",
-  "revenueRewardTokens": "[\"0xb16F35c0Ae2912430DAc15764477E179D9B9EbEa\"]"
+  "revenueRewardTokens": "[\"0xb16F35c0Ae2912430DAc15764477E179D9B9EbEa\"]",
+  "done:collector.setRevenue(0xC107239bfe75382112034a269386Ef608aA80EC1)": "0xbcc705fb92a2c4448b09e17b77bd51e5a53057b21f96450f41c633faf8bb0cf5"
 }
