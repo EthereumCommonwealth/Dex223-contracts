@@ -6,10 +6,11 @@
  * factory, and with it a new router, position manager, quoter and autolistings.
  *
  * Same executor as scripts/deploy-mainnet.ts (resumable, pinned addresses, chain-state recovery); only the
- * plan differs. The deployer was at nonce 27 when this was written, and the same key has used nonces
- * 0-118 on Sepolia, so each planned nonce was checked against Sepolia:
- *   - contracts go only to nonces whose Sepolia address is permanently empty: 27-30, 34, 35, 40-42;
- *   - nonces whose Sepolia address holds a contract (31-33, 36-39) carry a call or a zero-value burn.
+ * plan differs. The deployer was at nonce 32 when this was written (RevenueV2 took 27-31), and the same
+ * key had used nonces 0-155 on Sepolia, so each planned nonce was checked against Sepolia:
+ *   - contracts go only to nonces whose Sepolia address is permanently empty: 34, 35, 40, 41, 43-47;
+ *   - nonces whose Sepolia address holds a contract (32, 33, 36-39, 48) carry a call or a zero-value burn.
+ * Anything else sent from the deployer before this runs moves the nonce and the script refuses to start.
  * EXPECTED below pins the result; the script refuses any other layout.
  *
  * ALWAYS rehearse first, with this exact script, on a local fork of mainnet:
@@ -23,8 +24,8 @@
  *   CONFIRM_MAINNET=redeploy-dex223 MAX_GWEI=2 npx hardhat run scripts/deploy-mainnet-v2.ts --network mainnet
  *
  * Not done here: handing the factory to the fee collector, pointing Revenue at the new factory, and the
- * margin oracle and module (scripts/deploy-margin.ts with FACTORY and ROUTER set, at a nonce checked
- * against Sepolia the same way; 43 and 44 are permanently empty there).
+ * margin oracle and module (scripts/deploy-margin.ts with FACTORY and ROUTER set, at nonces checked
+ * against Sepolia the same way; after this plan 50-53 are permanently empty there).
  */
 import { ethers, network, artifacts } from 'hardhat'
 import * as fs from 'fs'
@@ -48,7 +49,7 @@ const CORE_LISTING_PRICE_USDT = 40_000_000n
 const FEE_TIERS: [number, number][] = [[500, 10], [3000, 60], [10000, 200]]
 const EIP170 = 24576
 const CONFIRM = 'redeploy-dex223'
-const START_NONCE = 27n
+const START_NONCE = 32n
 
 const STATE_FILE = path.join(process.cwd(), 'deployments', `${network.name}-v2.json`)
 type State = Record<string, string>
@@ -67,15 +68,15 @@ type Step =
 
 // Step index == deployer nonce. Addresses are fixed by the layout described at the top of the file.
 const EXPECTED: Record<string, string> = {
-  poolLib: '0xFDE47dE2fe7c98688373b6D2F3BD628A5Da0Df3D', //         nonce 27, permanently empty on Sepolia
-  quoteLib: '0x8D0b67ad323A2162a5a3A33101Bdc748544C8299', //        nonce 28, permanently empty on Sepolia
-  validator: '0x0591A2b0fB776d24b89B60d05756f66F3535c426', //       nonce 29, permanently empty on Sepolia
-  factory: '0xFD12a5a16d77aB94cdF6Caee94A4c681230e9934', //         nonce 30, permanently empty on Sepolia
-  router: '0x11382596B063B5763401894B46DA94c2487C7b94', //          nonce 34, permanently empty on Sepolia
-  coreAutolisting: '0x23B85280F5a191F782Fdbc411fF394429b7ca288', // nonce 35, permanently empty on Sepolia
-  positionManager: '0x28CD0f21a9C97aB3Ab83DD38C754D78F9b26b598', // nonce 40, permanently empty on Sepolia
-  quoter: '0x899097B427cd04e1BD07FD3445cc90493300C3a5', //          nonce 41, permanently empty on Sepolia
-  freeAutolisting: '0x6825F113d4AD9f08b9D61a818A3eADeF617a1523', // nonce 42, permanently empty on Sepolia
+  poolLib: '0x11382596B063B5763401894B46DA94c2487C7b94', //         nonce 34, permanently empty on Sepolia
+  quoteLib: '0x23B85280F5a191F782Fdbc411fF394429b7ca288', //        nonce 35, permanently empty on Sepolia
+  validator: '0x28CD0f21a9C97aB3Ab83DD38C754D78F9b26b598', //       nonce 40, permanently empty on Sepolia
+  factory: '0x899097B427cd04e1BD07FD3445cc90493300C3a5', //         nonce 41, permanently empty on Sepolia
+  router: '0x14248d524850B0B47B30F4332279330Cad2846a2', //          nonce 43, permanently empty on Sepolia
+  coreAutolisting: '0x63054Fa5899Bce903E676CC478811bF1fed20E5b', // nonce 44, permanently empty on Sepolia
+  freeAutolisting: '0xB442f1362163b168cebAd877067D35Eb8d9176d9', // nonce 45, permanently empty on Sepolia
+  positionManager: '0x15E22548C572C8Fdb3AcC600c040D5F2A19855D4', // nonce 46, permanently empty on Sepolia
+  quoter: '0x69ee81C767cA94e71DDc356D433B30f6eBf7b41E', //          nonce 47, permanently empty on Sepolia
 }
 
 const FQN = {
@@ -95,12 +96,18 @@ function plan(addr: Record<string, string>): Step[] {
   const at = (key: keyof typeof FQN) => ethers.getContractAt(FQN[key], addr[key])
   // Step i runs at nonce START_NONCE + i.
   return [
-    { kind: 'deploy', key: 'poolLib', fqn: FQN.poolLib, args: () => [] }, //     27
-    { kind: 'deploy', key: 'quoteLib', fqn: FQN.quoteLib, args: () => [] }, //   28
-    { kind: 'deploy', key: 'validator', fqn: FQN.validator, args: () => [] }, // 29
-    { kind: 'deploy', key: 'factory', fqn: FQN.factory, args: () => [addr.validator] }, // 30
+    { kind: 'burn', key: 'burn nonce 32' },
+    { kind: 'burn', key: 'burn nonce 33' },
+    { kind: 'deploy', key: 'poolLib', fqn: FQN.poolLib, args: () => [] }, //     34
+    { kind: 'deploy', key: 'quoteLib', fqn: FQN.quoteLib, args: () => [] }, //   35
+    { kind: 'burn', key: 'burn nonce 36' },
+    { kind: 'burn', key: 'burn nonce 37' },
+    { kind: 'burn', key: 'burn nonce 38' },
+    { kind: 'burn', key: 'burn nonce 39' },
+    { kind: 'deploy', key: 'validator', fqn: FQN.validator, args: () => [] }, // 40
+    { kind: 'deploy', key: 'factory', fqn: FQN.factory, args: () => [addr.validator] }, // 41
     {
-      // 31. Straight after the factory: until this runs, createPool reverts (LIB_NOT_SET).
+      // 42. Straight after the factory: until this runs, createPool reverts (LIB_NOT_SET).
       kind: 'call', key: 'factory.set(poolLib, quoteLib, converter)',
       send: async (s, o) => ((await at('factory')).connect(s) as any).set(addr.poolLib, addr.quoteLib, CONVERTER, o),
       done: async () => {
@@ -108,12 +115,13 @@ function plan(addr: Record<string, string>): Step[] {
         return eq(await f.pool_lib(), addr.poolLib) && eq(await f.quote_lib(), addr.quoteLib) && eq(await f.converter(), CONVERTER)
       },
     },
-    { kind: 'burn', key: 'burn nonce 32' },
-    { kind: 'burn', key: 'burn nonce 33' },
-    { kind: 'deploy', key: 'router', fqn: FQN.router, args: () => [addr.factory, WETH9, CONVERTER] }, // 34
-    { kind: 'deploy', key: 'coreAutolisting', fqn: FQN.coreAutolisting, args: () => [addr.factory, REGISTRY, CONVERTER, 'Dex223 Core Autolisting', 'https://app.dex223.io/en/swap'] }, // 35
+    { kind: 'deploy', key: 'router', fqn: FQN.router, args: () => [addr.factory, WETH9, CONVERTER] }, // 43
+    { kind: 'deploy', key: 'coreAutolisting', fqn: FQN.coreAutolisting, args: () => [addr.factory, REGISTRY, CONVERTER, 'Dex223 Core Autolisting', 'https://app.dex223.io/en/swap'] }, // 44
+    { kind: 'deploy', key: 'freeAutolisting', fqn: FQN.freeAutolisting, args: () => [addr.factory, REGISTRY, 'Dex223 Free Auto-listing', 'https://app.dex223.io/'] }, // 45
+    { kind: 'deploy', key: 'positionManager', fqn: FQN.positionManager, args: () => [addr.factory, WETH9] }, // 46
+    { kind: 'deploy', key: 'quoter', fqn: FQN.quoter, args: () => [addr.factory, WETH9] }, //                47
     {
-      // 36
+      // 48 (holds a contract on Sepolia, so a call goes here)
       kind: 'call', key: 'coreAutolisting.setPaymentPrice(USDT, 40 USDT)',
       send: async (s, o) => ((await at('coreAutolisting')).connect(s) as any).setPaymentPrice(USDT, CORE_LISTING_PRICE_USDT, o),
       done: async () => {
@@ -121,12 +129,6 @@ function plan(addr: Record<string, string>): Step[] {
         return prices.some((p) => eq(p[0], USDT) && BigInt(p[1]) === CORE_LISTING_PRICE_USDT)
       },
     },
-    { kind: 'burn', key: 'burn nonce 37' },
-    { kind: 'burn', key: 'burn nonce 38' },
-    { kind: 'burn', key: 'burn nonce 39' },
-    { kind: 'deploy', key: 'positionManager', fqn: FQN.positionManager, args: () => [addr.factory, WETH9] }, // 40
-    { kind: 'deploy', key: 'quoter', fqn: FQN.quoter, args: () => [addr.factory, WETH9] }, //                41
-    { kind: 'deploy', key: 'freeAutolisting', fqn: FQN.freeAutolisting, args: () => [addr.factory, REGISTRY, 'Dex223 Free Auto-listing', 'https://app.dex223.io/'] }, // 42
   ]
 }
 
