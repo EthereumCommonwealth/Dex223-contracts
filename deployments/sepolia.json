@@ -4,7 +4,7 @@
   "legacyStakingTokenErc20": "0x1DEf777468F76ed1E74fC87bD32334d3Ccb520d0",
   "legacyStakingTokenErc223": "0x0a67Cc4D3Ac29a133a597b5Bef3fe9A6028ACad2",
   "factoryQuoteswap": "0x5D63230470AB553195dfaf794de3e94C69d150f9",
-  "revenue": "0xB5581C5500B3b68c5F3855518e7646304e84f9D2",
+  "revenue": "0x624e7e0ffB81f4594921676abc9584b135277f31",
   "revenueStakingTokenErc20": "0x1DEf777468F76ed1E74fC87bD32334d3Ccb520d0",
   "revenueStakingTokenErc223": "0x0a67Cc4D3Ac29a133a597b5Bef3fe9A6028ACad2",
   "revenueFactory": "0xeA0A163e0196Bf1500B1B41d3ADdA0476dC137eb",
@@ -100,5 +100,8 @@
   "args:marginModule": "[\"0xeA0A163e0196Bf1500B1B41d3ADdA0476dC137eb\",\"0x4dc6FE490E0b680F751e7195Ac0a7B8300AE32c8\"]",
   "done:marginModule": "0x99863f49b610bf4880fc05b53ae1d804e634aa2bd809d5d6d9a79a53923aba66",
   "block:marginModule": "11779706",
-  "marginRouter": "0x4dc6FE490E0b680F751e7195Ac0a7B8300AE32c8"
+  "marginRouter": "0x4dc6FE490E0b680F751e7195Ac0a7B8300AE32c8",
+  "fqn:revenue": "contracts/dex-periphery/RevenueV2.sol:RevenueV2",
+  "args:revenue": "[\"0x1DEf777468F76ed1E74fC87bD32334d3Ccb520d0\",\"0x0a67Cc4D3Ac29a133a597b5Bef3fe9A6028ACad2\",3600,300,\"1000000000000000000\"]",
+  "revenuePrevious": "0xB5581C5500B3b68c5F3855518e7646304e84f9D2"
 }
