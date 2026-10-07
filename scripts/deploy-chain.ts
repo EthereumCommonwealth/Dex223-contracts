@@ -42,9 +42,10 @@
  *                supply to the deployer; there is no mint function. The address cannot match mainnet's
  *                (Dexaran deployed that one from his own key), but it is the same on every new chain.
  *   nonce 16     converter.createERC20Wrapper(D223): D223's ERC-20 version, as on mainnet.
- *   nonce 17     Revenue(D223 ERC-20 version, D223), the staking contract deploy-fee-collector.ts pays into.
- *   nonce 18     revenue.set_factory(factory). Revenue's defaults (10-day claim delay and staking duration)
- *                already match mainnet.
+ *   nonce 17     RevenueV2(D223 ERC-20 version, D223, 7-day reward stream, 10-day lock, 1 D223 minimum),
+ *                the staking contract deploy-fee-collector.ts pays into.
+ *   nonce 18     revenue.add_reward_token(wrapped native), so the most common fee token pays out from the
+ *                start. More reward tokens are listed by the owner as pools appear.
  * EXPECTED pins the result; the script refuses any other layout. If the deployer has already been used on
  * the target chain, stop: the layout cannot be reproduced there.
  *
@@ -112,7 +113,7 @@ const FQN = {
   freeAutolisting: 'contracts/dex-core/Autolisting.sol:Dex223AutoListing',
   coreAutolisting: 'contracts/dex-core/Autolisting.sol:Dex223CoreAutoListing',
   d223: 'contracts/tokens/D223Token.sol:D223Token',
-  revenue: 'contracts/dex-periphery/RevenueV1.sol:Revenue',
+  revenue: 'contracts/dex-periphery/RevenueV2.sol:RevenueV2',
 }
 const ERC20_WRAPPER_FQN = 'contracts/converter/TokenConverter.sol:ERC20WrapperToken'
 const POOL_FQN = 'contracts/dex-core/Dex223Pool.sol:Dex223Pool'
@@ -121,6 +122,9 @@ const reuseConverter = !!chain.converter
 const PRICE = listingPrice(chain)
 const LISTING = chain.listingToken.address
 const WNATIVE = chain.wrappedNative
+// RevenueV2(reward_duration, claim_delay, min_stake): 7-day streams, 10-day lock as on mainnet, 1 D223 minimum.
+// Plain numbers/strings: the args are JSON-recorded in the state file for verify-etherscan.ts.
+const REVENUE_PARAMS = [7 * 24 * 3600, 10 * 24 * 3600, ethers.parseEther('1').toString()]
 let d223Erc20 = '' // CREATE2 address of D223's ERC-20 version, set in main()
 
 function plan(addr: Record<string, string>): Step[] {
@@ -134,11 +138,11 @@ function plan(addr: Record<string, string>): Step[] {
       send: async (s, o) => (await conv()).connect(s).createERC20Wrapper(addr.d223, o),
       done: async () => eq(await (await conv()).getERC20WrapperFor(addr.d223), d223Erc20),
     },
-    { kind: 'deploy', key: 'revenue', fqn: FQN.revenue, args: () => [d223Erc20, addr.d223] },
+    { kind: 'deploy', key: 'revenue', fqn: FQN.revenue, args: () => [d223Erc20, addr.d223, ...REVENUE_PARAMS] },
     {
-      kind: 'call', key: 'revenue.set_factory(factory)',
-      send: async (s, o) => ((await at('revenue')).connect(s) as any).set_factory(addr.factory, o),
-      done: async () => eq(await (await at('revenue') as any).factory(), addr.factory),
+      kind: 'call', key: 'revenue.add_reward_token(wrapped native)',
+      send: async (s, o) => ((await at('revenue')).connect(s) as any).add_reward_token(WNATIVE, o),
+      done: async () => (await (await at('revenue') as any).reward_data(WNATIVE)).listed === true,
     },
   ]
   return [
@@ -381,9 +385,11 @@ async function main() {
     const conv: any = await ethers.getContractAt('contracts/interfaces/ITokenConverter.sol:ITokenStandardConverter', converter)
     checks.push(['d223 supply 8,000,000,000 / owner == deployer', async () => BigInt(await d.totalSupply()) === D223_SUPPLY && eq(await d.owner(), DEPLOYER)])
     checks.push(['converter ERC-20 version of D223', async () => eq(await conv.getERC20WrapperFor(addr.d223), d223Erc20) && eq(await conv.getERC223OriginFor(d223Erc20), addr.d223)])
-    checks.push(['revenue staking tokens / factory / owner', async () =>
+    checks.push(['revenue staking tokens / parameters / owner / wrapped native listed', async () =>
       eq(await rev.staking_token_erc20(), d223Erc20) && eq(await rev.staking_token_erc223(), addr.d223) &&
-      eq(await rev.factory(), addr.factory) && eq(await rev.revenue_contract_owner(), DEPLOYER)])
+      BigInt(await rev.reward_duration()) === BigInt(REVENUE_PARAMS[0]) && BigInt(await rev.claim_delay()) === BigInt(REVENUE_PARAMS[1]) &&
+      BigInt(await rev.min_stake()) === BigInt(REVENUE_PARAMS[2]) && eq(await rev.owner(), DEPLOYER) &&
+      (await rev.reward_data(WNATIVE)).listed === true])
   }
   let bad = 0
   for (const [label, fn] of checks) {

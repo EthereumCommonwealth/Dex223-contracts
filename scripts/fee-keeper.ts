@@ -4,6 +4,8 @@
  * 1. Finds every pool from the factory's PoolCreated events.
  * 2. Calls collector.enableFees for pools whose protocol fee is still off and not set by hand.
  * 3. Calls collector.collect for pools with protocol fees to collect, sending them to Revenue.
+ * 4. Calls revenue.syncAll() when Revenue (V2) holds fees it has not taken in yet, or has queued fees
+ *    waiting for a finished stream to restart. Until that runs, collected fees do not start paying out.
  *
  * Usage:
  *   DRY_RUN=true yarn hardhat run scripts/fee-keeper.ts --network mainnet
@@ -23,6 +25,13 @@ import path from 'path'
 const FACTORY_ABI = [
   'event PoolCreated(address indexed token0_erc20, address indexed token1_erc20, address token0_erc223, address token1_erc223, uint24 indexed fee, int24 tickSpacing, address pool)',
   'function owner() view returns (address)',
+]
+const REVENUE_V2_ABI = [
+  'function get_reward_tokens() view returns (address[])',
+  'function unsynced(address) view returns (uint256)',
+  'function reward_data(address) view returns (bool listed, uint64 period_finish, uint64 last_update, uint256 rate, uint256 reward_per_token, uint256 queued, uint256 accounted)',
+  'function reward_duration() view returns (uint256)',
+  'function syncAll()',
 ]
 const POOL_ABI = [
   'function slot0() view returns (uint160 sqrtPriceX96, int24 tick, uint16 observationIndex, uint16 observationCardinality, uint16 observationCardinalityNext, uint8 feeProtocol, bool unlocked)',
@@ -113,6 +122,33 @@ export async function main() {
       console.log(`${label}: ${tx.hash} (${part.length} pools, ${skipped.length} skipped, gas ${r!.gasUsed})`)
       for (const s of skipped) console.log(`  skipped ${s!.args.pool}: ${s!.args.reason}`)
     }
+  }
+
+  // Fees reach Revenue as plain transfers; syncAll turns them into reward streams.
+  const revenue = new ethers.Contract(await collector.revenue(), REVENUE_V2_ABI, signer)
+  let rewardTokens: string[]
+  try {
+    rewardTokens = await revenue.get_reward_tokens()
+  } catch {
+    console.log('syncAll: revenue is not RevenueV2, skipped')
+    return
+  }
+  const now = BigInt((await ethers.provider.getBlock('latest'))!.timestamp)
+  const duration = BigInt(await revenue.reward_duration())
+  const pending: string[] = []
+  for (const t of rewardTokens) {
+    const [unsynced, r] = await Promise.all([revenue.unsynced(t), revenue.reward_data(t)])
+    const idle = now >= r.period_finish && r.queued / 10n ** 18n >= duration
+    if (unsynced > 0n || idle) pending.push(`${t} (unsynced ${unsynced}${idle ? ', stream idle' : ''})`)
+  }
+  if (pending.length === 0) {
+    console.log(`syncAll: nothing to do (${rewardTokens.length} reward tokens)`)
+  } else if (dryRun) {
+    console.log(`syncAll: would send for ${pending.join(', ')}`)
+  } else {
+    const tx = await revenue.syncAll()
+    const r = await tx.wait()
+    console.log(`syncAll: ${tx.hash} (${pending.join(', ')}, gas ${r!.gasUsed})`)
   }
 }
 
