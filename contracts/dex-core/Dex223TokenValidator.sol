@@ -179,6 +179,13 @@ contract Dex223TokenValidator {
             }
             require(converter.predictWrapperAddress(_token223, false) == _token);
 
+            // The ERC-223 side must be an origin, not a converter-made wrapper. A wrapper such as
+            // USDC223 already belongs to the pool of its ERC-20 origin (scenario 1). Pairing it with
+            // the ERC-20 "wrapper of the wrapper" address, which never holds code, used to pass the
+            // checks here; the new pool then overwrote the factory's ERC-223 getPool entries of the
+            // real pool, and its ERC-20 payouts went to an address with no code.
+            require(!converter.isWrapper(_token223), "FACTORY: ORIGIN_IS_WRAPPER");
+
             uint256 _origin_code_size;
             // solhint-disable-next-line no-inline-assembly
             assembly { _origin_code_size := extcodesize(_token223) }
