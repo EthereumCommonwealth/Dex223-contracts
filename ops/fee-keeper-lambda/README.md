@@ -18,11 +18,12 @@ Every call it makes is permissionless. The keeper wallet only needs ETH for gas.
 | Secret (Secrets Manager) | `dex223/fee-keeper`: `{"privateKey": "0x…", "etherscanApiKey": "…"}` |
 | IAM role | `dex223-fee-keeper-role`: logs, read that one secret, write `DEX223/FeeKeeper` metrics |
 | Alerts (SNS → email) | `dex223-fee-keeper-alerts`, to rroland1@yahoo.com (`ALERT_EMAIL` in `deploy.sh`) |
-| Alarms | `-failed` (a run threw), `-mainnet-gas-low` (< 0.005 ETH), `-not-running` (no run in 2 days) |
+| Alarms | `-failed` (a run threw), `-mainnet-gas-low` (< 0.005 ETH), `-sepolia-gas-low` (< 0.001 ETH), `-not-running` (no run in 2 days) |
 
 ## Current deployment (2026-10-07)
 
-- **Keeper wallet:** `0x97cEa1642F6896dDcAe2062087a8C34651D2a10C`. Funded with 0.02 ETH on mainnet and 0.00003 ETH on Sepolia.
+- **Keeper wallet:** `0x97cEa1642F6896dDcAe2062087a8C34651D2a10C`. Funded with 0.02 ETH on mainnet and 0.1 ETH on Sepolia.
+- **Sepolia top-ups:** 0.1 Sepolia ETH covers about 50,000 runs, at roughly 0.000002 ETH each. If `-sepolia-gas-low` fires, top up from the Dex223 Sepolia bot account `0x389e7b207a77ca4ad4bB61D56fC05461a6f20787` (1Password vault "Dex223 Bot Accounts (Sepolia)").
 - **Where the key is:**
   - 1Password, vault "Dex223 — Production", item "DEX223 fee keeper wallet" (the key is in the `password` field).
   - AWS Secrets Manager, `dex223/fee-keeper`, together with the Etherscan API key.
