@@ -118,6 +118,9 @@ async function metric(network, values) {
 async function runNetwork(name, cfg, secret, dryRun) {
   const provider = new ethers.JsonRpcProvider(cfg.rpc, cfg.chainId, { staticNetwork: true })
   const wallet = new ethers.Wallet(secret.privateKey, provider)
+  // Public RPCs are load-balanced and can answer from a node a block behind, so asking for the nonce
+  // before each transaction can reuse one ("nonce has already been used"). Count them here instead.
+  const signer = new ethers.NonceManager(wallet)
   const log = (...a) => console.log(`[${name}]`, ...a)
   const balance = await provider.getBalance(wallet.address)
   log(`keeper ${wallet.address} balance ${ethers.formatEther(balance)} ETH`)
@@ -138,7 +141,7 @@ async function runNetwork(name, cfg, secret, dryRun) {
   }
 
   const factory = new ethers.Contract(cfg.factory, FACTORY_ABI, provider)
-  const collector = new ethers.Contract(cfg.collector, COLLECTOR_ABI, wallet)
+  const collector = new ethers.Contract(cfg.collector, COLLECTOR_ABI, signer)
   if ((await factory.owner()).toLowerCase() !== cfg.collector.toLowerCase()) {
     throw new Error(`factory owner is not the collector ${cfg.collector}`)
   }
@@ -162,7 +165,8 @@ async function runNetwork(name, cfg, secret, dryRun) {
     if (dryRun) { log(`would send ${label}`); return }
     try {
       const tx = await fn()
-      const r = await tx.wait()
+      // A second confirmation gives lagging RPC nodes time to see it before the next read or send.
+      const r = await tx.wait(2)
       sent.push({ label, hash: tx.hash, gas: r.gasUsed.toString() })
       log(`${label}: ${tx.hash} gas ${r.gasUsed}`)
       for (const l of r.logs) {
@@ -172,6 +176,7 @@ async function runNetwork(name, cfg, secret, dryRun) {
         } catch { /* not a collector event */ }
       }
     } catch (e) {
+      signer.reset() // re-read the nonce from the chain before anything else is sent
       failures.push(`${label}: ${e.shortMessage ?? e.message}`)
       log(`FAILED ${label}: ${e.shortMessage ?? e.message}`)
     }
@@ -188,7 +193,7 @@ async function runNetwork(name, cfg, secret, dryRun) {
   // Fees reach RevenueV2 as plain transfers; syncAll turns them into reward streams. Mirrors
   // RevenueV2._startStream: start when none runs and at least one token unit is queued, or fold when
   // the queue is at least what the running stream has left.
-  const revenue = new ethers.Contract(await collector.revenue(), REVENUE_ABI, wallet)
+  const revenue = new ethers.Contract(await collector.revenue(), REVENUE_ABI, signer)
   const now = BigInt((await provider.getBlock('latest')).timestamp)
   const pending = []
   for (const t of await revenue.get_reward_tokens()) {
