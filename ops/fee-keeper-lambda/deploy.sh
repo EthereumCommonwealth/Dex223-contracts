@@ -15,6 +15,7 @@ TOPIC=dex223-fee-keeper-alerts
 SCHEDULE="${SCHEDULE:-cron(0 6 * * ? *)}"      # daily 06:00 UTC
 ALERT_EMAIL="${ALERT_EMAIL:-rroland1@yahoo.com}"
 MIN_BALANCE_ETH="${MIN_BALANCE_ETH:-0.005}"
+MIN_SEPOLIA_BALANCE_ETH="${MIN_SEPOLIA_BALANCE_ETH:-0.001}"   # ~500 runs; top up from the Dex223 Sepolia bot account
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ACCOUNT="$(aws sts get-caller-identity --query Account --output text)"
 SECRET_ARN="arn:aws:secretsmanager:${REGION}:${ACCOUNT}:secret:dex223/fee-keeper-*"
@@ -84,6 +85,11 @@ aws cloudwatch put-metric-alarm --alarm-name "$NAME-mainnet-gas-low" \
   --alarm-description "The fee keeper wallet has less than $MIN_BALANCE_ETH ETH on mainnet. Top it up." \
   --namespace DEX223/FeeKeeper --metric-name KeeperBalanceEth --dimensions "Name=Network,Value=mainnet" \
   --statistic Minimum --period 86400 --evaluation-periods 1 --threshold "$MIN_BALANCE_ETH" --comparison-operator LessThanThreshold \
+  --treat-missing-data notBreaching --alarm-actions "$TOPIC_ARN"
+aws cloudwatch put-metric-alarm --alarm-name "$NAME-sepolia-gas-low" \
+  --alarm-description "The fee keeper wallet has less than $MIN_SEPOLIA_BALANCE_ETH Sepolia ETH. Top it up from the Dex223 Sepolia bot account 0x389e...0787 (1Password vault Dex223 Bot Accounts (Sepolia))." \
+  --namespace DEX223/FeeKeeper --metric-name KeeperBalanceEth --dimensions "Name=Network,Value=sepolia" \
+  --statistic Minimum --period 86400 --evaluation-periods 1 --threshold "$MIN_SEPOLIA_BALANCE_ETH" --comparison-operator LessThanThreshold \
   --treat-missing-data notBreaching --alarm-actions "$TOPIC_ARN"
 aws cloudwatch put-metric-alarm --alarm-name "$NAME-not-running" \
   --alarm-description "The fee keeper has not run in two days." \
