@@ -61,6 +61,9 @@ else
     --environment "$ENV" >/dev/null
 fi
 aws lambda wait function-active-v2 --function-name "$NAME"
+# No automatic retries of a failed scheduled run: a retry within minutes repeats work against the same
+# lagging state and turns one transient failure into several. The next daily run picks up anything missed.
+aws lambda put-function-event-invoke-config --function-name "$NAME" --maximum-retry-attempts 0 >/dev/null
 FN_ARN="$(aws lambda get-function --function-name "$NAME" --query Configuration.FunctionArn --output text)"
 
 echo "== schedule ($SCHEDULE)"
