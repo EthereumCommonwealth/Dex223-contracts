@@ -13,7 +13,7 @@ NAME=dex223-fee-keeper
 ROLE=dex223-fee-keeper-role
 TOPIC=dex223-fee-keeper-alerts
 SCHEDULE="${SCHEDULE:-cron(0 6 * * ? *)}"      # daily 06:00 UTC
-ALERT_EMAIL="${ALERT_EMAIL:-ranroland@gmail.com}"
+ALERT_EMAIL="${ALERT_EMAIL:-rroland1@yahoo.com}"
 MIN_BALANCE_ETH="${MIN_BALANCE_ETH:-0.005}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ACCOUNT="$(aws sts get-caller-identity --query Account --output text)"
@@ -22,7 +22,9 @@ export AWS_REGION="$REGION" AWS_DEFAULT_REGION="$REGION"
 
 echo "== bundle"
 rm -rf "$HERE/dist" && mkdir -p "$HERE/dist"
+# The banner gives the ESM bundle a require(): ethers' ws dependency is CommonJS and requires Node builtins.
 npx --yes esbuild@0.24.0 "$HERE/index.mjs" --bundle --platform=node --target=node22 --format=esm \
+  --banner:js="import { createRequire } from 'module'; const require = createRequire(import.meta.url);" \
   --external:@aws-sdk/* --outfile="$HERE/dist/index.mjs" --log-level=warning
 (cd "$HERE/dist" && zip -q -j function.zip index.mjs)
 
