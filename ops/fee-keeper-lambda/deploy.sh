@@ -82,7 +82,7 @@ fi
 aws cloudwatch put-metric-alarm --alarm-name "$NAME-failed" \
   --alarm-description "A DEX223 fee keeper run failed (a transaction reverted, an RPC or Etherscan error, or a missing secret). Check the Lambda's CloudWatch logs." \
   --namespace AWS/Lambda --metric-name Errors --dimensions "Name=FunctionName,Value=$NAME" \
-  --statistic Sum --period 86400 --evaluation-periods 1 --threshold 1 --comparison-operator GreaterThanOrEqualToThreshold \
+  --statistic Sum --period 3600 --evaluation-periods 1 --threshold 1 --comparison-operator GreaterThanOrEqualToThreshold \
   --treat-missing-data notBreaching --alarm-actions "$TOPIC_ARN"
 aws cloudwatch put-metric-alarm --alarm-name "$NAME-mainnet-gas-low" \
   --alarm-description "The fee keeper wallet has less than $MIN_BALANCE_ETH ETH on mainnet. Top it up." \
