@@ -316,6 +316,83 @@ describe('MarginModule', () => {
     })
   })
 
+  describe('collateral with a different number of decimals (USDC loan, WETH collateral)', () => {
+    // The base asset behaves like USDC (6 decimals) and the collateral like WETH (18): one whole
+    // collateral token is worth 2,600 * 10^6 base units, a raw price of 2.6e-9 (or 3.8e8 the other
+    // way round, depending on which token the pool sorts first). The old oracle cut amounts to five
+    // digits before applying the raw price and valued such collateral at 0, so takeLoan reverted
+    // with "Collateral error" (Sepolia order #1, 2026-10-09).
+    const USDC = (n: bigint) => n * 10n ** 6n
+    const ONE = expandTo18Decimals(1)
+
+    // Run once with the fixture's roles and once with them swapped, so the collateral is the pool's
+    // token0 in one run and its token1 in the other. The old oracle only got one of the two right.
+    for (const swapRoles of [false, true]) {
+      describe(swapRoles ? 'collateral sorted the other way' : 'fixture token order', () => {
+        async function ready() {
+          const c0 = await loadFixture(fx)
+          const [base, collat] = swapRoles ? [c0.collat, c0.base] : [c0.base, c0.collat]
+          const [baseTwin, collatTwin] = swapRoles ? [c0.tokens[4], c0.tokens[3]] : [c0.tokens[3], c0.tokens[4]]
+          const c = { ...c0, base, collat }
+          const TS = TICK_SPACINGS[FeeAmount.MEDIUM]
+          const baseIs0 = base.target.toString().toLowerCase() < collat.target.toString().toLowerCase()
+          const [t0, t1] = baseIs0 ? [base, collat] : [collat, base]
+          const [w0, w1] = baseIs0 ? [baseTwin, collatTwin] : [collatTwin, baseTwin]
+          // price = token1 per token0, in base units
+          const sqrt = baseIs0 ? encodePriceSqrt(ONE, USDC(2600n)) : encodePriceSqrt(USDC(2600n), ONE)
+          await c.nft.createAndInitializePoolIfNecessary(t0.target.toString(), t1.target.toString(),
+            w0.target.toString(), w1.target.toString(), FeeAmount.MEDIUM, sqrt)
+          await t0.approve(c.nft.target, ethers.MaxUint256)
+          await t1.approve(c.nft.target, ethers.MaxUint256)
+          // 1,000 collateral and 2.6M base
+          const [a0, a1] = baseIs0 ? [USDC(2600000n), ONE * 1000n] : [ONE * 1000n, USDC(2600000n)]
+          await c.nft.mint({
+            token0: t0.target.toString(), token1: t1.target.toString(),
+            tickLower: getMinTick(TS), tickUpper: getMaxTick(TS),
+            amount0Desired: a0, amount1Desired: a1, amount0Min: 0, amount1Min: 0,
+            recipient: c.wallet.address, deadline: BigInt((await time.latest()) + 3600), fee: FeeAmount.MEDIUM,
+          })
+          const pool = await c.factory.getPool(t0.target.toString(), t1.target.toString(), FeeAmount.MEDIUM)
+          await (await ethers.getContractAt('contracts/interfaces/IUniswapV3Pool.sol:IUniswapV3Pool', pool)).increaseObservationCardinalityNext(16)
+          await time.increase(c.TWAP_WINDOW)
+
+          // The fixture's token list already holds both tokens, so it whitelists either role.
+          await c.mm.createOrder({
+            ...c.orderParams, asset: base.target.toString(), collateral: [collat.target.toString()],
+            liquidationRewardAsset: base.target.toString(), liquidationRewardAmount: USDC(1n),
+          })
+          await c.mm.setOrderStatus(0, true)
+          await base.approve(c.mm.target, ethers.MaxUint256)
+          await collat.approve(c.mm.target, ethers.MaxUint256)
+          await c.mm.orderDepositToken(0, USDC(100000n))
+          return c
+        }
+
+        it('values one collateral token at 2,600 base units, both ways', async () => {
+          const { oracle, base, collat } = await ready()
+          expect(await oracle.getAmountOut(base.target, collat.target, ONE)).to.be.closeTo(USDC(2600n), USDC(2600n) / 5000n)
+          expect(await oracle.getAmountOut(collat.target, base.target, USDC(2600n))).to.be.closeTo(ONE, ONE / 5000n)
+        })
+
+        it('lends up to the order leverage against it and keeps the position solvent', async () => {
+          const { mm } = await ready()
+          // (2,600 + 10,000) / 2,600 < 5x
+          await mm.takeLoan(0, USDC(10000n), 0, ONE)
+          const [debt, value] = await mm.getPositionStatus(0)
+          expect(debt).to.eq(USDC(10000n))
+          expect(value).to.be.closeTo(USDC(12600n), USDC(2600n) / 5000n)
+          expect(await mm.subjectToLiquidation(0)).to.eq(false)
+        })
+
+        it('refuses a loan past the order leverage', async () => {
+          const { mm } = await ready()
+          // (2,600 + 10,500) / 2,600 > 5x
+          await expect(mm.takeLoan(0, USDC(10500n), 0, ONE)).to.be.revertedWith('Leverage error')
+        })
+      })
+    }
+  })
+
   describe('takeLoan reentrancy (position id must be claimed before external calls)', () => {
     it('a re-entering collateral token gets a fresh position id, not a colliding one', async () => {
       const { mm, oracle, wallet, now } = await loadFixture(fx)
