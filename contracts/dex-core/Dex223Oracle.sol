@@ -3,6 +3,7 @@ pragma solidity ^0.7.6;
 
 import "./interfaces/IUniswapV3Pool.sol";
 import "../libraries/TickMath.sol";
+import "../libraries/FullMath.sol";
 
 interface IUniswapV3Factory {
     function getPool(address tokenA, address tokenB, uint24 fee) external view returns (address pool);
@@ -27,11 +28,6 @@ interface IDex223PoolTokens
 }
 
 contract Oracle {
-
-    // @audit-fix V1: Made immutable to prevent storage manipulation and save gas.
-    //   Previously mutable `pricePrecisionDecimals` allowed any value change after deployment,
-    //   which could break price calculations or enable overflow attacks.
-    uint256 public immutable pricePrecisionDecimals;
 
     // @audit-fix V2: Factory and feeTiers made immutable/constant to prevent post-deployment tampering.
     //   A mutable factory address could be changed to point to a malicious factory
@@ -63,7 +59,6 @@ contract Oracle {
         require(_factory != address(0), "Oracle: zero factory");
         require(_twapWindow > 0, "Oracle: zero window");
         factory = IUniswapV3Factory(_factory);
-        pricePrecisionDecimals = 5;
         twapWindow = _twapWindow;
     }
 
@@ -152,122 +147,47 @@ contract Oracle {
         return (priceX96, needToInverse);
     }
 
-    // out = buy, in = sell
-    function getAmountOutIntrospection(
-        address buy,
-        address sell,
-        uint256 amountToSell
-    ) public view returns(uint256 amountBought, uint256 _slashed_zeros, uint256 _tmp_sum) {
-        (address _pool, , ) = findPoolWithHighestLiquidity(buy, sell);
-
-        // @audit-fix V5: Guard against zero amountToSell to prevent zero-output edge cases
-        //   and division-by-zero in the inverse-price branch.
-        require(amountToSell > 0, "Oracle: zero amount");
-
-        uint256 slashed_zeros;
-        uint256 tmp_sum;
-        if(amountToSell > 10**pricePrecisionDecimals)
-        {
-            uint256 sum = amountToSell;
-            for (slashed_zeros = 0; sum > 10**pricePrecisionDecimals; slashed_zeros++)
-            {
-                sum = sum / 10;
-            }
-
-            amountBought = sum;
-            tmp_sum = sum;
-            // @audit-fix V6: Intermediate overflow protection.
-            //   `uint256(getSqrtPriceX96(_pool))**2` can overflow for large sqrtPriceX96 values.
-            //   sqrtPriceX96 is uint160, so squaring can reach up to 2^320, which overflows uint256 (2^256).
-            //   Splitting the multiplication: (sqrtPrice * sum / 2^96) * (sqrtPrice / 2^96)
-            //   keeps intermediates within uint256 bounds for practical token prices.
-            uint256 sqrtPrice = uint256(getTwapSqrtPriceX96(_pool));
-            amountBought = _safePriceCalc(sqrtPrice, sum);
-            amountBought = amountBought * 10**slashed_zeros;
-        }
-        else
-        {
-            uint256 sqrtPrice = uint256(getTwapSqrtPriceX96(_pool));
-            amountBought = _safePriceCalc(sqrtPrice, amountToSell);
-        }
-
-        // The pool's price is token1 per token0, and the pool orders its sides by ERC-20 address.
-        // `sell` may be either version of its token, and an ERC-223 address can sort the other way
-        // round, so the direction comes from the pool, not from comparing the two addresses. Comparing
-        // them inverted every quote that named an ERC-223 asset (p came back as 1/p).
-        if(!_isToken0(_pool, sell))
-        {
-            // @audit-fix V7: Division-by-zero guard.
-            //   If amountBought == 0 (possible for tiny amounts or extreme prices), this division reverts
-            //   with a clear error instead of a raw panic, aiding debugging and preventing silent failures.
-            require(amountBought > 0, "Oracle: zero price result");
-            amountBought = amountToSell * amountToSell / amountBought;
-        }
-        return (amountBought, slashed_zeros, tmp_sum);
-    }
-
+    /// @notice Value of `amountToSell` units of `sell` in units of `buy`, at the TWAP over `twapWindow`.
+    /// @dev Full precision, as Uniswap's OracleLibrary.getQuoteAtTick: the ratio is applied to the whole
+    ///      amount through 512-bit mulDiv. The earlier version first cut the amount down to five
+    ///      significant digits and then multiplied by the raw price, which floored to 0 whenever the raw
+    ///      price was below ~1e-5, i.e. for every 6- or 8-decimal token against an 18-decimal one
+    ///      (USDC/WETH valued WETH collateral at 0 and reverted the other way).
+    ///      Rounds down. Dust that is worth less than one unit of `buy` is valued at 0.
     function getAmountOut(
         address buy,
         address sell,
         uint256 amountToSell
     ) public view returns(uint256 amountBought) {
         (address _pool, , ) = findPoolWithHighestLiquidity(buy, sell);
-
-        // @audit-fix V5: Guard against zero amountToSell.
         require(amountToSell > 0, "Oracle: zero amount");
 
-        uint256 slashed_zeros;
-        if(amountToSell > 10**pricePrecisionDecimals)
-        {
-            uint256 sum = amountToSell;
-            for (slashed_zeros = 0; sum > 10**pricePrecisionDecimals; slashed_zeros++)
-            {
-                sum = sum / 10;
-            }
-            // @audit-fix V6: Use safe price calculation to prevent intermediate overflow.
-            uint256 sqrtPrice = uint256(getTwapSqrtPriceX96(_pool));
-            amountBought = _safePriceCalc(sqrtPrice, sum);
-            amountBought = amountBought * 10**slashed_zeros;
-        }
-        else
-        {
-            uint256 sqrtPrice = uint256(getTwapSqrtPriceX96(_pool));
-            amountBought = _safePriceCalc(sqrtPrice, amountToSell);
-        }
+        uint160 sqrtRatioX96 = getTwapSqrtPriceX96(_pool);
 
         // The pool's price is token1 per token0, and the pool orders its sides by ERC-20 address.
         // `sell` may be either version of its token, and an ERC-223 address can sort the other way
-        // round, so the direction comes from the pool, not from comparing the two addresses. Comparing
-        // them inverted every quote that named an ERC-223 asset (p came back as 1/p).
-        if(!_isToken0(_pool, sell))
-        {
-            // @audit-fix V7: Division-by-zero guard.
-            require(amountBought > 0, "Oracle: zero price result");
-            amountBought = amountToSell * amountToSell / amountBought;
+        // round, so the direction comes from the pool, not from comparing the two addresses.
+        bool sellIsToken0 = _isToken0(_pool, sell);
+
+        // Square the sqrt price exactly when it fits, otherwise drop 64 bits first (still exact to
+        // far more digits than any token amount carries).
+        if (sqrtRatioX96 <= type(uint128).max) {
+            uint256 ratioX192 = uint256(sqrtRatioX96) * sqrtRatioX96;
+            amountBought = sellIsToken0
+                ? FullMath.mulDiv(ratioX192, amountToSell, 1 << 192)
+                : FullMath.mulDiv(1 << 192, amountToSell, ratioX192);
+        } else {
+            uint256 ratioX128 = FullMath.mulDiv(sqrtRatioX96, sqrtRatioX96, 1 << 64);
+            amountBought = sellIsToken0
+                ? FullMath.mulDiv(ratioX128, amountToSell, 1 << 128)
+                : FullMath.mulDiv(1 << 128, amountToSell, ratioX128);
         }
-        return (amountBought);
     }
 
     /// @dev True when `token` is either version of `pool`'s token0.
     function _isToken0(address pool, address token) internal view returns (bool) {
         (address t0_20, address t0_223) = IDex223PoolTokens(pool).token0();
         return token == t0_20 || token == t0_223;
-    }
-
-    // @audit-fix V6: Internal helper that avoids intermediate overflow when computing
-    //   sqrtPriceX96^2 * amount / 2^192.
-    //   Strategy: split the 2^192 divisor across the two sqrtPrice multiplications as 2^96 each,
-    //   so no intermediate exceeds ~2^(160+160) / 2^96 = ~2^224, safely within uint256.
-    function _safePriceCalc(uint256 sqrtPrice, uint256 amount) internal pure returns (uint256) {
-        // price = sqrtPrice^2 * amount / 2^192
-        //       = (sqrtPrice * amount / 2^96) * sqrtPrice / 2^96
-        //
-        // sqrtPrice is at most ~2^160. amount is at most ~2^256 but after digit-slashing
-        // is bounded to ~10^5 ≈ 2^17. So sqrtPrice * amount ≈ 2^177, well within uint256.
-        // After dividing by 2^96 we get ~2^81, then * sqrtPrice ≈ 2^241, still safe.
-        // The final /2^96 brings it back down.
-        uint256 intermediate = (sqrtPrice * amount) >> 96;
-        return (intermediate * sqrtPrice) >> 96;
     }
 
     /// @notice Harmonic mean of `poolAddress`'s in-range liquidity over the last `twapWindow` seconds.
