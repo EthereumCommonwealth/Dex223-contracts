@@ -74,8 +74,9 @@ abstract contract PeripheryPaymentsWithFee is PeripheryPayments, IPeripheryPayme
     }
 
     /// @inheritdoc IPeripheryPaymentsWithFee
-    /// @dev Transfers the full balance of `token` held by this contract, takes a
-    ///      fee in bips, and sends the remainder to `recipient`.
+    /// @dev Transfers the balance of `token` held by this contract, minus what users have deposited
+    ///      as ERC-223 and not yet spent, takes a fee in bips, and sends the remainder to `recipient`.
+    ///      Sweeping the full balance used to hand anyone those deposits.
     ///      - `feeBips` must be in (0, 100] (up to 1%).
     ///      - `recipient` and `feeRecipient` must not be address(0).
     ///      - Uses LowGasSafeMath.sub for the net-amount calculation.
@@ -90,7 +91,7 @@ abstract contract PeripheryPaymentsWithFee is PeripheryPayments, IPeripheryPayme
         require(feeRecipient != address(0), 'Invalid fee recipient');
         require(feeBips > 0 && feeBips <= 100, 'Fee out of range');
 
-        uint256 balanceToken = IERC20(token).balanceOf(address(this));
+        uint256 balanceToken = IERC20(token).balanceOf(address(this)).sub(_erc223TotalDeposits[token]);
         require(balanceToken >= amountMinimum, 'Insufficient token');
 
         if (balanceToken > 0) {

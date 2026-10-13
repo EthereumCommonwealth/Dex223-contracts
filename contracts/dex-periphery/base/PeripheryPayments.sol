@@ -29,6 +29,10 @@ abstract contract PeripheryPayments is IPeripheryPayments, PeripheryImmutableSta
     /// @dev User => Token => Balance
     mapping(address => mapping(address => uint256)) internal _erc223Deposits;
 
+    /// @dev Token => sum of every user's _erc223Deposits for it. Those tokens belong to depositors, so
+    ///      balance sweeps (sweepTokenWithFee) must leave them alone.
+    mapping(address => uint256) internal _erc223TotalDeposits;
+
     /// @notice Emitted when an ERC-223 token deposit is recorded
     /// @param token The ERC-223 token contract address
     /// @param depositor The user whose balance was credited
@@ -50,7 +54,16 @@ abstract contract PeripheryPayments is IPeripheryPayments, PeripheryImmutableSta
     function depositERC223(address _user, address _token, uint256 _quantity) internal
     {
         _erc223Deposits[_user][_token] += _quantity;
+        _erc223TotalDeposits[_token] += _quantity;
         emit ERC223Deposit(_token, _user, _quantity);
+    }
+
+    /// @dev Debits a recorded ERC-223 deposit. Callers check the balance first; this keeps the
+    ///      per-token total in step with the per-user balances.
+    function debitERC223(address _user, address _token, uint256 _quantity) internal
+    {
+        _erc223Deposits[_user][_token] -= _quantity;
+        _erc223TotalDeposits[_token] -= _quantity;
     }
 
     /// @notice Withdraws ERC-223 tokens previously deposited by the caller
@@ -73,7 +86,7 @@ abstract contract PeripheryPayments is IPeripheryPayments, PeripheryImmutableSta
         require(_erc223Deposits[msg.sender][_token] >= _quantity, "WE");
 
         // Effects before interactions (CEI pattern)
-        _erc223Deposits[msg.sender][_token] -= _quantity;
+        debitERC223(msg.sender, _token, _quantity);
 
         // Interaction: transfer tokens to recipient
         bool success = IERC223(_token).transfer(_recipient, _quantity);
@@ -142,7 +155,7 @@ abstract contract PeripheryPayments is IPeripheryPayments, PeripheryImmutableSta
         else if (_erc223Deposits[payer][token] >= value)
         {
             // Paying in an ERC-223 token.
-            _erc223Deposits[payer][token] -= value;
+            debitERC223(payer, token, value);
 
             if(IERC20(token).allowance(address(this), address(this)) < value)
             {

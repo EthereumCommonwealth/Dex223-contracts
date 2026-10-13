@@ -9,6 +9,13 @@ pragma abicoder v2;
 
 import '../dex-core/Dex223MarginModule.sol';
 
+/// @dev The token list of a position's order, read through the module's public getters. The module no
+/// longer has a getPositionTokenlistID view: it was cut to keep MarginModule under EIP-170.
+function positionTokenlistID(address marginModule, uint256 positionId) view returns (bytes32 whitelist) {
+    (uint256 orderId,,,,,,,,) = MarginModule(marginModule).positions(positionId);
+    (,, whitelist,,,,,,,,,) = MarginModule(marginModule).orders(orderId);
+}
+
 interface IExactInputSingleParams {
     struct ExactInputSingleParams {
         address tokenIn;
@@ -575,7 +582,7 @@ contract UtilityModuleCfg is IOrderParams, IMintParams, IExactInputSingleParams
             }
         }
 
-        bytes32 _whitelist = MarginModule(margin_module).getPositionTokenlistID(_positionId);
+        bytes32 _whitelist = positionTokenlistID(margin_module, _positionId);
         uint256 idInWl1 = MarginModule(margin_module).getIdFromTokenlist(_whitelist, _tokenIn);
         uint256 idInWl2 = MarginModule(margin_module).getIdFromTokenlist(_whitelist, _tokenOut);
 
@@ -1266,7 +1273,7 @@ contract UtilityModuleCfg2 is IOrderParams, IMintParams, IExactInputSingleParams
             }
         }
 
-        bytes32 _whitelist = MarginModule(margin_module).getPositionTokenlistID(_positionId);
+        bytes32 _whitelist = positionTokenlistID(margin_module, _positionId);
         uint256 idInWl1 = MarginModule(margin_module).getIdFromTokenlist(_whitelist, _tokenIn);
         uint256 idInWl2 = MarginModule(margin_module).getIdFromTokenlist(_whitelist, _tokenOut);
 
@@ -1887,7 +1894,7 @@ contract UtilityBulkPositionCreator is IOrderParams, IMintParams, IExactInputSin
 
     function step5_single_MarginSwap(uint256 _groupId, uint256 _amount) public 
     {
-        bytes32 _whitelist = MarginModule(margin_module).getPositionTokenlistID(test_group[_groupId].positionId);
+        bytes32 _whitelist = positionTokenlistID(margin_module, test_group[_groupId].positionId);
         uint256 _idToken0 = MarginModule(margin_module).getIdFromTokenlist(_whitelist, test_group[_groupId].token0);
         uint256 _idToken1 = MarginModule(margin_module).getIdFromTokenlist(_whitelist, test_group[_groupId].token1);
         uint256 _idToken2 = MarginModule(margin_module).getIdFromTokenlist(_whitelist, test_group[_groupId].token1);
@@ -1934,7 +1941,7 @@ contract UtilityBulkPositionCreator is IOrderParams, IMintParams, IExactInputSin
 
     function step5_bulk_MarginSwap(uint256 _groupId, uint256 _amount) public 
     {
-        bytes32 _whitelist = MarginModule(margin_module).getPositionTokenlistID(test_group[_groupId].positionId);
+        bytes32 _whitelist = positionTokenlistID(margin_module, test_group[_groupId].positionId);
         uint256 _idToken0 = MarginModule(margin_module).getIdFromTokenlist(_whitelist, test_group[_groupId].token0);
         uint256 _idToken1 = MarginModule(margin_module).getIdFromTokenlist(_whitelist, test_group[_groupId].token1);
         uint256 _idToken2 = MarginModule(margin_module).getIdFromTokenlist(_whitelist, test_group[_groupId].token1);
@@ -1977,7 +1984,7 @@ contract UtilityBulkPositionCreator is IOrderParams, IMintParams, IExactInputSin
 
     function step5_custom_MarginSwap(uint256 _groupId, uint256 _amount, uint256 id1, uint256 id2, uint256 id3, address token) public 
     {
-        bytes32 _whitelist = MarginModule(margin_module).getPositionTokenlistID(test_group[_groupId].positionId);
+        bytes32 _whitelist = positionTokenlistID(margin_module, test_group[_groupId].positionId);
         uint256 _idToken0 = MarginModule(margin_module).getIdFromTokenlist(_whitelist, test_group[_groupId].token0);
         uint256 _idToken1 = MarginModule(margin_module).getIdFromTokenlist(_whitelist, test_group[_groupId].token1);
         uint256 _idToken2 = MarginModule(margin_module).getIdFromTokenlist(_whitelist, test_group[_groupId].token1);

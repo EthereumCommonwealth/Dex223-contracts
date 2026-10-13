@@ -19,7 +19,7 @@ describe('MarginModule', () => {
 
     const TWAP_WINDOW = 1800
     const oracle = await (await ethers.getContractFactory('contracts/dex-core/Dex223Oracle.sol:Oracle')).deploy(factory.target, TWAP_WINDOW)
-    const mm = await (await ethers.getContractFactory('MarginModule')).deploy(factory.target, router.target)
+    const mm = await (await ethers.getContractFactory('MarginModule')).deploy(factory.target, router.target, oracle.target)
 
     const base = tokens[0]      // baseAsset (loan currency)
     const collat = tokens[1]    // collateral
@@ -79,7 +79,7 @@ describe('MarginModule', () => {
     const seedPool = () => seedPoolWith(collat, tokens[4])
     const seedThirdPool = () => seedPoolWith(third, tokens[5])
 
-    return { mm, oracle, factory, router, converter, weth9, nft, base, collat, third, collat223, wallet, other, orderParams, whitelistId, now, seedPool, seedThirdPool, TWAP_WINDOW }
+    return { tokens, mm, oracle, factory, router, converter, weth9, nft, base, collat, third, collat223, wallet, other, orderParams, whitelistId, now, seedPool, seedThirdPool, TWAP_WINDOW }
   }
 
   describe('token lists', () => {
@@ -314,6 +314,83 @@ describe('MarginModule', () => {
       expect((await mm.positions(1)).owner).to.not.eq(ethers.ZeroAddress)
       expect((await mm.order_status(0)).positions).to.eq(2n)
     })
+  })
+
+  describe('collateral with a different number of decimals (USDC loan, WETH collateral)', () => {
+    // The base asset behaves like USDC (6 decimals) and the collateral like WETH (18): one whole
+    // collateral token is worth 2,600 * 10^6 base units, a raw price of 2.6e-9 (or 3.8e8 the other
+    // way round, depending on which token the pool sorts first). The old oracle cut amounts to five
+    // digits before applying the raw price and valued such collateral at 0, so takeLoan reverted
+    // with "Collateral error" (Sepolia order #1, 2026-10-09).
+    const USDC = (n: bigint) => n * 10n ** 6n
+    const ONE = expandTo18Decimals(1)
+
+    // Run once with the fixture's roles and once with them swapped, so the collateral is the pool's
+    // token0 in one run and its token1 in the other. The old oracle only got one of the two right.
+    for (const swapRoles of [false, true]) {
+      describe(swapRoles ? 'collateral sorted the other way' : 'fixture token order', () => {
+        async function ready() {
+          const c0 = await loadFixture(fx)
+          const [base, collat] = swapRoles ? [c0.collat, c0.base] : [c0.base, c0.collat]
+          const [baseTwin, collatTwin] = swapRoles ? [c0.tokens[4], c0.tokens[3]] : [c0.tokens[3], c0.tokens[4]]
+          const c = { ...c0, base, collat }
+          const TS = TICK_SPACINGS[FeeAmount.MEDIUM]
+          const baseIs0 = base.target.toString().toLowerCase() < collat.target.toString().toLowerCase()
+          const [t0, t1] = baseIs0 ? [base, collat] : [collat, base]
+          const [w0, w1] = baseIs0 ? [baseTwin, collatTwin] : [collatTwin, baseTwin]
+          // price = token1 per token0, in base units
+          const sqrt = baseIs0 ? encodePriceSqrt(ONE, USDC(2600n)) : encodePriceSqrt(USDC(2600n), ONE)
+          await c.nft.createAndInitializePoolIfNecessary(t0.target.toString(), t1.target.toString(),
+            w0.target.toString(), w1.target.toString(), FeeAmount.MEDIUM, sqrt)
+          await t0.approve(c.nft.target, ethers.MaxUint256)
+          await t1.approve(c.nft.target, ethers.MaxUint256)
+          // 1,000 collateral and 2.6M base
+          const [a0, a1] = baseIs0 ? [USDC(2600000n), ONE * 1000n] : [ONE * 1000n, USDC(2600000n)]
+          await c.nft.mint({
+            token0: t0.target.toString(), token1: t1.target.toString(),
+            tickLower: getMinTick(TS), tickUpper: getMaxTick(TS),
+            amount0Desired: a0, amount1Desired: a1, amount0Min: 0, amount1Min: 0,
+            recipient: c.wallet.address, deadline: BigInt((await time.latest()) + 3600), fee: FeeAmount.MEDIUM,
+          })
+          const pool = await c.factory.getPool(t0.target.toString(), t1.target.toString(), FeeAmount.MEDIUM)
+          await (await ethers.getContractAt('contracts/interfaces/IUniswapV3Pool.sol:IUniswapV3Pool', pool)).increaseObservationCardinalityNext(16)
+          await time.increase(c.TWAP_WINDOW)
+
+          // The fixture's token list already holds both tokens, so it whitelists either role.
+          await c.mm.createOrder({
+            ...c.orderParams, asset: base.target.toString(), collateral: [collat.target.toString()],
+            liquidationRewardAsset: base.target.toString(), liquidationRewardAmount: USDC(1n),
+          })
+          await c.mm.setOrderStatus(0, true)
+          await base.approve(c.mm.target, ethers.MaxUint256)
+          await collat.approve(c.mm.target, ethers.MaxUint256)
+          await c.mm.orderDepositToken(0, USDC(100000n))
+          return c
+        }
+
+        it('values one collateral token at 2,600 base units, both ways', async () => {
+          const { oracle, base, collat } = await ready()
+          expect(await oracle.getAmountOut(base.target, collat.target, ONE)).to.be.closeTo(USDC(2600n), USDC(2600n) / 5000n)
+          expect(await oracle.getAmountOut(collat.target, base.target, USDC(2600n))).to.be.closeTo(ONE, ONE / 5000n)
+        })
+
+        it('lends up to the order leverage against it and keeps the position solvent', async () => {
+          const { mm } = await ready()
+          // (2,600 + 10,000) / 2,600 < 5x
+          await mm.takeLoan(0, USDC(10000n), 0, ONE)
+          const [debt, value] = await mm.getPositionStatus(0)
+          expect(debt).to.eq(USDC(10000n))
+          expect(value).to.be.closeTo(USDC(12600n), USDC(2600n) / 5000n)
+          expect(await mm.subjectToLiquidation(0)).to.eq(false)
+        })
+
+        it('refuses a loan past the order leverage', async () => {
+          const { mm } = await ready()
+          // (2,600 + 10,500) / 2,600 > 5x
+          await expect(mm.takeLoan(0, USDC(10500n), 0, ONE)).to.be.revertedWith('Leverage error')
+        })
+      })
+    }
   })
 
   describe('takeLoan reentrancy (position id must be claimed before external calls)', () => {
@@ -831,15 +908,18 @@ describe('MarginModule', () => {
       expect((await c.mm.positions(0)).open).to.eq(true)
     })
 
-    it('the liquidator can still finish with their own limits: marginSwap then liquidate', async () => {
+    it('after a crash the liquidator waits for the TWAP to catch up, then liquidates through the floor', async () => {
       const c = await underwaterWithCollateral()
-      await c.mm.liquidate(0, c.wallet.address)          // freeze, wallet is now the liquidator
+      await c.mm.connect(c.other).liquidate(0, c.other.address)   // freeze, `other` is the liquidator
       await crashCollateralSpot(c)
-      // Liquidator swaps the collateral at whatever the market gives, with an explicit floor of 0.
-      await c.mm.marginSwap(0, 1, 1, 0, expandTo18Decimals(1), c.base.target, FeeAmount.MEDIUM, 0, 0)
-      expect((await c.mm.getPositionAssets(0)).length).to.eq(1)
-      await time.increase(60)
-      await c.mm.liquidate(0, c.wallet.address)          // only the base asset is left: no swap needed
+      // The liquidator has no swap of their own to fall back on.
+      await expect(
+        c.mm.connect(c.other).marginSwap(0, 1, 1, 0, expandTo18Decimals(1), c.base.target, FeeAmount.MEDIUM, 0, 0)
+      ).to.be.revertedWith('Not position owner')
+      await expect(c.mm.connect(c.other).liquidate(0, c.other.address)).to.be.revertedWith('Too little received')
+      // Once the TWAP reflects the crash the floor is met. The freeze (1 hour) is still live.
+      await time.increase(c.TWAP_WINDOW)
+      await c.mm.connect(c.other).liquidate(0, c.other.address)
       expect((await c.mm.positions(0)).open).to.eq(false)
     })
 
@@ -1158,6 +1238,180 @@ describe('MarginModule', () => {
       expect(await c.collat.balanceOf(c.wallet.address)).to.eq(before + expandTo18Decimals(1))
       await expect(c.mm.positionWithdraw(0, c.collat.target)).to.be.revertedWith('Asset not found in position')
       await expect(c.mm.connect(c.other).positionWithdraw(0, c.base.target)).to.be.revertedWith('Not position owner')
+    })
+  })
+
+  // Fund-safety regressions from the 2026-10 audit. Each test states the safe behaviour; before the
+  // fixes they failed because the attack worked.
+  describe('fund safety (2026-10 audit)', () => {
+    const ETH = ethers.ZeroAddress
+    const ONE = expandTo18Decimals(1)
+
+    // A second, thin pool for base/collat at the LOW fee tier, opened at `basePerCollat` instead of 1:1.
+    async function thinPool(c: Awaited<ReturnType<typeof fx>>, basePerCollat: [bigint, bigint], amount = ONE) {
+      const TS = TICK_SPACINGS[FeeAmount.LOW]
+      const baseIs0 = c.base.target.toString().toLowerCase() < c.collat.target.toString().toLowerCase()
+      const [t0, t1] = baseIs0 ? [c.base, c.collat] : [c.collat, c.base]
+      const [w0, w1] = baseIs0 ? [c.tokens[3], c.tokens[4]] : [c.tokens[4], c.tokens[3]]
+      // price = token1 / token0
+      const [num, den] = basePerCollat
+      const sqrt = baseIs0 ? encodePriceSqrt(den, num) : encodePriceSqrt(num, den)
+      await c.nft.createAndInitializePoolIfNecessary(t0.target.toString(), t1.target.toString(),
+        w0.target.toString(), w1.target.toString(), FeeAmount.LOW, sqrt)
+      await t0.approve(c.nft.target, ethers.MaxUint256)
+      await t1.approve(c.nft.target, ethers.MaxUint256)
+      await c.nft.mint({
+        token0: t0.target.toString(), token1: t1.target.toString(),
+        tickLower: getMinTick(TS), tickUpper: getMaxTick(TS),
+        amount0Desired: amount, amount1Desired: amount, amount0Min: 0, amount1Min: 0,
+        recipient: c.wallet.address, deadline: BigInt((await time.latest()) + 3600), fee: FeeAmount.LOW,
+      })
+      return await c.factory.getPool(t0.target.toString(), t1.target.toString(), FeeAmount.LOW)
+    }
+
+    async function twoEthOrders() {
+      const c = await loadFixture(fx)
+      await c.mm.addTokenlist([ETH], false)
+      const p = {
+        ...c.orderParams, whitelistId: await c.mm.predictTokenListsID([ETH], false),
+        asset: ETH, collateral: [ETH], liquidationRewardAsset: ETH, liquidationRewardAmount: ONE / 100n,
+      }
+      // Order 0 belongs to an honest lender with 10 ETH in it.
+      await c.mm.connect(c.other).createOrder(p)
+      await c.mm.connect(c.other).setOrderStatus(0, true)
+      await c.mm.connect(c.other).orderDepositEth(0, { value: expandTo18Decimals(10) })
+      return { ...c, p }
+    }
+
+    it('multicall cannot credit one Ether payment to an order twice', async () => {
+      const c = await twoEthOrders()
+      await c.mm.createOrder(c.p)                       // order 1: the caller's own
+      await c.mm.setOrderStatus(1, true)
+      const call = c.mm.interface.encodeFunctionData('orderDepositEth', [1])
+      await expect(c.mm.multicall([call, call], { value: ONE })).to.be.reverted
+      expect((await c.mm.orders(1)).balance).to.eq(0n)
+      expect(await ethers.provider.getBalance(c.mm.target)).to.eq(expandTo18Decimals(10))
+    })
+
+    it('multicall cannot spend Ether held for other orders through orderDepositWETH9', async () => {
+      const c = await twoEthOrders()
+      const weth = c.weth9.target.toString()
+      await c.mm.addTokenlist([weth], false)
+      await c.mm.createOrder({ ...c.p, whitelistId: await c.mm.predictTokenListsID([weth], false),
+        asset: weth, collateral: [weth], liquidationRewardAsset: weth })
+      await c.mm.setOrderStatus(1, true)
+      const call = c.mm.interface.encodeFunctionData('orderDepositWETH9', [1, weth])
+      await expect(c.mm.multicall([call, call, call], { value: ONE })).to.be.reverted
+      expect(await ethers.provider.getBalance(c.mm.target)).to.eq(expandTo18Decimals(10))
+    })
+
+    it('multicall cannot reuse one Ether payment as collateral for two loans', async () => {
+      const c = await twoEthOrders()
+      const call = c.mm.interface.encodeFunctionData('takeLoan', [0, ONE, 0, ONE])
+      await expect(c.mm.multicall([call, call], { value: ONE + ONE / 100n })).to.be.reverted
+      expect(await c.mm.positionIndex()).to.eq(0n)
+    })
+
+    it('the borrower cannot swap the loan into a thin pool and leave the position underwater', async () => {
+      const c = await fundedOrder()
+      await c.mm.takeLoan(0, expandTo18Decimals(4), 0, ONE)    // 4 base borrowed on 1 collat, 5x
+      // A pool the borrower controls, where 1 base buys only 0.01 collat.
+      await thinPool(c, [100n, 1n])
+      // Selling the 4 base there would leave holdings worth ~1 against a debt of 4.
+      await expect(
+        c.mm.marginSwap(0, 0, 0, 1, expandTo18Decimals(4), c.collat.target, FeeAmount.LOW, 0, 0)
+      ).to.be.reverted
+      expect(await c.mm.subjectToLiquidation(0)).to.eq(false)
+      // An ordinary swap at the fair pool is still allowed.
+      await c.mm.marginSwap(0, 0, 0, 1, ONE, c.collat.target, FeeAmount.MEDIUM, 0, 0)
+    })
+
+    it('a liquidator cannot sell a frozen position\'s assets through marginSwap', async () => {
+      const c = await loadFixture(fx)
+      await c.seedPool()
+      await c.mm.createOrder({ ...c.orderParams, interestRate: 10000n, duration: BigInt(365 * DAY) })
+      await c.mm.setOrderStatus(0, true)
+      await c.base.approve(c.mm.target, ethers.MaxUint256)
+      await c.collat.approve(c.mm.target, ethers.MaxUint256)
+      await c.mm.orderDepositToken(0, expandTo18Decimals(100))
+      await c.mm.takeLoan(0, ONE, 0, ONE)
+      await time.increase(90 * DAY)
+      await c.mm.connect(c.other).liquidate(0, c.other.address)   // `other` freezes and is the liquidator
+      // A pool where 1 collat fetches only 0.01 base.
+      await thinPool(c, [1n, 100n])
+      await expect(
+        c.mm.connect(c.other).marginSwap(0, 1, 1, 0, ONE, c.base.target, FeeAmount.LOW, 0, 0)
+      ).to.be.reverted
+      // Liquidation itself sells at the floored oracle quote and completes.
+      await time.increase(60)
+      await c.mm.connect(c.other).liquidate(0, c.other.address)
+      expect((await c.mm.positions(0)).open).to.eq(false)
+    })
+
+    it('the oracle prices an asset the same whether it is named by its ERC-20 or its ERC-223 address', async () => {
+      const c = await loadFixture(fx)
+      // Only pool: 4 base per collat, with TWAP history.
+      const pool = await thinPool(c, [4n, 1n], expandTo18Decimals(100))
+      await (await ethers.getContractAt('contracts/interfaces/IUniswapV3Pool.sol:IUniswapV3Pool', pool)).increaseObservationCardinalityNext(16)
+      await time.increase(c.TWAP_WINDOW)
+      const base223 = c.tokens[3].target, collat223 = c.tokens[4].target
+      for (const b of [c.base.target, base223]) {
+        for (const k of [c.collat.target, collat223]) {
+          expect(await c.oracle.getAmountOut(b, k, ONE), `base ${b} for collat ${k}`).to.be.closeTo(ONE * 4n, ONE / 25n)
+          expect(await c.oracle.getAmountOut(k, b, ONE), `collat ${k} for base ${b}`).to.be.closeTo(ONE / 4n, ONE / 100n)
+        }
+      }
+    })
+
+    it('the oracle does not switch to a skewed pool when liquidity is added in the same block', async () => {
+      const c = await loadFixture(fx)
+      await c.seedPool()                                   // MEDIUM pool, 1:1, deep, with TWAP history
+      const pool = await thinPool(c, [4n, 1n], ONE / 1000n) // LOW pool at 4 base per collat, nearly empty
+      await (await ethers.getContractAt('contracts/interfaces/IUniswapV3Pool.sol:IUniswapV3Pool', pool)).increaseObservationCardinalityNext(16)
+      await time.increase(c.TWAP_WINDOW)
+      const before = await c.oracle.getAmountOut(c.base.target, c.collat.target, ONE)
+      // Pile liquidity into the skewed pool just before the valuation.
+      const TS = TICK_SPACINGS[FeeAmount.LOW]
+      const baseIs0 = c.base.target.toString().toLowerCase() < c.collat.target.toString().toLowerCase()
+      const [t0, t1] = baseIs0 ? [c.base, c.collat] : [c.collat, c.base]
+      await c.nft.mint({
+        token0: t0.target.toString(), token1: t1.target.toString(),
+        tickLower: getMinTick(TS), tickUpper: getMaxTick(TS),
+        amount0Desired: expandTo18Decimals(100000), amount1Desired: expandTo18Decimals(100000),
+        amount0Min: 0, amount1Min: 0, recipient: c.wallet.address,
+        deadline: BigInt((await time.latest()) + 3600), fee: FeeAmount.LOW,
+      })
+      const after = await c.oracle.getAmountOut(c.base.target, c.collat.target, ONE)
+      expect(after).to.be.closeTo(before, before / 20n)
+    })
+
+    // The order's oracle alone decides solvency and the forced-sale floor, so a lender who could
+    // name their own could report a crash, liquidate a healthy borrower and sell at any price.
+    it('an order can only name the module\'s price oracle', async () => {
+      const c = await loadFixture(fx)
+      expect(await c.mm.priceOracle()).to.eq(c.oracle.target)
+      const rogue = await (await ethers.getContractFactory('contracts/dex-core/Dex223Oracle.sol:Oracle')).deploy(c.factory.target, c.TWAP_WINDOW)
+      await expect(c.mm.createOrder({ ...c.orderParams, oracle: rogue.target })).to.be.revertedWith('Unsupported oracle')
+      await expect(c.mm.createOrder({ ...c.orderParams, oracle: ethers.ZeroAddress })).to.be.revertedWith('Unsupported oracle')
+      await c.mm.createOrder(c.orderParams)
+      expect((await c.mm.orders(0)).oracle).to.eq(c.oracle.target)
+    })
+
+    it('modifyOrder cannot switch an order to another oracle', async () => {
+      const c = await loadFixture(fx)
+      await c.mm.createOrder(c.orderParams)
+      const rogue = await (await ethers.getContractFactory('contracts/dex-core/Dex223Oracle.sol:Oracle')).deploy(c.factory.target, c.TWAP_WINDOW)
+      const modify = (oracle: string) => c.mm.modifyOrder(
+        0, c.whitelistId, 777n, BigInt(7 * DAY), 5n, 3, 4, oracle, 1n, c.base.target, BigInt(c.now + 30 * DAY))
+      await expect(modify(rogue.target.toString())).to.be.revertedWith('Unsupported oracle')
+      await modify(c.oracle.target.toString())
+      expect((await c.mm.orders(0)).oracle).to.eq(c.oracle.target)
+    })
+
+    it('the module cannot be deployed without an oracle contract', async () => {
+      const { factory, router } = await loadFixture(completeFixture)
+      const MM = await ethers.getContractFactory('MarginModule')
+      await expect(MM.deploy(factory.target, router.target, ethers.ZeroAddress)).to.be.revertedWith('Oracle has no code')
     })
   })
 })
