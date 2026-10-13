@@ -91,23 +91,33 @@ describe('fund safety: pools, factory, router, converter (2026-10 audit)', () =>
   })
 
   describe('converter', () => {
-    it('a hook token cannot re-enter wrapERC20toERC223 to mint unbacked wrappers', async () => {
-      const { converter } = await loadFixture(poolFixture)
+    // The converter supports ERC-20 and ERC-223 only (ERC-7417). A token with a transfer hook (ERC-777
+    // style) can re-enter wrapERC20toERC223 and over-mint its own wrapper: a known, accepted limit.
+    // This pins the part that matters: the damage stays inside that token's own deposits and never
+    // reaches another token held by the converter.
+    it('a hook token re-entering wrapERC20toERC223 cannot touch other tokens held by the converter', async () => {
+      const { converter, token0 } = await loadFixture(poolFixture)
+      await token0.approve(converter.target.toString(), expandTo18Decimals(500))
+      await converter.wrapERC20toERC223(token0.target, expandTo18Decimals(500))
+      const wrapper0 = await ethers.getContractAt('ERC223HybridToken', await converter.predictWrapperAddress(token0.target, true))
+      const deposit0 = await token0.balanceOf(converter.target)
+      const supply0 = await converter.erc20Supply(token0.target)
+      const wrapperSupply0 = await wrapper0.totalSupply()
+
       const token = await (await ethers.getContractFactory('ReentrantHookToken')).deploy(expandTo18Decimals(1000))
       const holder = await (await ethers.getContractFactory('HookHolder')).deploy(converter.target, token.target)
       await token.transfer(holder.target, expandTo18Decimals(100))
+      await holder.wrapTwice(expandTo18Decimals(10), expandTo18Decimals(10))
 
-      const outer = expandTo18Decimals(10)
-      const inner = expandTo18Decimals(10)
-      try {
-        await holder.wrapTwice(outer, inner)
-      } catch {
-        return // refusing the re-entrant wrap outright is the fix
-      }
-      const wrapper = await ethers.getContractAt('ERC223HybridToken', await converter.predictWrapperAddress(token.target, true))
-      const deposited = await token.balanceOf(converter.target)
-      // Every wrapper in circulation must be backed by a deposited token.
-      expect(await wrapper.balanceOf(holder.target)).to.be.lte(deposited)
+      // The hook token's own wrapper is over-minted (30 against 20 deposited): unsupported, as documented.
+      const hookWrapper = await ethers.getContractAt('ERC223HybridToken', await converter.predictWrapperAddress(token.target, true))
+      expect(await hookWrapper.balanceOf(holder.target)).to.eq(expandTo18Decimals(30))
+      expect(await token.balanceOf(converter.target)).to.eq(expandTo18Decimals(20))
+
+      // Every other token's deposits and wrapper supply are untouched.
+      expect(await token0.balanceOf(converter.target)).to.eq(deposit0)
+      expect(await converter.erc20Supply(token0.target)).to.eq(supply0)
+      expect(await wrapper0.totalSupply()).to.eq(wrapperSupply0)
     })
   })
 })

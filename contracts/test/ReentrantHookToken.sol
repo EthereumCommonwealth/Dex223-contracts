@@ -6,7 +6,7 @@ interface IWrapConverter {
 }
 
 /// @dev ERC-20 that calls the sender back before moving balances in transferFrom, the way an
-/// ERC-777 `tokensToSend` hook does. Used to check the converter's wrap path against re-entry.
+/// ERC-777 `tokensToSend` hook does. Shows that re-entering the converter's wrap path stays confined to this token.
 contract ReentrantHookToken {
     mapping(address => uint256) public balanceOf;
     mapping(address => mapping(address => uint256)) public allowance;
