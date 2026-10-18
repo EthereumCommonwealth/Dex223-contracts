@@ -42,6 +42,8 @@ describe('Dex223Factory', () => {
     const factoryFactory = await ethers.getContractFactory('Dex223Factory')
     const factory =  (await factoryFactory.deploy(validator.target)) as Dex223Factory;
 
+    await ethers.provider.send('hardhat_setCode', [TEST_ADDRESSES[0], '0x00']);
+    await ethers.provider.send('hardhat_setCode', [TEST_ADDRESSES[1], '0x00']);
     TEST_ADDRESSES[2] = await converter.predictWrapperAddress(TEST_ADDRESSES[0], true);
     TEST_ADDRESSES[3] = await converter.predictWrapperAddress(TEST_ADDRESSES[1], true);
 
