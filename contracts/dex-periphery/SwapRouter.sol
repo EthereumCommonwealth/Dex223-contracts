@@ -297,6 +297,9 @@ IERC223Recipient
         SwapCallbackData memory data,
         SwapData memory swapData
     ) private returns (uint256 amountOut) {
+        uint256 balanceBefore = recipient == address(this)
+            ? IERC20(swapData.tokenOut).balanceOf(address(this))
+            : 0;
 
         (int256 amount0, int256 amount1) =
             IDex223Pool(swapData.pool).swap(
@@ -310,7 +313,14 @@ IERC223Recipient
                 abi.encode(data)
             );
 
-        return uint256(-(swapData.zeroForOne ? amount1 : amount0));
+        amountOut = uint256(-(swapData.zeroForOne ? amount1 : amount0));
+        if (recipient == address(this)) {
+            uint256 balanceAfter = IERC20(swapData.tokenOut).balanceOf(address(this));
+            require(
+                balanceAfter >= balanceBefore && balanceAfter - balanceBefore >= amountOut,
+                'Insufficient intermediate output'
+            );
+        }
     }
 
     function resolveTokenOut(
@@ -385,23 +395,40 @@ IERC223Recipient
     checkDeadline(data.deadline)
     returns (uint256 amountOut)
     {
-        //(address tokenIn, address tokenOut, uint24 fee) = data.path.decodeFirstPool();
-        //bool zeroForOne = tokenIn < tokenOut;
+        require(data.amountIn > 0, 'Invalid amountIn');
+        require(data.fee <= type(uint24).max, 'Invalid fee');
+        if(token_sender != address(0))
+        {
+            require(
+                data.tokenIn == msg.sender ||
+                    ERC7417TokenConverter.getERC223WrapperFor(data.tokenIn) == msg.sender,
+                "Wrong token swap requested"
+            );
+        }
+        require(
+            address(getPool(data.tokenIn, data.tokenOut, uint24(data.fee))) == data.pool && data.pool != address(0),
+            'Invalid pool'
+        );
+
+        bytes memory callbackData = abi.encode(
+            SwapCallbackData({
+                path: abi.encodePacked(data.tokenIn, uint24(data.fee), data.tokenOut),
+                payer: call_sender
+            })
+        );
+        uint160 sqrtPriceLimitX96 = data.sqrtPriceLimitX96 == 0
+            ? (data.zeroForOne ? TickMath.MIN_SQRT_RATIO + 1 : TickMath.MAX_SQRT_RATIO - 1)
+            : data.sqrtPriceLimitX96;
 
         (int256 amount0, int256 amount1) =
-                                IDex223Pool(data.pool).swap(
+            IDex223Pool(data.pool).swap(
                 data.recipient,
                 data.zeroForOne,
-                data.amountIn, // int256 << can be negative
-                data.sqrtPriceLimitX96,
+                data.amountIn,
+                sqrtPriceLimitX96,
                 data.prefer223Out,
-                //bytes("0")
-
-                abi.encode( SwapCallbackData({path: abi.encodePacked(data.tokenIn, data.fee, data.tokenOut), payer: call_sender}) )
+                callbackData
             );
-
-        //return uint256(-(zeroForOne ? amount1 : amount0));
-        //require(amountOut >= amountOutMin, 'Too little received');
 
         return uint256(-(data.zeroForOne ? amount1 : amount0));
     }

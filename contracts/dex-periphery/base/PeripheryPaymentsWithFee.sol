@@ -60,7 +60,7 @@ abstract contract PeripheryPaymentsWithFee is PeripheryPayments, IPeripheryPayme
         require(feeRecipient != address(0), 'Invalid fee recipient');
         require(feeBips > 0 && feeBips <= 100, 'Fee out of range');
 
-        uint256 balanceWETH9 = IWETH9(WETH9).balanceOf(address(this));
+        uint256 balanceWETH9 = IWETH9(WETH9).balanceOf(address(this)).sub(_erc223TotalDeposits[WETH9]);
         require(balanceWETH9 >= amountMinimum, 'Insufficient WETH9');
 
         if (balanceWETH9 > 0) {

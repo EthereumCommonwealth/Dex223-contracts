@@ -2,6 +2,7 @@
 pragma solidity >=0.6.8 <0.8.0;
 
 import '../../interfaces/IUniswapV3Pool.sol';
+import '../../interfaces/IDex223Factory.sol';
 import '../../libraries/FixedPoint128.sol';
 import '../../libraries/FullMath.sol';
 import '../../libraries/TickMath.sol';
@@ -121,9 +122,10 @@ library PositionValue {
         (uint256 poolFeeGrowthInside0LastX128, uint256 poolFeeGrowthInside1LastX128) =
             _getFeeGrowthInside(
                 IUniswapV3Pool(
-                    PoolAddress.computeAddress(
-                        positionManager.factory(),
-                        PoolAddress.PoolKey({token0: feeParams.token0, token1: feeParams.token1, fee: feeParams.fee})
+                    IDex223Factory(positionManager.factory()).getPool(
+                        feeParams.token0,
+                        feeParams.token1,
+                        feeParams.fee
                     )
                 ),
                 feeParams.tickLower,

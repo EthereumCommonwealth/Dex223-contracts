@@ -3,6 +3,7 @@ pragma solidity =0.7.6;
 pragma abicoder v2;
 
 import '../interfaces/IUniswapV3Pool.sol';
+import '../interfaces/IDex223Factory.sol';
 import '../libraries/SafeERC20Namer.sol';
 import '../libraries/TokenRatioSortOrder.sol';
 import '../libraries/ChainId.sol';
@@ -56,10 +57,7 @@ contract NonfungibleTokenPositionDescriptor is INonfungibleTokenPositionDescript
 
         IUniswapV3Pool pool =
             IUniswapV3Pool(
-                PoolAddress.computeAddress(
-                    positionManager.factory(),
-                    PoolAddress.PoolKey({token0: token0, token1: token1, fee: fee})
-                )
+                IDex223Factory(positionManager.factory()).getPool(token0, token1, fee)
             );
 
         bool _flipRatio = flipRatio(token0, token1, ChainId.get());

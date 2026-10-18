@@ -75,7 +75,8 @@ async function etherscanLogs(address: string, topic0: string, fromBlock: number,
     const logs: any[] = res.result
     out.push(...logs.map((l) => ({ topics: l.topics, data: l.data })))
     if (logs.length < 1000) break
-    from = parseInt(logs[logs.length - 1].blockNumber, 16) // re-reading this block is safe: duplicates removed below
+    const lastBlock = parseInt(logs[logs.length - 1].blockNumber, 16)
+    from = lastBlock > from ? lastBlock : from + 1 // re-reading this block is safe: duplicates removed below
     await new Promise((r) => setTimeout(r, 250))
   }
   const seen = new Set<string>()
@@ -172,9 +173,18 @@ export async function main() {
   const duration = BigInt(await revenue.reward_duration())
   const pending: string[] = []
   for (const t of rewardTokens) {
-    const [unsynced, r] = await Promise.all([revenue.unsynced(t), revenue.reward_data(t)])
-    const idle = now >= r.period_finish && r.queued / 10n ** 18n >= duration
-    if (unsynced > 0n || idle) pending.push(`${t} (unsynced ${unsynced}${idle ? ', stream idle' : ''})`)
+    let unsynced = 0n
+    let r: any
+    try {
+      ;[unsynced, r] = await Promise.all([revenue.unsynced(t), revenue.reward_data(t)])
+    } catch {
+      continue
+    }
+    const running = now < r.period_finish
+    const remaining = running ? r.rate * (r.period_finish - now) : 0n
+    const pot = r.queued + remaining
+    const startable = r.queued >= remaining && (pot / duration) * duration >= 10n ** 18n
+    if (unsynced > 0n || startable) pending.push(`${t} (unsynced ${unsynced}${startable ? ', stream startable' : ''})`)
   }
   if (pending.length === 0) {
     console.log(`syncAll: nothing to do (${rewardTokens.length} reward tokens)`)
