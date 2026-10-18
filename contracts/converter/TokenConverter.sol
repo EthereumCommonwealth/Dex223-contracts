@@ -465,9 +465,8 @@ contract TokenStandardConverter is IERC223Recipient
             // Unwrap ERC-223 wrapper.
 
             erc20Supply[erc20Origins[msg.sender]] -= _value;
-            safeTransfer(erc20Origins[msg.sender], _from, _value);
-
             ERC223WrapperToken(msg.sender).burn(_value);
+            safeTransfer(erc20Origins[msg.sender], _from, _value);
 
             return this.tokenReceived.selector;
         }
@@ -537,11 +536,28 @@ contract TokenStandardConverter is IERC223Recipient
     function unwrapERC20toERC223(address _ERC20token, uint256 _amount) public returns (bool)
     {
         require(IERC20(_ERC20token).balanceOf(msg.sender) >= _amount, "Error: Insufficient balance.");
-        require(erc223Origins[_ERC20token] != address(0), "Error: provided token is not a ERC-20 wrapper.");
+        address _origin = erc223Origins[_ERC20token];
+        require(_origin != address(0), "Error: provided token is not a ERC-20 wrapper.");
 
         ERC20WrapperToken(_ERC20token).burn(msg.sender, _amount);
 
-        safeTransfer(erc223Origins[_ERC20token], msg.sender, _amount);
+        if (Address.isContract(msg.sender)) {
+            (bool okAll, bytes memory dataAll) = _origin.staticcall(
+                abi.encodeWithSelector(IERC20.allowance.selector, address(this), address(this))
+            );
+            if (okAll && dataAll.length >= 32) {
+                if (abi.decode(dataAll, (uint256)) < _amount) {
+                    (bool okApp, bytes memory dataApp) = _origin.call(
+                        abi.encodeWithSelector(IERC20.approve.selector, address(this), type(uint256).max)
+                    );
+                    require(okApp && (dataApp.length == 0 || abi.decode(dataApp, (bool))), "TransferHelper: APPROVE_FAILED");
+                }
+                safeTransferFrom(_origin, address(this), msg.sender, _amount);
+                return true;
+            }
+        }
+
+        safeTransfer(_origin, msg.sender, _amount);
 
         return true;
     }
