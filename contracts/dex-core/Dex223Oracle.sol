@@ -226,7 +226,7 @@ contract Oracle {
                 // Spot liquidity can be added and removed within one transaction, which let anyone
                 // steer the valuation to a thin pool whose TWAP they had skewed.
                 uint128 currentLiquidity = harmonicMeanLiquidity(pool);
-                if (currentLiquidity >= liquidity) {
+                if (currentLiquidity > liquidity) {
                     liquidity = currentLiquidity;
                     poolAddress = pool;
                     fee = _feeTier(i);

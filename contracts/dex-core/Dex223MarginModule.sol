@@ -473,6 +473,8 @@ contract MarginModule is IOrderParams
     {
         Order storage order = orders[_orderId];
         require(order_status[_orderId].positions == 0, "Order has active positions");
+        require(_leverage > 1);
+        require(_deadline > block.timestamp);
         _requirePriceOracle(_oracle);
 
         order.whitelist     = _whitelist;
@@ -762,6 +764,7 @@ contract MarginModule is IOrderParams
         // Increment the amount of active positions associated with the parent order,
         // we are tracking the active positions to make sure that the Order owner
         // will not modify an Order that has any active positins.
+        require(order_status[_orderId].positions < type(uint8).max, "Max positions reached");
         order_status[_orderId].positions++;
 
         emit PositionOpened(_positionId, msg.sender, _amount, order.baseAsset, order.collateralAssets[_collateralIdx], _collateralAmount);
@@ -828,75 +831,41 @@ contract MarginModule is IOrderParams
         // Perform the swap operation.
         // We only allow direct swaps for security reasons currently.
 
-        require(factory.getPool(_asset1, _asset2, _feeTier) != address(0));
+        uint256 balInBefore = IERC20Minimal(_asset1).balanceOf(address(this));
+        uint256 amountOut;
+        {
+            address pool = factory.getPool(_asset1, _asset2, _feeTier);
+            require(pool != address(0));
+            require(!_isErc223SideOf(pool, _asset1));
+            (, address tokenOut20) = _poolErc20Pair(pool, _asset1);
 
-        // load & use IRouter interface for ERC-20.
-        IERC20Minimal(_asset1).approve(address(router), _amount);
-        ISwapRouter.ExactInputSingleParams memory swapParams = ISwapRouter.ExactInputSingleParams({
-            tokenIn: _asset1,
-            tokenOut: _asset2,
-            fee: _feeTier,
-            recipient: address(this),
-            deadline: block.timestamp,
-            amountIn: _amount,
-            amountOutMinimum: _minAmountOut,
-            sqrtPriceLimitX96: _priceLimitX96,
-            prefer223Out: false
-        });
-        uint256 amountOut = ISwapRouter(router).exactInputSingle(swapParams);
+            IERC20Minimal(_asset1).approve(address(router), _amount);
+            amountOut = ISwapRouter(router).exactInputSingle(ISwapRouter.ExactInputSingleParams({
+                tokenIn: _asset1,
+                tokenOut: tokenOut20,
+                fee: _feeTier,
+                recipient: address(this),
+                deadline: block.timestamp,
+                amountIn: _amount,
+                amountOutMinimum: _minAmountOut,
+                sqrtPriceLimitX96: _priceLimitX96,
+                prefer223Out: _isErc223SideOf(pool, _asset2)
+            }));
+        }
         require(amountOut > 0);
+        uint256 amountInUsed = balInBefore - IERC20Minimal(_asset1).balanceOf(address(this));
 
         // add new (received) asset to Position
         addAsset(_positionId, _asset2, amountOut);
-        reduceAsset(_positionId, _asset1, _amount);
+        reduceAsset(_positionId, _asset1, amountInUsed);
 
-        emit MarginSwap(_positionId, _asset1, _asset2, _amount, amountOut);
+        emit MarginSwap(_positionId, _asset1, _asset2, amountInUsed, amountOut);
     }
 
-    function resolveTokenOut(
-        bool prefer223Out,
-        address pool,
-        address tokenIn,
-        address tokenOut
-    ) private view returns (address) {
-        if (prefer223Out) {
-            (address _token0_erc20, address _token0_erc223) = IDex223Pool(pool).token0();
-            (, address _token1_erc223) = IDex223Pool(pool).token1();
-
-            return (_token0_erc20 == tokenIn) ? _token1_erc223 : _token0_erc223;
-        } else {
-            return tokenOut;
-        }
-    }
-    
-    function executeSwapWithDeposit(
-        uint256 amountIn,
-        address recipient,
-        SwapCallbackData memory data,
-        SwapData memory swapData
-    ) private returns (uint256 amountOut) {
-        bytes memory _data = abi.encodeWithSignature(
-            "swap(address,bool,int256,uint160,bool,bytes)",
-            recipient,
-            swapData.zeroForOne,
-            int256(amountIn),
-            swapData.sqrtPriceLimitX96 == 0
-                ? (swapData.zeroForOne ? TickMath.MIN_SQRT_RATIO + 1 : TickMath.MAX_SQRT_RATIO - 1)
-                : swapData.sqrtPriceLimitX96,
-            swapData.prefer223Out,
-            data
-        );
-
-        address _tokenOut = resolveTokenOut(swapData.prefer223Out, swapData.pool, swapData.tokenIn, swapData.tokenOut);
-
-        (bool success, bytes memory resdata) = _tokenOut.call(abi.encodeWithSelector(IERC20Minimal.balanceOf.selector, recipient));
-
-        bool tokenNotExist = (success && resdata.length == 0);
-
-        uint256 balance1before = tokenNotExist ? 0 : abi.decode(resdata, (uint));
-        require(IERC223(swapData.tokenIn223).transfer(swapData.pool, amountIn, _data));
-
-        return uint256(IERC20Minimal(_tokenOut).balanceOf(recipient) - balance1before);
+    function _poolErc20Pair(address pool, address asset1) private view returns (address a1_20, address a2_20) {
+        (address t0_20, address t0_223) = IDex223Pool(pool).token0();
+        (address t1_20, ) = IDex223Pool(pool).token1();
+        return (asset1 == t0_20 || asset1 == t0_223) ? (t0_20, t1_20) : (t1_20, t0_20);
     }
 
     // @audit-fix V1, V5: nonReentrant on public + refactored to internal _marginSwap223Internal
@@ -936,50 +905,38 @@ contract MarginModule is IOrderParams
 
         address pool = factory.getPool(_asset1, _asset2, _feeTier);
         require(pool != address(0));
+        require(_isErc223SideOf(pool, _asset1));
 
-        uint256 amountOut = _execute223Swap(pool, _asset1, _feeTier, _amount);
+        uint256 balInBefore = IERC20Minimal(_asset1).balanceOf(address(this));
+        uint256 amountOut = _execute223Swap(pool, _asset1, _asset2, _feeTier, _amount);
         require(amountOut > 0);
         require(amountOut >= _minAmountOut, "Too little received");
+        uint256 amountInUsed = balInBefore - IERC20Minimal(_asset1).balanceOf(address(this));
 
         // add new (received) asset to Position
         addAsset(_positionId, _asset2, amountOut);
-        reduceAsset(_positionId, _asset1, _amount);
-        emit MarginSwap(_positionId, _asset1, _asset2, _amount, amountOut);
+        reduceAsset(_positionId, _asset1, amountInUsed);
+        emit MarginSwap(_positionId, _asset1, _asset2, amountInUsed, amountOut);
     }
 
     /// @dev ERC-223 leg of a margin swap, split out of _marginSwap223Internal to keep that
     /// function within the EVM stack limit. Resolves the pool's ERC-20 addresses for both sides
     /// and swaps `_amount` of `_asset1` (ERC-223) through `pool`.
-    function _execute223Swap(address pool, address _asset1, uint24 _feeTier, uint256 _amount) internal returns (uint256) {
-        address _asset1_20;
-        address _asset2_20;
-
-        // we need to use ERC20 version of Asset1 and Asset2 
-        (address token0_20, address token0_223) = IDex223Pool(pool).token0();
-        (address token1_20, ) = IDex223Pool(pool).token1();
-        if (token0_223 == _asset1) {
-            _asset1_20 = token0_20;
-            _asset2_20 = token1_20;
-        } else {
-            _asset2_20 = token0_20;
-            _asset1_20 = token1_20;
-        }
-
-        return executeSwapWithDeposit(
-            _amount,
+    function _execute223Swap(address pool, address _asset1, address _asset2, uint24 _feeTier, uint256 _amount) internal returns (uint256) {
+        (address a1_20, address a2_20) = _poolErc20Pair(pool, _asset1);
+        bool zeroForOne = (a1_20 < a2_20);
+        bytes memory _data = abi.encodeWithSignature(
+            "swap(address,bool,int256,uint160,bool,bytes)",
             address(this),
-            SwapCallbackData({path: abi.encodePacked(_asset1_20, _feeTier, _asset2_20), payer: address(this)}),
-            SwapData({
-                pool: pool,
-                tokenIn: _asset1_20,
-                tokenIn223: _asset1,
-                tokenOut: _asset2_20,
-                fee: _feeTier,
-                zeroForOne: (_asset1_20 < _asset2_20),
-                prefer223Out: true,
-                sqrtPriceLimitX96: 0
-            })
+            zeroForOne,
+            int256(_amount),
+            zeroForOne ? TickMath.MIN_SQRT_RATIO + 1 : TickMath.MAX_SQRT_RATIO - 1,
+            _isErc223SideOf(pool, _asset2),
+            SwapCallbackData({path: abi.encodePacked(a1_20, _feeTier, a2_20), payer: address(this)})
         );
+        uint256 balanceBefore = IERC20Minimal(_asset2).balanceOf(address(this));
+        require(IERC223(_asset1).transfer(pool, _amount, _data));
+        return IERC20Minimal(_asset2).balanceOf(address(this)) - balanceBefore;
     }
     
 
@@ -1133,18 +1090,15 @@ contract MarginModule is IOrderParams
         //   when iterating forward. By snapshotting we ensure every asset is withdrawn.
         if(autoWithdraw)
         {
-            address[] memory assetsSnapshot = new address[](position.assets.length);
-            for (uint256 i = 0; i < position.assets.length; i++) {
-                assetsSnapshot[i] = position.assets[i];
-            }
-            for (uint256 i = 0; i < assetsSnapshot.length; i++)
+            for (uint256 i = position.assets.length; i > 0; )
             {
-                uint256 id = getAssetId(positionId, assetsSnapshot[i]);
-                if (id < position.assets.length && position.balances[id] > 0) {
-                    uint256 amount = position.balances[id];
-                    reduceAsset(positionId, assetsSnapshot[i], amount);
-                    emit PositionWithdrawal(positionId, assetsSnapshot[i], amount);
-                    _transferOut(assetsSnapshot[i], amount, position.owner);
+                i--;
+                uint256 amount = position.balances[i];
+                if (amount > 0) {
+                    address asset = position.assets[i];
+                    reduceAsset(positionId, asset, amount);
+                    emit PositionWithdrawal(positionId, asset, amount);
+                    _transferOut(asset, amount, position.owner);
                 }
             }
         }
@@ -1205,7 +1159,9 @@ contract MarginModule is IOrderParams
         // Once the position is liquidated
         // we can decrease the number of active positions for the parent order.
         // If the number of active positions is 0 then the order owner can modify the order.
-        order_status[position.orderId].positions--;
+        if (order_status[position.orderId].positions > 0) {
+            order_status[position.orderId].positions--;
+        }
 
         // Payment of liquidation reward
         _payReward(position.orderId, _receiver);
@@ -1327,9 +1283,9 @@ contract MarginModule is IOrderParams
     }
 
     function tokenReceived(address user, uint256 value, bytes memory /*data*/) public returns (bytes4) {
-        address asset = msg.sender;
-        erc223deposit[user][asset] += value;
-        
+        if (!_entered) {
+            erc223deposit[user][msg.sender] += value;
+        }
         return 0x8943ec02;
     }
 
