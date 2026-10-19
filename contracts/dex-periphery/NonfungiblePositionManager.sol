@@ -114,6 +114,7 @@ IERC223Recipient
 //        pool_lib = _library;
     }
 
+    address private _collectDepositor;
     ERC223TransferInfo private tkn;
     function tokenReceived(address _from, uint _value, bytes memory _data) public override returns (bytes4)
     {
@@ -130,7 +131,8 @@ IERC223Recipient
         tkn.value          = _value;
         tkn.data           = _data;
 
-        depositERC223(_from, msg.sender, _value);
+        address depositor = _collectDepositor;
+        depositERC223(depositor != address(0) ? depositor : _from, msg.sender, _value);
 
         return 0x8943ec02;
     }
@@ -427,6 +429,9 @@ IERC223Recipient
         // 2 = token0 ERC-223 & token1 ERC-20
         // 3 = both ERC-223.
 
+        bool collect223ToSelf = params.recipient == address(0) && tokensOut != 0;
+        if (collect223ToSelf) _collectDepositor = msg.sender;
+
         // the actual amounts collected are returned
         (amount0, amount1) = IDex223PoolActions(params.pool).collect(
             params.recipient == address(0) ? address(this) : params.recipient,
@@ -437,6 +442,8 @@ IERC223Recipient
             tokensOut == 3 || tokensOut == 2, // True = request ERC-223 token0
             tokensOut == 3 || tokensOut == 1  // True = request ERC-223 token1
         );
+
+        if (collect223ToSelf) _collectDepositor = address(0);
 
         // sometimes there will be a few less wei than expected due to rounding down in core, but we just subtract the full amount expected
         // instead of the actual amount so we can burn the token
