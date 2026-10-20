@@ -5,7 +5,7 @@ import { completeFixture } from './shared/completeFixture'
 import { expandTo18Decimals, FeeAmount } from './shared/utilities'
 
 describe('periphery, autolisting and pool partial-deposit regressions (#24-#27)', () => {
-  it('#24: NonfungiblePositionManager.collect with recipient = address(0) and ERC-223 output credits caller, not pool', async () => {
+  it('#24: NonfungiblePositionManager.collect with recipient = address(0) credits caller for both ERC-223 and non-WETH9 ERC-20 outputs', async () => {
     const { nft, factory, tokens } = await loadFixture(completeFixture)
     const [wallet] = await ethers.getSigners()
     const t0 = tokens[0]
@@ -67,6 +67,33 @@ describe('periphery, autolisting and pool partial-deposit regressions (#24-#27)'
     const before0 = await t0_223.balanceOf(wallet.address)
     await nft.withdraw(t0_223.target.toString(), wallet.address, 0)
     expect(await t0_223.balanceOf(wallet.address)).to.eq(before0 + dep0)
+
+    // Also test non-WETH9 ERC-20 output (tokensOutCode: 0) with recipient = address(0):
+    await nft.decreaseLiquidity({
+      tokenId: 1,
+      liquidity: 500,
+      amount0Min: 0,
+      amount1Min: 0,
+      deadline: 10000000000n,
+    })
+
+    await nft.collect({
+      pool,
+      tokenId: 1,
+      recipient: ethers.ZeroAddress,
+      amount0Max: 2n ** 128n - 1n,
+      amount1Max: 2n ** 128n - 1n,
+      tokensOutCode: 0,
+    })
+
+    const dep20_0 = await nft.depositedTokens(wallet.address, t0.target.toString())
+    const dep20_1 = await nft.depositedTokens(wallet.address, t1.target.toString())
+    expect(dep20_0).to.be.gt(0n)
+    expect(dep20_1).to.be.gt(0n)
+
+    const before20_0 = await t0.balanceOf(wallet.address)
+    await nft.withdraw(t0.target.toString(), wallet.address, 0)
+    expect(await t0.balanceOf(wallet.address)).to.eq(before20_0 + dep20_0)
   })
 
   it('#25: Dex223CoreAutoListing.listSingle does not double-charge or clobber listed tokens', async () => {
@@ -186,7 +213,11 @@ describe('periphery, autolisting and pool partial-deposit regressions (#24-#27)'
     expect(remAfterExactOut).to.be.lt(expandTo18Decimals(1))
     await router.withdraw(t0_223.target.toString(), wallet.address, 0)
 
-    // 3. Partial-fill 3-arg ERC-223 swap does not revert 'LOK' and re-credits the unused refund to the user.
+    // 3. Partial-fill 3-arg ERC-223 swap with recipient = ZeroAddress and prefer223Out = true:
+    //    - does not revert 'LOK'
+    //    - re-credits unused t0_223 input refund to wallet.address
+    //    - credits t1_223 output to wallet.address (not left uncredited for sweepTokenWithFee)
+    await router.withdraw(t1_223.target.toString(), wallet.address, 0)
     const poolAddr = await factory.getPool(t0.target.toString(), t1.target.toString(), FeeAmount.MEDIUM)
     const pool = await ethers.getContractAt('MockTimeDex223Pool', poolAddr)
     const curSqrtPrice = (await pool.slot0()).sqrtPriceX96
@@ -195,7 +226,7 @@ describe('periphery, autolisting and pool partial-deposit regressions (#24-#27)'
       tokenIn: t0.target.toString(),
       tokenOut: t1.target.toString(),
       fee: FeeAmount.MEDIUM,
-      recipient: wallet.address,
+      recipient: ethers.ZeroAddress,
       deadline: 10000000000n,
       amountIn: expandTo18Decimals(10),
       amountOutMinimum: 0,
@@ -205,12 +236,18 @@ describe('periphery, autolisting and pool partial-deposit regressions (#24-#27)'
     await (t0_223 as any)['transfer(address,uint256,bytes)'](router.target.toString(), expandTo18Decimals(10), swapCalldata)
     const refunded = await router.depositedTokens(wallet.address, t0_223.target.toString())
     expect(refunded).to.be.gt(expandTo18Decimals(6))
+    const creditedOut = await router.depositedTokens(wallet.address, t1_223.target.toString())
+    expect(creditedOut).to.be.gt(0n)
 
-    // Attacker cannot sweep the user's partial-fill refund via sweepTokenWithFee.
-    const attackerBefore = await t0_223.balanceOf(attacker.address)
+    // Attacker cannot sweep either the user's partial-fill input refund or the ERC-223 output via sweepTokenWithFee.
+    const attackerBefore0 = await t0_223.balanceOf(attacker.address)
+    const attackerBefore1 = await t1_223.balanceOf(attacker.address)
     await router.connect(attacker).sweepTokenWithFee(t0_223.target.toString(), 0, attacker.address, 1, attacker.address)
-    expect(await t0_223.balanceOf(attacker.address)).to.eq(attackerBefore)
+    await router.connect(attacker).sweepTokenWithFee(t1_223.target.toString(), 0, attacker.address, 1, attacker.address)
+    expect(await t0_223.balanceOf(attacker.address)).to.eq(attackerBefore0)
+    expect(await t1_223.balanceOf(attacker.address)).to.eq(attackerBefore1)
     await router.withdraw(t0_223.target.toString(), wallet.address, 0)
+    await router.withdraw(t1_223.target.toString(), wallet.address, 0)
 
     // 4. #27: Pool partial ERC-223 deposit + callback top-up consumes deposit and pulls only the shortfall.
     const partial223 = expandTo18Decimals(4) / 10n

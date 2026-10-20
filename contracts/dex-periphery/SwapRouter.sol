@@ -133,7 +133,7 @@ IERC223Recipient
     function tokenReceived(address _from, uint _value, bytes memory _data) public override returns (bytes4)
     {
         if (!unlocked && activeSwapPool != address(0) && _from == activeSwapPool) {
-            if (msg.sender == token_sender && call_sender != address(0)) {
+            if (call_sender != address(0)) {
                 depositERC223(call_sender, msg.sender, _value);
             }
             return 0x8943ec02;
