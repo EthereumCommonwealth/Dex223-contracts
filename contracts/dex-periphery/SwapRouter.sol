@@ -134,7 +134,7 @@ IERC223Recipient
         depositERC223(_from, msg.sender, _value);
         call_sender = _from;
         token_sender = msg.sender;
-        if (_data.length != 0)
+        if (_hasCallPayload(_data))
         {
             // Standard ERC-223 swapping via ERC-20 pattern.
             // Authorise exactly one guarded call - the one encoded in `_data`.
@@ -154,6 +154,21 @@ IERC223Recipient
         delete(call_sender);
         delete(token_sender);
         return 0x8943ec02;
+    }
+
+    /// @dev True when `_data` encodes a call to dispatch. Treats empty bytes and the 4-byte `0x00000000`
+    ///      placeholder passed by deployed ERC-223 `transfer(address,uint256)` wrappers as empty metadata.
+    function _hasCallPayload(bytes memory _data) private pure returns (bool)
+    {
+        if (_data.length == 0) return false;
+        if (_data.length == 4) {
+            uint256 selector;
+            assembly {
+                selector := shr(224, mload(add(_data, 32)))
+            }
+            return selector != 0;
+        }
+        return true;
     }
 
     /// @dev Returns the pool for the given token pair and fee. The pool contract may or may not exist.
