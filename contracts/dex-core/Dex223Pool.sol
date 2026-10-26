@@ -246,7 +246,7 @@ contract Dex223Pool is IUniswapV3Pool, NoDelegateCall, PeripheryValidation {
 
         swap_sender = _from;
         erc223deposit[_from][msg.sender] += _value;   // add token to user balance
-        if (_data.length != 0) {
+        if (_hasCallPayload(_data)) {
             // Authorise exactly one guarded call - the one encoded in `_data`. The permit is consumed by the
             // first guarded function entered, so the dispatched call cannot re-enter the pool afterwards.
             erc223CallPermit = true;
@@ -274,6 +274,21 @@ contract Dex223Pool is IUniswapV3Pool, NoDelegateCall, PeripheryValidation {
 
         slot0.unlocked = true;
         return 0x8943ec02;
+    }
+
+    /// @dev True when `_data` encodes a call to dispatch. Treats empty bytes and the 4-byte `0x00000000`
+    ///      placeholder passed by deployed ERC-223 `transfer(address,uint256)` wrappers as empty metadata.
+    function _hasCallPayload(bytes memory _data) private pure returns (bool)
+    {
+        if (_data.length == 0) return false;
+        if (_data.length == 4) {
+            uint256 selector;
+            assembly {
+                selector := shr(224, mload(add(_data, 32)))
+            }
+            return selector != 0;
+        }
+        return true;
     }
 
     /// @dev Common checks for valid tick inputs.
