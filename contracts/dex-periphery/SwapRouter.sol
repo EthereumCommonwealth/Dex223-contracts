@@ -134,7 +134,7 @@ IERC223Recipient
         depositERC223(_from, msg.sender, _value);
         call_sender = _from;
         token_sender = msg.sender;
-        if (_data.length != 0)
+        if (_data.length >= 4 && bytes4(_data) != bytes4(0))
         {
             // Standard ERC-223 swapping via ERC-20 pattern.
             // Authorise exactly one guarded call - the one encoded in `_data`.
