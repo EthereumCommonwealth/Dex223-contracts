@@ -64,7 +64,6 @@
   "done:coreAutolisting.setPaymentPrice(USDT, 40 USDT)": "0x4b467e56d98e76b3a81e318bbc76c9213cb13e39fb947914ae49afe800cc8cfb",
   "block:coreAutolisting.setPaymentPrice(USDT, 40 USDT)": "26140878",
   "block:marginOracle": "26161427",
-  "block:marginModule": "26161429",
   "marginFactory": "0x899097B427cd04e1BD07FD3445cc90493300C3a5",
   "marginRouter": "0x14248d524850B0B47B30F4332279330Cad2846a2",
   "marginTwapWindow": "1800",
@@ -79,8 +78,10 @@
   "fqn:marginOracle": "contracts/dex-core/Dex223Oracle.sol:Oracle",
   "args:marginOracle": "[\"0x899097B427cd04e1BD07FD3445cc90493300C3a5\",1800]",
   "done:marginOracle": "0x826464ec5445a3015206dde50993421525e9e561a67701a3df2ad1833c610116",
-  "marginModule": "0x052FAF5A6aF30259AdE672fECd1cF0225c8dAe17",
+  "superseded:marginModule:2026-10-28": "0x052FAF5A6aF30259AdE672fECd1cF0225c8dAe17",
+  "marginModule": "0x93559d9E48144045a774FCF69B46F9ab10EEC831",
   "fqn:marginModule": "contracts/dex-core/Dex223MarginModule.sol:MarginModule",
   "args:marginModule": "[\"0x899097B427cd04e1BD07FD3445cc90493300C3a5\",\"0x14248d524850B0B47B30F4332279330Cad2846a2\",\"0xd6bBDD3500a9B07053d51c32B88E1783E4d58e72\"]",
-  "done:marginModule": "0xc2d561e63c9477d705b72dc06b1a4845da681bea9ae9a1bdb01fe99a51932a3a"
+  "done:marginModule": "0x6c1d7e686f159d681f45b739f4aa91f046091781b71302c37af5f9f464f403fa",
+  "block:marginModule": "26294579"
 }
