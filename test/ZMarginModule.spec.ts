@@ -618,11 +618,13 @@ describe('MarginModule', () => {
       await c.mm.orderDepositToken(0, expandTo18Decimals(100))
       await c.mm.takeLoan(0, expandTo18Decimals(1), 0, expandTo18Decimals(1))
 
-      // Holds ~2 of value against a debt of 1 growing 0.5 per 30 days: insolvent in ~60 days.
+      // Holds ~2 of value against a debt of 1 growing 0.5 per 30 days. The liquidation threshold is
+      // the debt plus the 10% maintenance margin, so it starts at 1.1 and grows 0.55 per 30 days:
+      // it reaches 2 after 0.9 / 0.55 periods, about 49 days.
       const [isLiquidatable, , , , insolvencyAt] = await c.mm.subjectToLiquidationExtended(0)
       expect(isLiquidatable).to.eq(false)
       const now = BigInt(await time.latest())
-      expect(insolvencyAt).to.be.closeTo(now + BigInt(60 * DAY), BigInt(DAY))
+      expect(insolvencyAt).to.be.closeTo(now + BigInt(49 * DAY), BigInt(DAY))
 
       // Once underwater there is nothing left to project.
       await time.increase(90 * DAY)
@@ -700,12 +702,14 @@ describe('MarginModule', () => {
       await expect(mm.positionClose(0, false)).to.be.reverted
     })
 
-    it('cannot close a frozen position', async () => {
+    it('cannot close a frozen position while it is still liquidatable', async () => {
       const { mm, wallet } = await openPosition(0n, 10000n)
       await time.increase(90 * DAY)
       await mm.liquidate(0, wallet.address)   // freezes
       expect((await mm.positions(0)).frozenTime).to.be.greaterThan(0n)
-      await expect(mm.positionClose(0, false)).to.be.reverted
+      // The freeze itself no longer blocks closing (see "liquidation safety" below); the position
+      // is still underwater, and that does.
+      await expect(mm.positionClose(0, false)).to.be.revertedWith('Subject to liquidation')
     })
 
     it('autoWithdraw returns the remaining assets to the owner', async () => {
@@ -1412,6 +1416,177 @@ describe('MarginModule', () => {
       const { factory, router } = await loadFixture(completeFixture)
       const MM = await ethers.getContractFactory('MarginModule')
       await expect(MM.deploy(factory.target, router.target, ethers.ZeroAddress)).to.be.revertedWith('Oracle has no code')
+    })
+  })
+
+  describe('liquidation safety: maintenance margin, freeze recovery, stepwise sale, shortfall', () => {
+    const ONE = expandTo18Decimals(1)
+
+    // A position on the seeded 1:1 base/collateral pool: `loan` base against `collateral` collat,
+    // on an order charging `interestRate` per 30 days (10000 = 100%, so the debt grows by one loan
+    // every 30 days).
+    async function pooledPosition(interestRate: bigint, loan = ONE, collateral = ONE, leverage = 5n) {
+      const c = await loadFixture(fx)
+      await c.seedPool()
+      await c.mm.createOrder({ ...c.orderParams, interestRate, leverage, duration: BigInt(365 * DAY) })
+      await c.mm.setOrderStatus(0, true)
+      await c.base.approve(c.mm.target, ethers.MaxUint256)
+      await c.collat.approve(c.mm.target, ethers.MaxUint256)
+      await c.mm.orderDepositToken(0, expandTo18Decimals(100))
+      await c.mm.takeLoan(0, loan, 0, collateral)
+      return c
+    }
+
+    it('liquidates while the holdings still cover the debt, once they are inside the 10% buffer', async () => {
+      const c = await pooledPosition(10000n)
+      expect(await c.mm.MAINTENANCE_MARGIN_BPS()).to.eq(1000n)
+      // Holds 1 base + 1 collat (~1 base at the TWAP) against a debt of 1 growing 1 per 30 days.
+      // Day 15: debt 1.5, threshold 1.65, value ~2: solvent.
+      await time.increase(15 * DAY)
+      expect(await c.mm.subjectToLiquidation(0)).to.eq(false)
+      // Day 26: debt 1.87, threshold 2.05, value ~2: liquidatable, although the holdings still
+      // cover the debt. Before the buffer this position was left alone until the holdings no longer
+      // covered the debt at all, and every cost of the forced sale came out of the lender.
+      await time.increase(11 * DAY)
+      const [debt, value] = await c.mm.getPositionStatus(0)
+      expect(value, 'holdings still cover the debt').to.be.gt(debt)
+      expect(await c.mm.subjectToLiquidation(0)).to.eq(true)
+    })
+
+    it('takeLoan rejects a loan that would open inside the buffer', async () => {
+      const c = await loadFixture(fx)
+      await c.seedPool()
+      await c.mm.createOrder({ ...c.orderParams, leverage: 200n })
+      await c.mm.setOrderStatus(0, true)
+      await c.base.approve(c.mm.target, ethers.MaxUint256)
+      await c.collat.approve(c.mm.target, ethers.MaxUint256)
+      await c.mm.orderDepositToken(0, expandTo18Decimals(100))
+      // 1 base against 0.05 collat passes the 200x cap but is worth ~1.05 against a threshold of 1.1.
+      await expect(c.mm.takeLoan(0, ONE, 0, ONE / 20n)).to.be.revertedWith('Position opens liquidatable')
+      // 0.2 collat: worth ~1.2, outside the buffer.
+      await c.mm.takeLoan(0, ONE, 0, ONE / 5n)
+      expect(await c.mm.subjectToLiquidation(0)).to.eq(false)
+    })
+
+    it('InitialLeverage reports the opening ratio with two decimals', async () => {
+      const c = await loadFixture(fx)
+      await c.seedPool()
+      await c.mm.createOrder(c.orderParams)
+      await c.mm.setOrderStatus(0, true)
+      await c.base.approve(c.mm.target, ethers.MaxUint256)
+      await c.collat.approve(c.mm.target, ethers.MaxUint256)
+      await c.mm.orderDepositToken(0, expandTo18Decimals(100))
+      // (2 collat ≈ 2 base + 3 base loan) / 2 = 2.5x. The old integer division reported 2.
+      await expect(c.mm.takeLoan(0, ONE * 3n, 0, ONE * 2n))
+        .to.emit(c.mm, 'InitialLeverage')
+        .withArgs(0, (v: bigint) => v >= 249n && v <= 251n)
+    })
+
+    it('a frozen position that recovers can be unfrozen, and frozen afresh if it dips again', async () => {
+      const c = await pooledPosition(10000n)
+      await time.increase(30 * DAY)                                 // debt 2, threshold 2.2, value ~2
+      await c.mm.connect(c.other).liquidate(0, c.other.address)   // freeze
+      await expect(c.mm.unfreeze(0)).to.be.revertedWith('Liquidatable')
+
+      // The owner tops the position up with 1 base: value ~3 against a threshold of 2.2.
+      await c.mm.positionDeposit(0, c.base.target, 0, ONE)
+      expect(await c.mm.subjectToLiquidation(0)).to.eq(false)
+      await expect(c.mm.connect(c.other).liquidate(0, c.other.address)).to.be.revertedWith('Not liquidatable')
+      await expect(c.mm.connect(c.other).liquidateStep(0, c.collat.target, ONE / 10n)).to.be.revertedWith('Not liquidatable')
+
+      // Anyone can lift the freeze now.
+      await expect(c.mm.connect(c.other).unfreeze(0)).to.emit(c.mm, 'PositionUnfrozen').withArgs(0, c.other.address)
+      const pos = await c.mm.positions(0)
+      expect(pos.open).to.eq(true)
+      expect(pos.frozenTime).to.eq(0n)
+      expect(pos.liquidator).to.eq(ethers.ZeroAddress)
+      await expect(c.mm.unfreeze(0)).to.be.revertedWith('Not frozen')
+
+      // Interest keeps growing by 1 base per 30 days: after another 30 days the debt is 3 and the
+      // threshold 3.3 against ~3 of holdings, so liquidate() places a fresh freeze.
+      await time.increase(30 * DAY)
+      await expect(c.mm.connect(c.other).liquidate(0, c.other.address)).to.emit(c.mm, 'PositionFrozen')
+      expect((await c.mm.positions(0)).frozenTime).to.be.gt(0n)
+    })
+
+    it('a frozen position that recovered can be closed by its owner without unfreezing', async () => {
+      const c = await pooledPosition(10000n)
+      await time.increase(30 * DAY)
+      await c.mm.connect(c.other).liquidate(0, c.other.address)   // freeze
+      await expect(c.mm.positionClose(0, true)).to.be.revertedWith('Subject to liquidation')
+
+      await c.mm.positionDeposit(0, c.base.target, 0, ONE * 2n)
+      const before = (await c.mm.orders(0)).balance
+      await c.mm.positionClose(0, true)
+      expect((await c.mm.positions(0)).open).to.eq(false)
+      // The lender got principal plus 30 days of interest back in full: this used to be locked
+      // forever behind "Position frozen".
+      expect((await c.mm.orders(0)).balance).to.be.closeTo(before + ONE * 2n, ONE / 100n)
+      expect((await c.mm.order_status(0)).positions).to.eq(0n)
+    })
+
+    it('records the part of the debt a full liquidation could not recover', async () => {
+      const c = await pooledPosition(10000n)
+      await time.increase(60 * DAY)                                 // debt 3 against 1 base + 1 collat
+      await c.mm.connect(c.other).liquidate(0, c.other.address)   // freeze
+      await time.increase(60)
+      const before = (await c.mm.orders(0)).balance
+      await expect(c.mm.connect(c.other).liquidate(0, c.other.address))
+        .to.emit(c.mm, 'LiquidationShortfall')
+        .withArgs(0, 0, (v: bigint) => v > ONE * 95n / 100n && v < ONE * 105n / 100n)
+      expect((await c.mm.positions(0)).open).to.eq(false)
+      // The collateral fetched ~1 base; with the 1 base held that repays ~2 of the 3 owed.
+      const recovered = (await c.mm.orders(0)).balance - before
+      expect(recovered).to.be.closeTo(ONE * 2n, ONE / 50n)
+      expect(await c.mm.orderShortfall(0)).to.be.closeTo(ONE, ONE / 50n)
+      expect(recovered + await c.mm.orderShortfall(0)).to.be.closeTo(ONE * 3n, ONE / 1000n)
+    })
+
+    it('a position too large for its pool is sold in steps and then liquidated', async () => {
+      // 100 base against 200 collat on a pool holding ~1000 of each.
+      const c = await pooledPosition(10000n, expandTo18Decimals(100), expandTo18Decimals(200))
+      await expect(c.mm.liquidateStep(0, c.collat.target, ONE)).to.be.revertedWith('Not frozen')
+      await time.increase(60 * DAY)                                 // debt 300, threshold 330, value ~300
+      expect(await c.mm.subjectToLiquidation(0)).to.eq(true)
+      await c.mm.connect(c.other).liquidate(0, c.other.address)   // freeze
+      await time.increase(60)
+
+      // Selling all 200 collat at once moves the pool by ~17%, far below the 95% floor, so the
+      // all-at-once liquidation can never go through.
+      await expect(c.mm.connect(c.other).liquidate(0, c.other.address)).to.be.revertedWith('Too little received')
+
+      // Only the liquidator who placed the freeze may step, and only on an asset the position holds.
+      await expect(c.mm.liquidateStep(0, c.collat.target, ONE)).to.be.revertedWith('Not frozen')
+      await expect(c.mm.connect(c.other).liquidateStep(0, c.base.target, ONE)).to.be.revertedWith('Asset not found in position')
+      await expect(c.mm.connect(c.other).liquidateStep(0, c.third.target, ONE)).to.be.revertedWith('Asset not found in position')
+      await expect(c.mm.connect(c.other).liquidateStep(0, c.collat.target, expandTo18Decimals(201))).to.be.reverted
+
+      // 20 collat per step moves the pool by ~2%; a TWAP window between steps lets the floor follow.
+      // Two windows exhaust the one-hour freeze: a step on a lapsed freeze is refused, liquidate()
+      // renews the freeze, and after a block the steps continue.
+      for (let i = 0; i < 10; i++) {
+        if (i > 0 && i % 2 === 0) {
+          await expect(c.mm.connect(c.other).liquidateStep(0, c.collat.target, expandTo18Decimals(20))).to.be.revertedWith('Not frozen')
+          await expect(c.mm.connect(c.other).liquidate(0, c.other.address)).to.emit(c.mm, 'PositionFrozen')
+          await time.increase(60)
+        }
+        await c.mm.connect(c.other).liquidateStep(0, c.collat.target, expandTo18Decimals(20))
+        await time.increase(c.TWAP_WINDOW)
+      }
+      expect((await c.mm.getPositionAssets(0)).length, 'collateral fully sold and removed').to.eq(1)
+      expect((await c.mm.positions(0)).open).to.eq(true)
+
+      // The last freeze lapsed too: liquidate() renews it, then completes with nothing left to sell.
+      await expect(c.mm.connect(c.other).liquidate(0, c.other.address)).to.emit(c.mm, 'PositionFrozen')
+      await time.increase(60)
+      const before = (await c.mm.orders(0)).balance
+      await expect(c.mm.connect(c.other).liquidate(0, c.other.address)).to.emit(c.mm, 'LiquidationShortfall')
+      expect((await c.mm.positions(0)).open).to.eq(false)
+      expect((await c.mm.order_status(0)).positions).to.eq(0n)
+      const [debt] = await c.mm.getPositionStatus(0)
+      const recovered = (await c.mm.orders(0)).balance - before
+      expect(recovered, 'the 100 base held plus the proceeds of the 200 collat').to.be.gt(expandTo18Decimals(250))
+      expect(recovered + await c.mm.orderShortfall(0)).to.be.closeTo(debt, ONE / 100n)
     })
   })
 })
