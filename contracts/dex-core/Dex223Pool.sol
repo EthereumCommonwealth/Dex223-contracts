@@ -246,7 +246,7 @@ contract Dex223Pool is IUniswapV3Pool, NoDelegateCall, PeripheryValidation {
 
         swap_sender = _from;
         erc223deposit[_from][msg.sender] += _value;   // add token to user balance
-        if (_data.length != 0) {
+        if (_data.length >= 4 && bytes4(_data) != bytes4(0)) {
             // Authorise exactly one guarded call - the one encoded in `_data`. The permit is consumed by the
             // first guarded function entered, so the dispatched call cannot re-enter the pool afterwards.
             erc223CallPermit = true;
