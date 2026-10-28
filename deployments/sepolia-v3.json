@@ -53,10 +53,15 @@
   "superseded:marginModule:2026-10-07": "0xE9c5Fa7bBcD5a1550A14f5aB72e4789c455bbcF1",
   "marginOracle": "0x6260C92ac04D367c455575cD84Ab7382586eB35e",
   "fqn:marginOracle": "contracts/dex-core/Dex223Oracle.sol:Oracle",
-  "args:marginOracle": "[\"0xf07cc56E969Bc08395E80Da099e44d122bFa42B9\",\"1800\"]",
+  "args:marginOracle": "[\"0xf07cc56E969Bc08395E80Da099e44d122bFa42B9\",1800]",
   "done:marginOracle": "0xab271fc2639f162cae645de40116ce7c6e799129eb73aea76742815ad9d6fe9d",
-  "marginModule": "0x1bB3b0fEE74D530D8c3C532A7683285a76FB9e4B",
+  "superseded:marginModule:2026-10-28": "0x1bB3b0fEE74D530D8c3C532A7683285a76FB9e4B",
+  "marginModule": "0x0AC1f13111DdDae2597dfdb0e077aDb611FFFA02",
   "fqn:marginModule": "contracts/dex-core/Dex223MarginModule.sol:MarginModule",
   "args:marginModule": "[\"0xf07cc56E969Bc08395E80Da099e44d122bFa42B9\",\"0x322D53bda812099287BB74baA487c069C5F7B2b1\",\"0x6260C92ac04D367c455575cD84Ab7382586eB35e\"]",
-  "done:marginModule": "0xda8e04c2fea862716ce0368aa664d08620f2fd61df15f0d604a99e2639a0ddef"
+  "done:marginModule": "0x72ab5f148d3db28b9d5bc8a7744640fb771ba80bc36dcc191607797d46cb0324",
+  "block:marginModule": "12015515",
+  "marginFactory": "0xf07cc56E969Bc08395E80Da099e44d122bFa42B9",
+  "marginRouter": "0x322D53bda812099287BB74baA487c069C5F7B2b1",
+  "marginTwapWindow": "1800"
 }
