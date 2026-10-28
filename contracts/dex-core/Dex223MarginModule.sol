@@ -68,7 +68,17 @@ contract MarginModule is IOrderParams
     // (re-freezing if the freeze lapses); a position holding only the base asset liquidates without
     // any swap.
     uint256 constant private FORCED_SWAP_MIN_OUT_BPS = 9500;
-    uint256 constant private INTEREST_RATE_PRECISION = 10000; 
+    // A position is liquidatable once its holdings, valued through the order oracle, are worth less
+    // than the debt plus this share of it (10000 = 100%). Liquidation used to start only when the
+    // holdings no longer covered the debt at all, so every cost of the forced sale came out of the
+    // lender: the FORCED_SWAP_MIN_OUT_BPS slippage, pool fees, the block between the freeze and the
+    // sale, and any gap between the TWAP and the price actually obtained. With the buffer the sale
+    // starts while the position still holds that much more than it owes. takeLoan() rejects a loan
+    // that would open inside the buffer, so an order's leverage is capped in practice at
+    // 1 + 10000 / MAINTENANCE_MARGIN_BPS (11x at 10%); marginSwap() keeps the same rule, so an owner
+    // cannot trade into the buffer either.
+    uint256 public constant MAINTENANCE_MARGIN_BPS = 1000;
+    uint256 constant private INTEREST_RATE_PRECISION = 10000;
     IDex223Factory public factory;
     ISwapRouter public router;
     // The only price oracle an order may name. Orders used to carry any oracle the lender chose,
@@ -85,6 +95,10 @@ contract MarginModule is IOrderParams
     mapping (address => mapping(address => uint256)) public erc223deposit;
     mapping (bytes32 => Tokenlist) public tokenlists;
     mapping (uint256 => address)  public positionInitialCollateral;
+    // Debt (principal plus interest) that liquidations of an order's positions could not recover,
+    // summed per order. The order balance only ever receives what a sale actually returned, so this
+    // is the lender's realised loss; see LiquidationShortfall for the per-position figure.
+    mapping (uint256 => uint256)  public orderShortfall;
 
     uint256 public orderIndex;
     uint256 public positionIndex;
@@ -158,9 +172,24 @@ contract MarginModule is IOrderParams
         uint256 collateral_amount
     );
 
+    // `leverage` is scaled by 100: 250 means 2.5x. It used to be the integer-divided ratio, which
+    // reported a position opened at 1.99x as 1x and any 2.5x position as 2x.
     event InitialLeverage(
         uint256 positionId,
         uint256 leverage
+    );
+
+    // The freeze placed by liquidate() was lifted because the position is no longer liquidatable.
+    event PositionUnfrozen(
+        uint256 indexed positionId,
+        address by
+    );
+
+    // A liquidation sold everything the position held and still fell `amount` short of the debt.
+    event LiquidationShortfall(
+        uint256 indexed positionId,
+        uint256 indexed orderId,
+        uint256 amount
     );
 
     event PositionDeposit(
@@ -224,17 +253,6 @@ contract MarginModule is IOrderParams
         uint32 deadline;
     } 
 
-    struct SwapData {
-        address pool;
-        address tokenIn;
-        address tokenIn223;
-        address tokenOut;
-        uint24 fee;
-        bool zeroForOne;
-        bool prefer223Out;
-        uint160 sqrtPriceLimitX96;
-    }
-
     struct Order {
         address owner;
         uint256 id;
@@ -255,7 +273,11 @@ contract MarginModule is IOrderParams
     struct OrderStatus
     {
         bool alive;
-        uint8 positions;
+        // Open positions on the order. Was uint8 and incremented unchecked (solc 0.7), so the 256th
+        // position wrapped it to 0: modifyOrder/orderSetCollaterals, which require 0, then let the
+        // lender change the liquidation reward under live positions and collect it from the
+        // module's pooled balance. uint248 keeps the struct in one slot.
+        uint248 positions;
     }
 
     struct Position {
@@ -327,41 +349,11 @@ contract MarginModule is IOrderParams
     // and it also makes `MarginModule(address)` a compile error at every call site in this file
     // because the type gains a payable fallback.
 
-    function getPositionActualPools(uint256 _positionId, uint24[] memory _feeTiers) public view returns (address[] memory _pools)
-    {
-        Position storage position = positions[_positionId];
-        address[] storage assets = position.assets;
-        Order storage order = orders[position.orderId];
-        _pools = new address[](_feeTiers.length * position.assets.length);
-        //Oracle oracle = Oracle(order.oracle);
-
-        /*
-        for (uint i = 0; i < feeTiers.length; i++) {
-            address pool = factory.getPool(token0, token1, feeTiers[i]);
-            if (pool != address(0)) {
-                uint128 currentLiquidity = IUniswapV3Pool(pool).liquidity();
-                if (currentLiquidity >= liquidity) {
-                    liquidity = currentLiquidity;
-                    poolAddress = pool;
-                    fee = feeTiers[i];
-                }
-            }
-        }
-        */
-
-        for (uint256 _positionAsset = 0; _positionAsset < position.assets.length; _positionAsset++) {
-            for (uint24 _feeTier = 0; _feeTier < _feeTiers.length; _feeTier++) {
-                _pools[_positionAsset + _feeTier] = factory.getPool(position.assets[_positionAsset], order.baseAsset, _feeTiers[_feeTier]);
-            }
-        }
-/*
-        for (uint256 _positionAsset = 0; _positionAsset < position.assets.length; _positionAsset++) {
-            for (uint24 _feeTier = 0; _feeTier < _feeTiers.length; _feeTier++) {
-                _pools[_positionAsset + _feeTier] = address(this);
-            }
-        }
-*/
-    }
+    // getPositionActualPools(positionId, feeTiers) used to live here. It was removed to keep the
+    // module under EIP-170 once liquidateStep()/unfreeze() were added, and it was wrong anyway: it
+    // wrote pool `(asset i, tier j)` to slot `i + j`, so with more than one asset the slots
+    // overlapped and most pools were overwritten. Callers (the liquidation bot) derive the pools
+    // themselves from getPositionAssets(), orders(id).baseAsset and factory.getPool().
 
     function getCollaterals(uint256 _orderId) public view returns(address[] memory _collaterals)
     {
@@ -765,7 +757,7 @@ contract MarginModule is IOrderParams
         order_status[_orderId].positions++;
 
         emit PositionOpened(_positionId, msg.sender, _amount, order.baseAsset, order.collateralAssets[_collateralIdx], _collateralAmount);
-        emit InitialLeverage(_positionId, ((collateralEquivalentInBaseAsset + _amount) / collateralEquivalentInBaseAsset));
+        emit InitialLeverage(_positionId, ((collateralEquivalentInBaseAsset + _amount) * 100 / collateralEquivalentInBaseAsset));
         emit NewAsset(_positionId, order.baseAsset);
         if (order.collateralAssets[_collateralIdx] != order.baseAsset)
         {
@@ -828,75 +820,41 @@ contract MarginModule is IOrderParams
         // Perform the swap operation.
         // We only allow direct swaps for security reasons currently.
 
-        require(factory.getPool(_asset1, _asset2, _feeTier) != address(0));
+        uint256 balInBefore = IERC20Minimal(_asset1).balanceOf(address(this));
+        uint256 amountOut;
+        {
+            address pool = factory.getPool(_asset1, _asset2, _feeTier);
+            require(pool != address(0));
+            require(!_isErc223SideOf(pool, _asset1));
+            (, address tokenOut20) = _poolErc20Pair(pool, _asset1);
 
-        // load & use IRouter interface for ERC-20.
-        IERC20Minimal(_asset1).approve(address(router), _amount);
-        ISwapRouter.ExactInputSingleParams memory swapParams = ISwapRouter.ExactInputSingleParams({
-            tokenIn: _asset1,
-            tokenOut: _asset2,
-            fee: _feeTier,
-            recipient: address(this),
-            deadline: block.timestamp,
-            amountIn: _amount,
-            amountOutMinimum: _minAmountOut,
-            sqrtPriceLimitX96: _priceLimitX96,
-            prefer223Out: false
-        });
-        uint256 amountOut = ISwapRouter(router).exactInputSingle(swapParams);
+            IERC20Minimal(_asset1).approve(address(router), _amount);
+            amountOut = ISwapRouter(router).exactInputSingle(ISwapRouter.ExactInputSingleParams({
+                tokenIn: _asset1,
+                tokenOut: tokenOut20,
+                fee: _feeTier,
+                recipient: address(this),
+                deadline: block.timestamp,
+                amountIn: _amount,
+                amountOutMinimum: _minAmountOut,
+                sqrtPriceLimitX96: _priceLimitX96,
+                prefer223Out: _isErc223SideOf(pool, _asset2)
+            }));
+        }
         require(amountOut > 0);
+        uint256 amountInUsed = balInBefore - IERC20Minimal(_asset1).balanceOf(address(this));
 
         // add new (received) asset to Position
         addAsset(_positionId, _asset2, amountOut);
-        reduceAsset(_positionId, _asset1, _amount);
+        reduceAsset(_positionId, _asset1, amountInUsed);
 
-        emit MarginSwap(_positionId, _asset1, _asset2, _amount, amountOut);
+        emit MarginSwap(_positionId, _asset1, _asset2, amountInUsed, amountOut);
     }
 
-    function resolveTokenOut(
-        bool prefer223Out,
-        address pool,
-        address tokenIn,
-        address tokenOut
-    ) private view returns (address) {
-        if (prefer223Out) {
-            (address _token0_erc20, address _token0_erc223) = IDex223Pool(pool).token0();
-            (, address _token1_erc223) = IDex223Pool(pool).token1();
-
-            return (_token0_erc20 == tokenIn) ? _token1_erc223 : _token0_erc223;
-        } else {
-            return tokenOut;
-        }
-    }
-    
-    function executeSwapWithDeposit(
-        uint256 amountIn,
-        address recipient,
-        SwapCallbackData memory data,
-        SwapData memory swapData
-    ) private returns (uint256 amountOut) {
-        bytes memory _data = abi.encodeWithSignature(
-            "swap(address,bool,int256,uint160,bool,bytes)",
-            recipient,
-            swapData.zeroForOne,
-            int256(amountIn),
-            swapData.sqrtPriceLimitX96 == 0
-                ? (swapData.zeroForOne ? TickMath.MIN_SQRT_RATIO + 1 : TickMath.MAX_SQRT_RATIO - 1)
-                : swapData.sqrtPriceLimitX96,
-            swapData.prefer223Out,
-            data
-        );
-
-        address _tokenOut = resolveTokenOut(swapData.prefer223Out, swapData.pool, swapData.tokenIn, swapData.tokenOut);
-
-        (bool success, bytes memory resdata) = _tokenOut.call(abi.encodeWithSelector(IERC20Minimal.balanceOf.selector, recipient));
-
-        bool tokenNotExist = (success && resdata.length == 0);
-
-        uint256 balance1before = tokenNotExist ? 0 : abi.decode(resdata, (uint));
-        require(IERC223(swapData.tokenIn223).transfer(swapData.pool, amountIn, _data));
-
-        return uint256(IERC20Minimal(_tokenOut).balanceOf(recipient) - balance1before);
+    function _poolErc20Pair(address pool, address asset1) private view returns (address a1_20, address a2_20) {
+        (address t0_20, address t0_223) = IDex223Pool(pool).token0();
+        (address t1_20, ) = IDex223Pool(pool).token1();
+        return (asset1 == t0_20 || asset1 == t0_223) ? (t0_20, t1_20) : (t1_20, t0_20);
     }
 
     // @audit-fix V1, V5: nonReentrant on public + refactored to internal _marginSwap223Internal
@@ -936,50 +894,38 @@ contract MarginModule is IOrderParams
 
         address pool = factory.getPool(_asset1, _asset2, _feeTier);
         require(pool != address(0));
+        require(_isErc223SideOf(pool, _asset1));
 
-        uint256 amountOut = _execute223Swap(pool, _asset1, _feeTier, _amount);
+        uint256 balInBefore = IERC20Minimal(_asset1).balanceOf(address(this));
+        uint256 amountOut = _execute223Swap(pool, _asset1, _asset2, _feeTier, _amount);
         require(amountOut > 0);
         require(amountOut >= _minAmountOut, "Too little received");
+        uint256 amountInUsed = balInBefore - IERC20Minimal(_asset1).balanceOf(address(this));
 
         // add new (received) asset to Position
         addAsset(_positionId, _asset2, amountOut);
-        reduceAsset(_positionId, _asset1, _amount);
-        emit MarginSwap(_positionId, _asset1, _asset2, _amount, amountOut);
+        reduceAsset(_positionId, _asset1, amountInUsed);
+        emit MarginSwap(_positionId, _asset1, _asset2, amountInUsed, amountOut);
     }
 
     /// @dev ERC-223 leg of a margin swap, split out of _marginSwap223Internal to keep that
     /// function within the EVM stack limit. Resolves the pool's ERC-20 addresses for both sides
     /// and swaps `_amount` of `_asset1` (ERC-223) through `pool`.
-    function _execute223Swap(address pool, address _asset1, uint24 _feeTier, uint256 _amount) internal returns (uint256) {
-        address _asset1_20;
-        address _asset2_20;
-
-        // we need to use ERC20 version of Asset1 and Asset2 
-        (address token0_20, address token0_223) = IDex223Pool(pool).token0();
-        (address token1_20, ) = IDex223Pool(pool).token1();
-        if (token0_223 == _asset1) {
-            _asset1_20 = token0_20;
-            _asset2_20 = token1_20;
-        } else {
-            _asset2_20 = token0_20;
-            _asset1_20 = token1_20;
-        }
-
-        return executeSwapWithDeposit(
-            _amount,
+    function _execute223Swap(address pool, address _asset1, address _asset2, uint24 _feeTier, uint256 _amount) internal returns (uint256) {
+        (address a1_20, address a2_20) = _poolErc20Pair(pool, _asset1);
+        bool zeroForOne = (a1_20 < a2_20);
+        bytes memory _data = abi.encodeWithSignature(
+            "swap(address,bool,int256,uint160,bool,bytes)",
             address(this),
-            SwapCallbackData({path: abi.encodePacked(_asset1_20, _feeTier, _asset2_20), payer: address(this)}),
-            SwapData({
-                pool: pool,
-                tokenIn: _asset1_20,
-                tokenIn223: _asset1,
-                tokenOut: _asset2_20,
-                fee: _feeTier,
-                zeroForOne: (_asset1_20 < _asset2_20),
-                prefer223Out: true,
-                sqrtPriceLimitX96: 0
-            })
+            zeroForOne,
+            int256(_amount),
+            zeroForOne ? TickMath.MIN_SQRT_RATIO + 1 : TickMath.MAX_SQRT_RATIO - 1,
+            _isErc223SideOf(pool, _asset2),
+            SwapCallbackData({path: abi.encodePacked(a1_20, _feeTier, a2_20), payer: address(this)})
         );
+        uint256 balanceBefore = IERC20Minimal(_asset2).balanceOf(address(this));
+        require(IERC223(_asset1).transfer(pool, _amount, _data));
+        return IERC20Minimal(_asset2).balanceOf(address(this)) - balanceBefore;
     }
     
 
@@ -1006,27 +952,36 @@ contract MarginModule is IOrderParams
     }
 
     // Price must be taken from the price source specified by the order owner.
+    /// @dev The holdings value below which a position with this debt is liquidatable: the debt plus
+    /// the maintenance margin, rounded up so `value < threshold` means exactly
+    /// `value * 10000 < debt * (10000 + MAINTENANCE_MARGIN_BPS)`.
+    function _liquidationThreshold(uint256 requiredAmount) internal pure returns (uint256) {
+        return (requiredAmount * (10000 + MAINTENANCE_MARGIN_BPS) + 9999) / 10000;
+    }
+
     function subjectToLiquidation(uint256 positionId) public view returns (bool) {
         (uint256 requiredAmount, uint256 totalValueInBaseAsset) = _positionValue(positionId);
-        return totalValueInBaseAsset < requiredAmount;
+        return totalValueInBaseAsset < _liquidationThreshold(requiredAmount);
     }
 
     function subjectToLiquidationExtended(uint256 positionId) public view returns (bool _subjectToLiquidation, address liquidator, uint256 frozenTimestamp, bool liquidated, uint256 insolvensy_expected_time)
     {
         Position storage position = positions[positionId];
         (uint256 requiredAmount, uint256 totalValueInBaseAsset) = _positionValue(positionId);
+        uint256 threshold = _liquidationThreshold(requiredAmount);
 
         // insolvensy_expected_time is the moment interest alone would make the position
         // liquidatable at today's prices. 0 means "never": an interest-free loan (or an empty one)
         // only becomes liquidatable through price moves. Without this branch the division below
         // reverted for every zero-interest position, and so did any caller of this view, such as
         // the liquidation bot polling it.
-        if(totalValueInBaseAsset > requiredAmount && position.interest > 0 && position.initialBalance > 0)
+        // The threshold grows (10000 + MAINTENANCE_MARGIN_BPS) / 10000 times as fast as the debt.
+        if(totalValueInBaseAsset > threshold && position.interest > 0 && position.initialBalance > 0)
         {
-            uint256 _insolvency_time_delta = ((totalValueInBaseAsset - requiredAmount) * 10000 * 30 days) / (position.interest * position.initialBalance);
+            uint256 _insolvency_time_delta = ((totalValueInBaseAsset - threshold) * 10000 * 10000 * 30 days) / (position.interest * position.initialBalance * (10000 + MAINTENANCE_MARGIN_BPS));
             insolvensy_expected_time = _insolvency_time_delta + block.timestamp;
         }
-        return (requiredAmount > totalValueInBaseAsset, position.liquidator, position.frozenTime, !position.open, insolvensy_expected_time);
+        return (totalValueInBaseAsset < threshold, position.liquidator, position.frozenTime, !position.open, insolvensy_expected_time);
     }
 
     // The borrower must repay both the principal amount and the accrued interest.
@@ -1056,21 +1011,13 @@ contract MarginModule is IOrderParams
         require(position.open, "Position is closed");
         require(subjectToLiquidation(positionId), "Not liquidatable");
 
-        if (position.frozenTime > 0) 
+        // A live freeze (placed earlier and not yet lapsed) completes the liquidation; otherwise this
+        // call places or renews the freeze.
+        if (position.frozenTime > 0 && block.timestamp - position.frozenTime <= MAX_FREEZE_DURATION)
         {
             require(block.timestamp > position.frozenTime, "Freeze and liquidate: same block");
-            uint256 frozenDuration = block.timestamp - position.frozenTime;
-            if (frozenDuration <= MAX_FREEZE_DURATION) 
-            {
-                _liquidate(positionId, receiver);
-                emit Liquidation(positionId, positions[positionId].orderId, msg.sender, receiver);
-            }
-            else
-            {
-                position.frozenTime = block.timestamp;
-                position.liquidator = msg.sender;
-                emit PositionFrozen(positionId, msg.sender, block.timestamp);
-            }
+            _liquidate(positionId, receiver);
+            emit Liquidation(positionId, position.orderId, msg.sender, receiver);
         }
         else
         {
@@ -1078,6 +1025,52 @@ contract MarginModule is IOrderParams
             position.liquidator = msg.sender;
             emit PositionFrozen(positionId, msg.sender, block.timestamp);
         }
+    }
+
+    /// @notice Sell `amount` of one of a frozen, liquidatable position's holdings into the base asset,
+    /// through the same floored swap liquidate() uses, without closing the position. A position
+    /// whose holdings are too large for the pool to absorb in one sale at FORCED_SWAP_MIN_OUT_BPS of
+    /// the TWAP could never be liquidated: the single all-at-once sale always missed the floor. Selling
+    /// in parts over several blocks lets the TWAP follow each part. liquidate() then finishes with
+    /// whatever is left; it pays the reward to that final caller.
+    ///
+    /// Steps are allowed only to the liquidator who placed the freeze and only while that freeze is
+    /// live (within MAX_FREEZE_DURATION, at least one block old), exactly like the final sale: a
+    /// lapsed freeze must be renewed with liquidate() first, which restores the block between the
+    /// trigger and the sale, and the freezer's hour of exclusivity keeps steps from being used by
+    /// others to talk the TWAP down or to pull value out of a position they do not liquidate.
+    function liquidateStep(uint256 positionId, address asset, uint256 amount) public nonReentrant {
+        Position storage position = positions[positionId];
+
+        require(
+            position.open && position.frozenTime > 0 && block.timestamp > position.frozenTime
+                && block.timestamp - position.frozenTime <= MAX_FREEZE_DURATION
+                && msg.sender == position.liquidator,
+            "Not frozen"
+        );
+        require(subjectToLiquidation(positionId), "Not liquidatable");
+        uint256 id = getAssetId(positionId, asset);
+        // index 0 is the base asset, which is never sold. The swap itself rejects an amount above
+        // the position's balance and a zero amount.
+        require(id > 0 && id < position.assets.length, "Asset not found in position");
+
+        _swapToBaseAsset(positionId, asset, amount);
+    }
+
+    /// @notice Lift a freeze from a position that is no longer liquidatable. A freeze was never
+    /// cleared before, so a position frozen during a brief dip could not be closed once the price
+    /// recovered: liquidate() reverted ("Not liquidatable") and positionClose() reverted ("Position
+    /// frozen"), and the lender's funds stayed locked while the borrower could have repaid in full.
+    /// Anyone can call this; liquidate() places a fresh freeze if the position dips again.
+    function unfreeze(uint256 positionId) public {
+        Position storage position = positions[positionId];
+
+        require(position.open && position.frozenTime > 0, "Not frozen");
+        require(!subjectToLiquidation(positionId), "Liquidatable");
+
+        position.frozenTime = 0;
+        position.liquidator = address(0);
+        emit PositionUnfrozen(positionId, msg.sender);
     }
 
     // @audit-fix V1: nonReentrant guard on position closing
@@ -1095,56 +1088,31 @@ contract MarginModule is IOrderParams
             require(isExpired && msg.sender == order.owner, "Not authorized to close");
         }
 
-        require(position.frozenTime == 0, "Position frozen");
+        // A freeze on its own no longer blocks closing: the only thing a freeze protects is a
+        // liquidation that is still due, and that is what the check below guards. A position that
+        // recovered after being frozen repays the lender in full here instead of staying locked.
         require(subjectToLiquidation(positionId) == false, "Subject to liquidation");
 
-        // If the base asset alone does not cover the debt, sell other holdings until it does, then
-        // settle once. (Settling first and again after the swaps charged the debt twice, because
-        // _paybackBaseAsset recomputes the full amount from initialBalance each time.)
-        // Walk from the end, because a fully sold asset is removed by swap-and-pop
-        // (reduceAsset -> removeAsset), which moves the last element into the freed slot; a forward
-        // walk would skip that element. Index 0 is the base asset and is never sold. The position
-        // must still be open here: the swap credits proceeds through addAsset(), which requires it.
-        uint256 debt = calculateDebtAmount(position);
-        for (uint256 i = position.assets.length; i > 1 && position.balances[0] < debt; ) {
-            i--;
-            uint256 balance = position.balances[i];
-            if (balance == 0) continue;
-            _swapToBaseAsset(positionId, position.assets[i], balance);
-        }
-        require(_paybackBaseAsset(position) == 0, "Insufficient funds to close");
-
-        // Closed before the first external transfer below (the reward payout hands control to
-        // msg.sender), same ordering as _liquidate.
-        position.open = false;
-
-        // Autowithdraw the liquidation fee as soon as position is closed.
-        _payReward(position.orderId, msg.sender);
+        // Sell other holdings only until the base asset covers the debt, then the debt must be
+        // repaid in full. The liquidation fee goes back to the closer.
+        require(_settle(positionId, msg.sender, false) == 0, "Insufficient funds to close");
 
         emit PositionClosed(positionId, msg.sender);
-
-        // @audit-fix V9: Safe decrement - prevent underflow
-        if (order_status[position.orderId].positions > 0) {
-            order_status[position.orderId].positions--;
-        }
 
         // @audit-fix V4: Snapshot the asset addresses to avoid iteration-while-modifying bug.
         //   reduceAsset() uses swap-and-pop which reorders the array, causing items to be skipped
         //   when iterating forward. By snapshotting we ensure every asset is withdrawn.
         if(autoWithdraw)
         {
-            address[] memory assetsSnapshot = new address[](position.assets.length);
-            for (uint256 i = 0; i < position.assets.length; i++) {
-                assetsSnapshot[i] = position.assets[i];
-            }
-            for (uint256 i = 0; i < assetsSnapshot.length; i++)
+            for (uint256 i = position.assets.length; i > 0; )
             {
-                uint256 id = getAssetId(positionId, assetsSnapshot[i]);
-                if (id < position.assets.length && position.balances[id] > 0) {
-                    uint256 amount = position.balances[id];
-                    reduceAsset(positionId, assetsSnapshot[i], amount);
-                    emit PositionWithdrawal(positionId, assetsSnapshot[i], amount);
-                    _transferOut(assetsSnapshot[i], amount, position.owner);
+                i--;
+                uint256 amount = position.balances[i];
+                if (amount > 0) {
+                    address asset = position.assets[i];
+                    reduceAsset(positionId, asset, amount);
+                    emit PositionWithdrawal(positionId, asset, amount);
+                    _transferOut(asset, amount, position.owner);
                 }
             }
         }
@@ -1177,45 +1145,56 @@ contract MarginModule is IOrderParams
     //   so funds are not permanently locked in the contract.
     // @audit-fix V9: Safe decrement of order_status positions counter.
     function _liquidate(uint256 positionId, address _receiver) internal {
-        Position storage position = positions[positionId];
+        // Every non-base holding is sold; whatever the sale does not recover is the lender's loss.
+        uint256 shortfall = _settle(positionId, _receiver, true);
+        if (shortfall > 0) {
+            orderShortfall[positions[positionId].orderId] += shortfall;
+            emit LiquidationShortfall(positionId, positions[positionId].orderId, shortfall);
+        }
+    }
 
-        // Sell every non-base holding. Walk from the end: a fully sold asset is removed by
-        // swap-and-pop, which moves the last element into the freed slot, so a forward walk
-        // skipped one asset whenever a position held three or more and left it unsold.
-        for (uint256 i = position.assets.length; i > 1; ) {
+    /// @dev Shared tail of positionClose() and _liquidate(): sell the position's non-base holdings
+    /// into the base asset (all of them when `sellAll`, otherwise only until the base asset covers
+    /// the debt), repay the order, close the position and pay out the liquidation reward. Returns
+    /// the part of the debt the base asset could not cover.
+    ///
+    /// Walk the assets from the end: a fully sold asset is removed by swap-and-pop
+    /// (reduceAsset -> removeAsset), which moves the last element into the freed slot, so a forward
+    /// walk skipped one asset whenever a position held three or more. Index 0 is the base asset and
+    /// is never sold. The position must still be open here: the swap credits proceeds through
+    /// addAsset(), which requires it. Settle once, after the swaps: settling before and again after
+    /// charged the debt twice, because _paybackBaseAsset recomputes the full amount each time.
+    ///
+    /// SECURITY: the position is closed and the order's counter decremented BEFORE the reward is
+    /// paid. The reward goes to a caller-supplied receiver and both payout paths hand control to it
+    /// (`_sendEth` uses call{value:} with all gas, `_sendAsset` on an ERC-223 asset invokes the
+    /// recipient's `tokenReceived`). With the flags set afterwards, that receiver could re-enter
+    /// liquidate(): `position.open` was still true and `subjectToLiquidation` still returned true
+    /// (the base balance is zeroed by _paybackBaseAsset while calculateDebtAmount still reports the
+    /// full debt), so the reward was paid again on every re-entry and `positions--` underflowed,
+    /// permanently blocking modifyOrder/orderSetCollaterals, which require positions == 0.
+    function _settle(uint256 positionId, address rewardReceiver, bool sellAll) internal returns (uint256 shortfall) {
+        Position storage position = positions[positionId];
+        uint256 debt = calculateDebtAmount(position);
+
+        for (uint256 i = position.assets.length; i > 1 && (sellAll || position.balances[0] < debt); ) {
             i--;
             uint256 balance = position.balances[i];
             if (balance == 0) continue;
             _swapToBaseAsset(positionId, position.assets[i], balance);
         }
-        _paybackBaseAsset(position);
+        shortfall = _paybackBaseAsset(position);
 
-        // SECURITY: close the position and update the parent order BEFORE paying the liquidation
-        // reward. The reward goes to a caller-supplied `_receiver` (see liquidate(positionId, receiver)),
-        // and both payout paths hand control to it - `_sendEth` uses call{value:} with all gas, and
-        // `_sendAsset` on an ERC-223 asset invokes the recipient's `tokenReceived`. With the flags set
-        // afterwards, that receiver could re-enter liquidate(): `position.open` was still true and
-        // `subjectToLiquidation` still returned true (the assets have been swapped away and the base
-        // balance zeroed by _paybackBaseAsset, while calculateDebtAmount still reports the full debt
-        // because initialBalance is never reduced), so the reward was paid again on every re-entry, and
-        // `positions--` underflowed - permanently blocking modifyOrder/orderSetCollaterals, which
-        // require positions == 0. positionClose() already uses this ordering.
         position.open = false;
-
-        // Once the position is liquidated
-        // we can decrease the number of active positions for the parent order.
-        // If the number of active positions is 0 then the order owner can modify the order.
-        order_status[position.orderId].positions--;
-
-        // Payment of liquidation reward
-        _payReward(position.orderId, _receiver);
-
-        // NOTE: this PR additionally returned any leftover position.balances[0] to the owner here, and
-        // repeated `position.open = false` / `positions--`. Both are dropped: main already closes the
-        // position and decrements the order counter ABOVE, before the reward payout, and that ordering
-        // is the GHSA-78hm fix - repeating the decrement afterwards double-counts whenever an order has
-        // more than one position. The leftover-balance block also reverts outright once _paybackBaseAsset
-        // has emptied position.assets, because it indexes assets[0] unconditionally.
+        // A closed position is not frozen: positionClose() may settle a position that was frozen
+        // and then recovered, and the indexer and bot read these fields.
+        position.frozenTime = 0;
+        position.liquidator = address(0);
+        // Safe decrement: the counter must never underflow.
+        if (order_status[position.orderId].positions > 0) {
+            order_status[position.orderId].positions--;
+        }
+        _payReward(position.orderId, rewardReceiver);
     }
 
     /* Internal functions */
@@ -1327,9 +1306,13 @@ contract MarginModule is IOrderParams
     }
 
     function tokenReceived(address user, uint256 value, bytes memory /*data*/) public returns (bytes4) {
-        address asset = msg.sender;
-        erc223deposit[user][asset] += value;
-        
+        // ERC-223 tokens that arrive while the module is inside one of its own guarded calls are the
+        // output of a margin swap or a forced sale, already accounted for by the balance delta that
+        // call measures. Crediting them here too left a phantom erc223deposit[pool][token] that
+        // nobody could withdraw and that misstated what the module held.
+        if (!_entered) {
+            erc223deposit[user][msg.sender] += value;
+        }
         return 0x8943ec02;
     }
 
