@@ -252,7 +252,7 @@ contract RevenueV2Handler is Test {
         address a = _actor(actorSeed);
         uint256 p20 = rev.staked_by_version(a, address(s20));
         uint256 p223 = rev.staked_by_version(a, address(s223));
-        bool expected = rev.staked(a) != 0 && _unlocked(a);
+        bool expected = rev.staked(a) != 0;
         uint256 b20 = s20.balanceOf(a);
         uint256 b223 = s223.balanceOf(a);
         vm.prank(a);
