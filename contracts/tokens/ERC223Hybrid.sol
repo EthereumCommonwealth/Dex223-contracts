@@ -166,7 +166,7 @@ contract ERC223HybridToken is IERC223, ERC165 {
         // Standard function transfer similar to ERC20 transfer with no _data.
         // Added due to backwards compatibility reasons.
 
-        bytes memory _empty = hex"00000000";
+        bytes memory _empty = "";
         balances[msg.sender] = balances[msg.sender] - _value;
         balances[_to] = balances[_to] + _value;
         if(Address.isContract(_to)) {
@@ -180,7 +180,7 @@ contract ERC223HybridToken is IERC223, ERC165 {
     {
         balances[_to] += _amount;
         _totalSupply  += _amount;
-        emit Transfer(address(0), _to, _amount, hex"00000000");
+        emit Transfer(address(0), _to, _amount, "");
     }
 
     function allowance(address owner, address spender) public view virtual returns (uint256) {
