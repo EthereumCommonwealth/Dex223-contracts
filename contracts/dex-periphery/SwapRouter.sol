@@ -390,51 +390,6 @@ IERC223Recipient
         require(amountOut >= params.amountOutMinimum, 'Too little received');
     }
 
-    struct exactInputDoubleStandardData
-    {
-        address tokenIn;
-        address tokenOut;
-        int256 amountIn;
-        address recipient;
-        uint160 sqrtPriceLimitX96;
-        bool zeroForOne;
-        address pool;
-        uint256 fee;
-        uint256 deadline;
-        bool prefer223Out;
-    }
-
-    function exactInputDoubleStandard(exactInputDoubleStandardData calldata data)
-    external
-    payable
-    lock
-    adjustableSender
-    checkDeadline(data.deadline)
-    returns (uint256 amountOut)
-    {
-        //(address tokenIn, address tokenOut, uint24 fee) = data.path.decodeFirstPool();
-        //bool zeroForOne = tokenIn < tokenOut;
-
-        expectedCallbackPool = data.pool;
-        (int256 amount0, int256 amount1) =
-                                IDex223Pool(data.pool).swap(
-                data.recipient,
-                data.zeroForOne,
-                data.amountIn, // int256 << can be negative
-                data.sqrtPriceLimitX96,
-                data.prefer223Out,
-                //bytes("0")
-
-                abi.encode( SwapCallbackData({path: abi.encodePacked(data.tokenIn, data.fee, data.tokenOut), payer: call_sender}) )
-            );
-        expectedCallbackPool = NO_CALLBACK_POOL;
-
-        //return uint256(-(zeroForOne ? amount1 : amount0));
-        //require(amountOut >= amountOutMin, 'Too little received');
-
-        return uint256(-(data.zeroForOne ? amount1 : amount0));
-    }
-
     /// @inheritdoc ISwapRouter
     function exactInput(ExactInputParams memory params)
     external
