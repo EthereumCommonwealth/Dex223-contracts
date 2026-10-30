@@ -143,7 +143,11 @@ IERC223Recipient
         depositERC223(_from, msg.sender, _value);
         call_sender = _from;
         token_sender = msg.sender;
-        if (_data.length != 0)
+        // D223 and the converter's ERC-223 wrappers pass four zero bytes, not empty bytes, as "no data" on a
+        // plain `transfer(to, value)`. Dispatching that as selector 0x00000000 reverted every plain deposit.
+        bool _noData = _data.length == 0 || (_data.length == 4 &&
+            _data[0] == bytes1(0) && _data[1] == bytes1(0) && _data[2] == bytes1(0) && _data[3] == bytes1(0));
+        if (!_noData)
         {
             // Standard ERC-223 swapping via ERC-20 pattern.
             // Authorise exactly one guarded call - the one encoded in `_data`.
@@ -269,6 +273,14 @@ IERC223Recipient
         SwapCallbackData memory data,
         SwapData memory swapData
     ) private returns (uint256 amountOut) {
+        {
+            // An ERC-223 token treats a codeless address as an EOA and simply credits it, so a pool that was
+            // never created would swallow the deposit and the swap would "succeed" with no output.
+            address _pool = swapData.pool;
+            uint256 _poolCodeSize;
+            assembly { _poolCodeSize := extcodesize(_pool) }
+            require(_poolCodeSize > 0, 'NP');
+        }
         bytes memory _data = abi.encodeWithSignature(
             "swap(address,bool,int256,uint160,bool,bytes)",
             recipient,
@@ -376,51 +388,6 @@ IERC223Recipient
             SwapCallbackData({path: abi.encodePacked(params.tokenIn, params.fee, params.tokenOut), payer: call_sender})
         );
         require(amountOut >= params.amountOutMinimum, 'Too little received');
-    }
-
-    struct exactInputDoubleStandardData
-    {
-        address tokenIn;
-        address tokenOut;
-        int256 amountIn;
-        address recipient;
-        uint160 sqrtPriceLimitX96;
-        bool zeroForOne;
-        address pool;
-        uint256 fee;
-        uint256 deadline;
-        bool prefer223Out;
-    }
-
-    function exactInputDoubleStandard(exactInputDoubleStandardData calldata data)
-    external
-    payable
-    lock
-    adjustableSender
-    checkDeadline(data.deadline)
-    returns (uint256 amountOut)
-    {
-        //(address tokenIn, address tokenOut, uint24 fee) = data.path.decodeFirstPool();
-        //bool zeroForOne = tokenIn < tokenOut;
-
-        expectedCallbackPool = data.pool;
-        (int256 amount0, int256 amount1) =
-                                IDex223Pool(data.pool).swap(
-                data.recipient,
-                data.zeroForOne,
-                data.amountIn, // int256 << can be negative
-                data.sqrtPriceLimitX96,
-                data.prefer223Out,
-                //bytes("0")
-
-                abi.encode( SwapCallbackData({path: abi.encodePacked(data.tokenIn, data.fee, data.tokenOut), payer: call_sender}) )
-            );
-        expectedCallbackPool = NO_CALLBACK_POOL;
-
-        //return uint256(-(zeroForOne ? amount1 : amount0));
-        //require(amountOut >= amountOutMin, 'Too little received');
-
-        return uint256(-(data.zeroForOne ? amount1 : amount0));
     }
 
     /// @inheritdoc ISwapRouter
