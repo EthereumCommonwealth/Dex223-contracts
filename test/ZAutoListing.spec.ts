@@ -137,24 +137,22 @@ describe('AutoListing', () => {
             expect(await core.tokens(await core.listed_tokens(token0.target))).to.deep.eq([token0.target.toString(), token3])
         })
 
-        it('a pool squatting the ERC-20 wrapper address cannot re-pair a listed token', async () => {
+        it('an update never re-pairs a listed token, and a zero half leaves it as it is', async () => {
+            // checkListing is shared by all three listings. The owner's listTokenByOwner passes any pair to it,
+            // so the guard is tested here independently of how a contradicting pair might arrive (on the free
+            // listing that was a pool squatting a wrapper address, which the validator now refuses).
+            const ownable = await (await ethers.getContractFactory('Dex223OwnableListing'))
+                .deploy(factory.target, registry.target, 'ownable', 'https://ownable')
             const { origin, w20, wrapperOfWrapper } = await erc223Origin()
 
-            // Created while the ERC-20 wrapper has no code, pairing it with the codeless wrapper-of-wrapper.
-            await factory.createPool(w20, token1.target.toString(), wrapperOfWrapper, token4, feeAmount)
-            const squatPool = await factory.getPool(w20, token1.target.toString(), feeAmount)
+            await ownable.listTokenByOwner(w20, origin)
+            const id = await ownable.listed_tokens(w20)
+            expect(await ownable.getToken(id)).to.deep.eq([w20, origin])
 
-            await converter.createERC20Wrapper(origin)
-            await factory.createPool(w20, token2.target.toString(), origin, token5, feeAmount)
-            const realPool = await factory.getPool(w20, token2.target.toString(), feeAmount)
-
-            await listing.list(realPool, feeAmount, ethers.ZeroAddress)
-            const id = await listing.listed_tokens(w20)
-            expect(await listing.getToken(id)).to.deep.eq([w20, origin])
-
-            await expect(listing.list(squatPool, feeAmount, ethers.ZeroAddress)).to.be.revertedWith('Listing pair mismatch')
-            expect(await listing.getToken(id)).to.deep.eq([w20, origin])
-            expect(await listing.isListed(wrapperOfWrapper)).to.eq(false)
+            await expect(ownable.listTokenByOwner(w20, wrapperOfWrapper)).to.be.revertedWith('Listing pair mismatch')
+            await ownable.listTokenByOwner(w20, ethers.ZeroAddress)
+            expect(await ownable.getToken(id)).to.deep.eq([w20, origin])
+            expect(await ownable.isListed(wrapperOfWrapper)).to.eq(false)
         })
     })
 })
