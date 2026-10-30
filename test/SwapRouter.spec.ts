@@ -253,6 +253,21 @@ describe('SwapRouter', function () {
       })
     })
 
+    describe('#tokenReceived', () => {
+      // ERC223HybridToken, like D223 and the converter's wrappers, sends four zero bytes as "no data".
+      it('takes a plain ERC-223 transfer as a withdrawable deposit', async () => {
+        const token223 = tokens[3] as unknown as ERC223HybridToken
+        const before = await token223.balanceOf(trader.address)
+
+        await token223.connect(trader)['transfer(address,uint256)'](router.target.toString(), 1000)
+        expect(await router.depositedTokens(trader.address, token223.target.toString())).to.eq(1000)
+
+        await router.connect(trader).withdraw(token223.target.toString(), trader.address, 0)
+        expect(await router.depositedTokens(trader.address, token223.target.toString())).to.eq(0)
+        expect(await token223.balanceOf(trader.address)).to.eq(before)
+      })
+    })
+
     describe('#exactInput', () => {
       async function exactInput(
         tokens: string[],

@@ -143,7 +143,11 @@ IERC223Recipient
         depositERC223(_from, msg.sender, _value);
         call_sender = _from;
         token_sender = msg.sender;
-        if (_data.length != 0)
+        // D223 and the converter's ERC-223 wrappers pass four zero bytes, not empty bytes, as "no data" on a
+        // plain `transfer(to, value)`. Dispatching that as selector 0x00000000 reverted every plain deposit.
+        bool _noData = _data.length == 0 || (_data.length == 4 &&
+            _data[0] == bytes1(0) && _data[1] == bytes1(0) && _data[2] == bytes1(0) && _data[3] == bytes1(0));
+        if (!_noData)
         {
             // Standard ERC-223 swapping via ERC-20 pattern.
             // Authorise exactly one guarded call - the one encoded in `_data`.
