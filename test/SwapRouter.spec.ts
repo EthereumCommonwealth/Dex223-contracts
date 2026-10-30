@@ -266,6 +266,30 @@ describe('SwapRouter', function () {
         expect(await router.depositedTokens(trader.address, token223.target.toString())).to.eq(0)
         expect(await token223.balanceOf(trader.address)).to.eq(before)
       })
+
+      it('refuses an ERC-223 swap into a pool that was never created', async () => {
+        const token223 = tokens[3] as unknown as ERC223HybridToken
+        const before = await token223.balanceOf(trader.address)
+        // Only the MEDIUM 0-1 pool exists; the LOW-fee address has no code.
+        const params = {
+          tokenIn: tokens[0].target.toString(),
+          tokenOut: tokens[1].target.toString(),
+          fee: FeeAmount.LOW,
+          sqrtPriceLimitX96: 0,
+          recipient: trader.address,
+          deadline: 1,
+          amountIn: 1000,
+          amountOutMinimum: 0,
+          prefer223Out: false
+        }
+        const data = ethers.getBytes(router.interface.encodeFunctionData('exactInputSingle', [params]))
+
+        // The router's tokenReceived reports the dispatched call's failure as "23F", hiding 'NP'.
+        await expect(
+          token223.connect(trader)['transfer(address,uint256,bytes)'](router.target.toString(), 1000, data)
+        ).to.be.reverted
+        expect(await token223.balanceOf(trader.address)).to.eq(before)
+      })
     })
 
     describe('#exactInput', () => {

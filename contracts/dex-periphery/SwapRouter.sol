@@ -273,6 +273,14 @@ IERC223Recipient
         SwapCallbackData memory data,
         SwapData memory swapData
     ) private returns (uint256 amountOut) {
+        {
+            // An ERC-223 token treats a codeless address as an EOA and simply credits it, so a pool that was
+            // never created would swallow the deposit and the swap would "succeed" with no output.
+            address _pool = swapData.pool;
+            uint256 _poolCodeSize;
+            assembly { _poolCodeSize := extcodesize(_pool) }
+            require(_poolCodeSize > 0, 'NP');
+        }
         bytes memory _data = abi.encodeWithSignature(
             "swap(address,bool,int256,uint160,bool,bytes)",
             recipient,
