@@ -1,6 +1,6 @@
 // Jest Snapshot v1, https://goo.gl/fbAQLP
 
-exports[`Dex223Factory #createPool gas 1`] = `4047017`;
+exports[`Dex223Factory #createPool gas 1`] = `4040349`;
 
 exports[`Dex223Factory factory bytecode size 1`] = `22311`;
 
