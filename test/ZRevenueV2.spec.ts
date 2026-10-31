@@ -487,32 +487,25 @@ describe('RevenueV2', () => {
       void alice
     })
 
-    it('emergency_withdraw returns principal without touching reward accounting', async () => {
+    it('emergency_withdraw returns principal at any time without time lock and without touching reward accounting', async () => {
       const { signers, d20, revenue, stake, feesArrive, reward, bal } = await loadFixture(fixture)
       const [, alice, bob] = signers
       await stake(alice, 10n * E18)
       await stake(bob, 10n * E18)
       await feesArrive(700n * E18)
-      await expect(revenue.connect(alice).emergency_withdraw()).to.be.revertedWith(
-        'Tokens are frozen for a specified duration after the last staking')
-      await time.increase(LOCK)
-      await revenue.connect(alice).claim([reward.target]) // settles alice's rewards so far
-      const settled = await bal(alice)
-      await time.increase(DAY)
+      // Emergency withdrawal is permitted immediately without waiting for lock expiration (closes #113)
       await revenue.connect(alice).emergency_withdraw()
       expect(await d20.balanceOf(alice.address)).to.eq(10n * E18)
       expect(await revenue.staked(alice.address)).to.eq(0n)
       expect(await revenue.total_staked()).to.eq(10n * E18)
       await expect(revenue.connect(alice).emergency_withdraw()).to.be.revertedWith('Nothing staked')
-      // The day since her last claim is forfeited; bob and solvency are unaffected.
+      // Bob and solvency remain unaffected; remaining fees stream cleanly
       await time.increase(WEEK)
       await revenue.connect(bob).claim([reward.target])
-      await revenue.connect(alice).claim([reward.target])
-      expect(await bal(alice)).to.eq(settled)
       const r = await revenue.reward_data(reward.target)
       expect(await reward.balanceOf(revenue.target)).to.be.gte(r.accounted)
-      expect((await bal(alice)) + (await bal(bob))).to.be.lte(700n * E18)
-      // She can stake again normally afterwards and earns only from then.
+      expect(await bal(bob)).to.be.lte(700n * E18)
+      // Alice can stake again normally afterwards and earns only from then.
       await stake(alice, E18)
       expect(await revenue.earned(alice.address, reward.target)).to.eq(0n)
     })

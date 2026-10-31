@@ -243,9 +243,8 @@ contract RevenueV2 {
     ///         accounting, for use if reward bookkeeping ever reverts (it cannot under the configured bounds,
     ///         but principal must never depend on it). Rewards already settled to the caller stay claimable;
     ///         anything accrued since the caller's last stake, withdraw or claim is forfeited and stays in the
-    ///         contract. Same lock as withdraw().
+    ///         contract. Unlike regular withdraw(), emergency withdrawal is permitted at any time without time lock restriction.
     function emergency_withdraw() external nonReentrant {
-        require(block.timestamp >= unlock_time[msg.sender], 'Tokens are frozen for a specified duration after the last staking');
         uint256 amount = staked[msg.sender];
         require(amount != 0, 'Nothing staked');
         // Lowering total_staked without accruing first only re-spreads the not-yet-accrued slice over the
