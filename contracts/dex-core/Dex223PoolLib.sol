@@ -833,16 +833,22 @@ contract Dex223PoolLib {
             // then deliver the swapped amount.
 
             // ERC-223 depositing logic
-            if (erc223deposit[swap_sender][token0.erc223] >= uint256(amount0))
+            uint256 deposited0 = erc223deposit[swap_sender][token0.erc223];
+            if (deposited0 >= uint256(amount0))
             {
-                erc223deposit[swap_sender][token0.erc223] -= uint256(amount0);
+                erc223deposit[swap_sender][token0.erc223] = deposited0 - uint256(amount0);
             }
             // ERC-20 depositing logic
             else
             {
+                uint256 remaining0 = uint256(amount0);
+                if (deposited0 > 0) {
+                    erc223deposit[swap_sender][token0.erc223] = 0;
+                    remaining0 -= deposited0;
+                }
                 uint256 balance0Before = balance0();
-                IUniswapV3SwapCallback(swap_sender).uniswapV3SwapCallback(amount0, amount1, data);
-                require(balance0Before.add(uint256(amount0)) <= balance0(), 'IIA');
+                IUniswapV3SwapCallback(swap_sender).uniswapV3SwapCallback(remaining0.toInt256(), amount1, data);
+                require(balance0Before.add(remaining0) <= balance0(), 'IIA');
             }
 
             if (amount1 < 0)
@@ -856,16 +862,22 @@ contract Dex223PoolLib {
             // We don't want to be hacked as TheDAO was.
 
             // ERC-223 depositing logic
-            if (erc223deposit[swap_sender][token1.erc223] >= uint256(amount1))
+            uint256 deposited1 = erc223deposit[swap_sender][token1.erc223];
+            if (deposited1 >= uint256(amount1))
             {
-                erc223deposit[swap_sender][token1.erc223] -= uint256(amount1);
+                erc223deposit[swap_sender][token1.erc223] = deposited1 - uint256(amount1);
             }
             // ERC-20 depositing logic
             else
             {
+                uint256 remaining1 = uint256(amount1);
+                if (deposited1 > 0) {
+                    erc223deposit[swap_sender][token1.erc223] = 0;
+                    remaining1 -= deposited1;
+                }
                 uint256 balance1Before = balance1();
-                IUniswapV3SwapCallback(swap_sender).uniswapV3SwapCallback(amount0, amount1, data);
-                require(balance1Before.add(uint256(amount1)) <= balance1(), 'IIA');
+                IUniswapV3SwapCallback(swap_sender).uniswapV3SwapCallback(amount0, remaining1.toInt256(), data);
+                require(balance1Before.add(remaining1) <= balance1(), 'IIA');
             }
 
             if (amount0 < 0) {

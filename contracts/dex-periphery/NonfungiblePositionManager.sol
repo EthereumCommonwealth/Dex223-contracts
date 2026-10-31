@@ -114,23 +114,11 @@ IERC223Recipient
 //        pool_lib = _library;
     }
 
-    ERC223TransferInfo private tkn;
-    function tokenReceived(address _from, uint _value, bytes memory _data) public override returns (bytes4)
+    address private _collectDepositor;
+    function tokenReceived(address _from, uint _value, bytes memory) public override returns (bytes4)
     {
-        /**
-         * @dev Note that inside of the token transaction handler the actual sender of token transfer is accessible via the tkn.sender variable
-         * (analogue of msg.sender for Ether transfers)
-         *
-         * tkn.value - is the amount of transferred tokens
-         * tkn.data  - is the "metadata" of token transfer
-         * tkn.token_contract is most likely equal to msg.sender because the token contract typically invokes this function
-        */
-        tkn.token_contract = msg.sender;
-        tkn.sender         = _from;
-        tkn.value          = _value;
-        tkn.data           = _data;
-
-        depositERC223(_from, msg.sender, _value);
+        address depositor = _collectDepositor;
+        depositERC223(depositor != address(0) ? depositor : _from, msg.sender, _value);
 
         return 0x8943ec02;
     }
@@ -427,6 +415,12 @@ IERC223Recipient
         // 2 = token0 ERC-223 & token1 ERC-20
         // 3 = both ERC-223.
 
+        address prevDepositor;
+        if (params.recipient == address(0)) {
+            prevDepositor = _collectDepositor;
+            _collectDepositor = msg.sender;
+        }
+
         // the actual amounts collected are returned
         (amount0, amount1) = IDex223PoolActions(params.pool).collect(
             params.recipient == address(0) ? address(this) : params.recipient,
@@ -437,6 +431,17 @@ IERC223Recipient
             tokensOut == 3 || tokensOut == 2, // True = request ERC-223 token0
             tokensOut == 3 || tokensOut == 1  // True = request ERC-223 token1
         );
+
+        if (params.recipient == address(0)) {
+            _collectDepositor = prevDepositor;
+            PoolAddress.PoolKey storage poolKey = _poolIdToPoolKey[position.poolId];
+            if (amount0 > 0 && !(tokensOut == 3 || tokensOut == 2) && poolKey.token0 != WETH9) {
+                depositERC223(msg.sender, poolKey.token0, amount0);
+            }
+            if (amount1 > 0 && !(tokensOut == 3 || tokensOut == 1) && poolKey.token1 != WETH9) {
+                depositERC223(msg.sender, poolKey.token1, amount1);
+            }
+        }
 
         // sometimes there will be a few less wei than expected due to rounding down in core, but we just subtract the full amount expected
         // instead of the actual amount so we can burn the token

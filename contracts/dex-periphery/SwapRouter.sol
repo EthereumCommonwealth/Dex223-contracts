@@ -88,6 +88,7 @@ IERC223Recipient
 
     IERC7417TokenConverter public ERC7417TokenConverter;
     bool unlocked = true;
+    address private activeSwapPool;
 
     // One-shot permission for the single call that `tokenReceived` delegatecalls into this contract.
     // `tokenReceived` holds `lock()` for its whole body, so the call it dispatches needs an explicit permit.
@@ -129,27 +130,36 @@ IERC223Recipient
         ERC7417TokenConverter = IERC7417TokenConverter(_converter);
     }
 
-    function tokenReceived(address _from, uint _value, bytes memory _data) public override lock returns (bytes4)
+    function tokenReceived(address _from, uint _value, bytes memory _data) public override returns (bytes4)
+    {
+        if (!unlocked && activeSwapPool != address(0) && _from == activeSwapPool) {
+            if (call_sender != address(0)) {
+                depositERC223(call_sender, msg.sender, _value);
+            }
+            return 0x8943ec02;
+        }
+        return _tokenReceived(_from, _value, _data);
+    }
+
+    function _tokenReceived(address _from, uint _value, bytes memory _data) private lock returns (bytes4)
     {
         depositERC223(_from, msg.sender, _value);
         call_sender = _from;
         token_sender = msg.sender;
-        if (_data.length != 0)
+        bytes4 selector;
+        if (_data.length >= 4) {
+            assembly {
+                selector := mload(add(_data, 32))
+            }
+        }
+        if (selector != bytes4(0))
         {
             // Standard ERC-223 swapping via ERC-20 pattern.
             // Authorise exactly one guarded call - the one encoded in `_data`.
             erc223CallPermit = true;
-            (bool success, bytes memory _data_) = address(this).delegatecall(_data);
+            (bool success,) = address(this).delegatecall(_data);
             erc223CallPermit = false; // clear it in case the payload never consumed it
             require(success, "23F");
-/*
-            ERC223SwapStep memory encodedSwaps = abi.decode(_data, (ERC223SwapStep));
-
-            for (uint16 i = 0; i < encodedSwaps.path.length; i++)
-            {
-                swapERC223(encodedSwaps.path[i-1], encodedSwaps.path[i]);
-            }
-*/
         }
         delete(call_sender);
         delete(token_sender);
@@ -180,6 +190,27 @@ IERC223Recipient
         uint160 sqrtPriceLimitX96;
     }
 
+    function payWithDepositOrPull(
+        address tokenIn,
+        address payer,
+        address pool,
+        uint256 amountToPay
+    ) private {
+        if (payer != address(this) && !(tokenIn == WETH9 && address(this).balance >= amountToPay)) {
+            (address t0_20, address t0_223) = IDex223Pool(pool).token0();
+            (, address t1_223) = IDex223Pool(pool).token1();
+            address token223 = tokenIn == t0_20 ? t0_223 : t1_223;
+            if (token_sender != address(0)) {
+                require(tokenIn == token_sender || token223 == token_sender, "Wrong token swap requested");
+            }
+            if (token223 != address(0) && _erc223Deposits[payer][token223] >= amountToPay) {
+                pay(token223, payer, pool, amountToPay);
+                return;
+            }
+        }
+        pay(tokenIn, payer, pool, amountToPay);
+    }
+
     /// @inheritdoc IUniswapV3SwapCallback
     function uniswapV3SwapCallback(
         int256 amount0Delta,
@@ -196,7 +227,7 @@ IERC223Recipient
                 ? (tokenIn < tokenOut, uint256(amount0Delta))
                 : (tokenOut < tokenIn, uint256(amount1Delta));
         if (isExactInput) {
-            pay(tokenIn, data.payer, msg.sender, amountToPay);
+            payWithDepositOrPull(tokenIn, data.payer, msg.sender, amountToPay);
         } else {
             // either initiate the next swap or pay
             if (data.path.hasMultiplePools()) {
@@ -205,7 +236,7 @@ IERC223Recipient
             } else {
                 amountInCached = amountToPay;
                 tokenIn = tokenOut; // swap in/out because exact output swaps are reversed
-                pay(tokenIn, data.payer, msg.sender, amountToPay);
+                payWithDepositOrPull(tokenIn, data.payer, msg.sender, amountToPay);
             }
         }
     }
@@ -234,9 +265,11 @@ IERC223Recipient
             sqrtPriceLimitX96: sqrtPriceLimitX96
         });
 
-        if (depositedTokens(call_sender, token_sender) >= amountIn) {
+        uint256 deposited = depositedTokens(call_sender, token_sender);
+        if (deposited > 0) {
             return executeSwapWithDeposit(
                 amountIn,
+                deposited >= amountIn ? amountIn : deposited,
                 recipient,
                 data,
                 swapData
@@ -254,6 +287,7 @@ IERC223Recipient
 
     function executeSwapWithDeposit(
         uint256 amountIn,
+        uint256 depositToUse,
         address recipient,
         SwapCallbackData memory data,
         SwapData memory swapData
@@ -267,7 +301,7 @@ IERC223Recipient
                 ? (swapData.zeroForOne ? TickMath.MIN_SQRT_RATIO + 1 : TickMath.MAX_SQRT_RATIO - 1)
                 : swapData.sqrtPriceLimitX96,
             swapData.prefer223Out,
-            data
+            abi.encode(data)
         );
 
         address _tokenOut = resolveTokenOut(swapData.prefer223Out, swapData.pool, swapData.tokenIn, swapData.tokenOut);
@@ -281,12 +315,15 @@ IERC223Recipient
         uint256 balance1before = tokenNotExist ? 0 : abi.decode(resdata, (uint));
 
         require(call_sender != address(0));             // Make sure this function is executed within `tokenReceived`.
-        debitERC223(call_sender, msg.sender, amountIn);       // Subtract the amount of tokens that we are going to transfer
+        debitERC223(call_sender, msg.sender, depositToUse);   // Subtract the amount of tokens that we are going to transfer
                                                               // from the users balance for safety reasons.
                                                               // `msg.sender` is the address of the contract here because this function
                                                               // is called within `tokenReceived`
                                                               // `call_sender` is the sender of the token.
-        require(IERC223(token_sender).transfer(swapData.pool, amountIn, _data));
+        address prevPool = activeSwapPool;
+        activeSwapPool = swapData.pool;
+        require(IERC223(token_sender).transfer(swapData.pool, depositToUse, _data));
+        activeSwapPool = prevPool;
 
         return uint256(IERC20(_tokenOut).balanceOf(recipient) - balance1before);
     }
@@ -297,6 +334,9 @@ IERC223Recipient
         SwapCallbackData memory data,
         SwapData memory swapData
     ) private returns (uint256 amountOut) {
+        bool expectPoolCallback = recipient == address(this) && swapData.prefer223Out;
+        address prevPool = activeSwapPool;
+        if (expectPoolCallback) activeSwapPool = swapData.pool;
 
         (int256 amount0, int256 amount1) =
             IDex223Pool(swapData.pool).swap(
@@ -309,6 +349,8 @@ IERC223Recipient
                 swapData.prefer223Out,
                 abi.encode(data)
             );
+
+        if (expectPoolCallback) activeSwapPool = prevPool;
 
         return uint256(-(swapData.zeroForOne ? amount1 : amount0));
     }
@@ -508,6 +550,7 @@ IERC223Recipient
     payable
     override
     lock
+    adjustableSender
     checkDeadline(params.deadline)
     returns (uint256 amountIn)
     {
@@ -516,7 +559,7 @@ IERC223Recipient
             params.amountOut,
             params.recipient,
             params.sqrtPriceLimitX96,
-            SwapCallbackData({path: abi.encodePacked(params.tokenOut, params.fee, params.tokenIn), payer: msg.sender})
+            SwapCallbackData({path: abi.encodePacked(params.tokenOut, params.fee, params.tokenIn), payer: call_sender})
         );
 
         require(amountIn <= params.amountInMaximum, 'Too much requested');
@@ -530,16 +573,17 @@ IERC223Recipient
     payable
     override
     lock
+    adjustableSender
     checkDeadline(params.deadline)
     returns (uint256 amountIn)
     {
-        // it's okay that the payer is fixed to msg.sender here, as they're only paying for the "final" exact output
+        // it's okay that the payer is fixed to call_sender here, as they're only paying for the "final" exact output
         // swap, which happens first, and subsequent swaps are paid for within nested callback frames
         exactOutputInternal(
             params.amountOut,
             params.recipient,
             0,
-            SwapCallbackData({path: params.path, payer: msg.sender})
+            SwapCallbackData({path: params.path, payer: call_sender})
         );
 
         amountIn = amountInCached;

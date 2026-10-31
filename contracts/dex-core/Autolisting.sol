@@ -318,6 +318,7 @@ contract Dex223AutoListing {
 
     function checkListing(address _token_erc20, address _token_erc223) internal
     {
+        require(_token_erc20 != address(0) || _token_erc223 != address(0), "Zero token addresses");
 
         // There are two possible scenarios here:
         // 1. We are listing a new token on Dex223.
@@ -343,21 +344,26 @@ contract Dex223AutoListing {
         }
         else
         {
+            if (isListed(_token_erc20) && isListed(_token_erc223)) {
+                require(listed_tokens[_token_erc20] == listed_tokens[_token_erc223], "Token ID mismatch");
+            }
             // Adding a new version (standard) to a previously listed token.
             if(isListed(_token_erc20))
             {
-                // If the token is already listed as ERC-20;
-                tokens[listed_tokens[_token_erc20]] = Token(_token_erc20, _token_erc223);
+                uint256 id = listed_tokens[_token_erc20];
                 if (_token_erc223 != address(0)) {
-                    listed_tokens[_token_erc223]    = listed_tokens[_token_erc20];
+                    require(tokens[id].erc223 == address(0) || tokens[id].erc223 == _token_erc223, "ERC223 already set");
+                    tokens[id].erc223 = _token_erc223;
+                    listed_tokens[_token_erc223] = id;
                 }
             }
             else
             {
-                // Otherwise the token is listed as ERC-223;
-                tokens[listed_tokens[_token_erc223]] = Token(_token_erc20, _token_erc223);
+                uint256 id = listed_tokens[_token_erc223];
                 if (_token_erc20 != address(0)) {
-                    listed_tokens[_token_erc20]      = listed_tokens[_token_erc223];
+                    require(tokens[id].erc20 == address(0) || tokens[id].erc20 == _token_erc20, "ERC20 already set");
+                    tokens[id].erc20 = _token_erc20;
+                    listed_tokens[_token_erc20] = id;
                 }
             }
 
@@ -632,33 +638,38 @@ contract Dex223CoreAutoListing {
     {
         uint price = checkListingCriteria(paymentToken);
 
+        require(token20 != address(0) && token223 != address(0), "Provided token standards are incorrect.");
         // Checking if we are listing a token which has a pool at Dex223.
         require(converter.predictWrapperAddress(token20, true) == token223, "Provided token standards are incorrect.");
 
-        checkListing(token20, token223);
+        uint toTransfer = 0;
+        if (!_isFullyListed(token20, token223)) {
+            toTransfer = price;
+            checkListing(token20, token223);
+        }
 
-        if (price > 0 && msg.sender != owner) {
+        if (toTransfer > 0 && msg.sender != owner) {
             if (paymentToken == address(0)) {
-                require(msg.value >= price, "Payment is not enough");
-                uint refund = msg.value - price;
+                require(msg.value >= toTransfer, "Payment is not enough");
+                uint refund = msg.value - toTransfer;
                 if (refund > 0) {
                     (bool sent, ) = msg.sender.call{value: refund}("");
                     require(sent, "Refund failed");
                 }
             } else {
                 require(msg.value == 0, "Do not send ETH with token payment");
-                safeTransferFrom(paymentToken, msg.sender, address(this), price);
+                safeTransferFrom(paymentToken, msg.sender, address(this), toTransfer);
             }
         } else {
             require(msg.value == 0, "No payment required");
         }
 
-        emit TokenListed(token20, token223);
         last_update = block.timestamp;
     }
 
     function checkListing(address _token_erc20, address _token_erc223) internal
     {
+        require(_token_erc20 != address(0) || _token_erc223 != address(0), "Zero token addresses");
 
         // There are two possible scenarios here:
         // 1. We are listing a new token on Dex223.
@@ -684,21 +695,26 @@ contract Dex223CoreAutoListing {
         }
         else
         {
+            if (isListed(_token_erc20) && isListed(_token_erc223)) {
+                require(listed_tokens[_token_erc20] == listed_tokens[_token_erc223], "Token ID mismatch");
+            }
             // Adding a new version (standard) to a previously listed token.
             if(isListed(_token_erc20))
             {
-                // If the token is already listed as ERC-20;
-                tokens[listed_tokens[_token_erc20]] = Token(_token_erc20, _token_erc223);
+                uint256 id = listed_tokens[_token_erc20];
                 if (_token_erc223 != address(0)) {
-                    listed_tokens[_token_erc223]    = listed_tokens[_token_erc20];
+                    require(tokens[id].erc223 == address(0) || tokens[id].erc223 == _token_erc223, "ERC223 already set");
+                    tokens[id].erc223 = _token_erc223;
+                    listed_tokens[_token_erc223] = id;
                 }
             }
             else
             {
-                // Otherwise the token is listed as ERC-223;
-                tokens[listed_tokens[_token_erc223]] = Token(_token_erc20, _token_erc223);
+                uint256 id = listed_tokens[_token_erc223];
                 if (_token_erc20 != address(0)) {
-                    listed_tokens[_token_erc20]      = listed_tokens[_token_erc223];
+                    require(tokens[id].erc20 == address(0) || tokens[id].erc20 == _token_erc20, "ERC20 already set");
+                    tokens[id].erc20 = _token_erc20;
+                    listed_tokens[_token_erc20] = id;
                 }
             }
 
@@ -999,6 +1015,7 @@ contract Dex223OwnableListing {
 
     function checkListing(address _token_erc20, address _token_erc223) internal
     {
+        require(_token_erc20 != address(0) || _token_erc223 != address(0), "Zero token addresses");
 
         // There are two possible scenarios here:
         // 1. We are listing a new token on Dex223.
@@ -1024,21 +1041,26 @@ contract Dex223OwnableListing {
         }
         else
         {
+            if (isListed(_token_erc20) && isListed(_token_erc223)) {
+                require(listed_tokens[_token_erc20] == listed_tokens[_token_erc223], "Token ID mismatch");
+            }
             // Adding a new version (standard) to a previously listed token.
             if(isListed(_token_erc20))
             {
-                // If the token is already listed as ERC-20;
-                tokens[listed_tokens[_token_erc20]] = Token(_token_erc20, _token_erc223);
+                uint256 id = listed_tokens[_token_erc20];
                 if (_token_erc223 != address(0)) {
-                    listed_tokens[_token_erc223]    = listed_tokens[_token_erc20];
+                    require(tokens[id].erc223 == address(0) || tokens[id].erc223 == _token_erc223, "ERC223 already set");
+                    tokens[id].erc223 = _token_erc223;
+                    listed_tokens[_token_erc223] = id;
                 }
             }
             else
             {
-                // Otherwise the token is listed as ERC-223;
-                tokens[listed_tokens[_token_erc223]] = Token(_token_erc20, _token_erc223);
+                uint256 id = listed_tokens[_token_erc223];
                 if (_token_erc20 != address(0)) {
-                    listed_tokens[_token_erc20]      = listed_tokens[_token_erc223];
+                    require(tokens[id].erc20 == address(0) || tokens[id].erc20 == _token_erc20, "ERC20 already set");
+                    tokens[id].erc20 = _token_erc20;
+                    listed_tokens[_token_erc20] = id;
                 }
             }
 
