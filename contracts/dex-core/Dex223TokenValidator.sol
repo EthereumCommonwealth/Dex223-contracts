@@ -122,6 +122,14 @@ contract Dex223TokenValidator {
         if(!_tokenIsErc20Wrapper)
         {
             // We assume scenario 1, _token is ERC-20 origin.
+            // An ERC-20 origin already exists. A codeless _token here is not one: a not-yet-created ERC-20 wrapper
+            // of an ERC-223 origin is recognised above and handled as scenario 2. Accepting it here let anyone pair
+            // the future wrapper address with its own "ERC-223 wrapper" and take that token's canonical pools
+            // before the real wrapper existed.
+            uint256 _origin20_code_size;
+            // solhint-disable-next-line no-inline-assembly
+            assembly { _origin20_code_size := extcodesize(_token) }
+            require(_origin20_code_size > 0, "FACTORY: NO_ERC20_ORIGIN");
 
             // Now check if the _token223 is a ERC-223 wrapper or can be predicted as a ERC-223 wrapper by the converter.
             uint256 _code_size;
