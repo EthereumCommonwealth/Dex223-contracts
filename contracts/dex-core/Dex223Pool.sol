@@ -540,7 +540,10 @@ contract Dex223Pool is IUniswapV3Pool, NoDelegateCall, PeripheryValidation {
         // quoteSwap performs a `revert()` once it will reach IUniswapV3SwapCallback invocation
         // and passes callback values back to retdata.
         (bool success, bytes memory retdata) = quote_lib.delegatecall(abi.encodeWithSignature("quoteSwap(address,bool,int256,uint160,bool,bytes)", recipient, zeroForOne, amountSpecified, sqrtPriceLimitX96, prefer223, data));
-        require(retdata.length >= 32, "POOL: QUOTE_FAILED");
+        if (retdata.length != 32) {
+            if (retdata.length > 0) _bubbleRevert(retdata);
+            revert("POOL: QUOTE_FAILED");
+        }
         (int256 _d0) = abi.decode(retdata, (int256));
         emit Delta0(_d0);
 
@@ -600,6 +603,7 @@ contract Dex223Pool is IUniswapV3Pool, NoDelegateCall, PeripheryValidation {
         uint256 deadline,
         bool unwrapETH
     ) external virtual lock adjustableSender checkDeadline(deadline) returns (uint256 amountOut) {
+        require(amountSpecified > 0, 'AS');
         (bool success, bytes memory retdata) = pool_lib.delegatecall(
             abi.encodeWithSignature("swap(address,bool,int256,uint160,bool,bytes)",
                 unwrapETH ? address(this) : recipient, zeroForOne, amountSpecified, sqrtPriceLimitX96,

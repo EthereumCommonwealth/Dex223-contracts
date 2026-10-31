@@ -668,7 +668,7 @@ contract Dex223QuoteLib {
         //           in case of ERC-223 this `swap()` func is called within `tokenReceived()` invocation
         //           so the ERC-223 tokens are already in the contract
         //           and the amount is stored in the `erc223deposit[msg.sender][token]` variable.
-        if (zeroForOne) {
+        if (zeroForOne == exactInput) {
             // There is no ERC-223 case handling in quote-swap prediction
             // since we don't care about the method of tokens delivery
             // and only compute numbers to return to the caller.
