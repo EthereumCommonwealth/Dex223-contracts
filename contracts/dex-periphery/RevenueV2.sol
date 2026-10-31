@@ -352,7 +352,11 @@ contract RevenueV2 {
 
     /// @notice Revenue of `token` that has arrived but has not been synced yet.
     function unsynced(address token) external view returns (uint256) {
-        uint256 bal = IERC20Minimal(token).balanceOf(address(this));
+        (bool ok, bytes memory data) = token.staticcall{gas: BALANCE_GAS}(
+            abi.encodeWithSelector(IERC20Minimal.balanceOf.selector, address(this))
+        );
+        if (!ok || data.length < 32) return 0;
+        uint256 bal = abi.decode(data, (uint256));
         uint256 accounted = reward_data[token].accounted;
         return bal > accounted ? bal - accounted : 0;
     }

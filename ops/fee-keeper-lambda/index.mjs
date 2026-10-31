@@ -61,6 +61,7 @@ const COLLECTOR_ABI = [
 ]
 const REVENUE_ABI = [
   'function get_reward_tokens() view returns (address[])',
+  'function reward_duration() view returns (uint256)',
   'function unsynced(address) view returns (uint256)',
   'function reward_data(address) view returns (bool listed, uint64 period_finish, uint64 last_update, uint256 rate, uint256 reward_per_token, uint256 queued, uint256 accounted)',
   'function syncAll()',
@@ -95,7 +96,8 @@ async function etherscanPoolLogs(chainId, factory, fromBlock, toBlock, apiKey, i
     }
     out.push(...res.result)
     if (res.result.length < 1000) break
-    from = parseInt(res.result[res.result.length - 1].blockNumber, 16)
+    const lastBlock = parseInt(res.result[res.result.length - 1].blockNumber, 16)
+    from = lastBlock > from ? lastBlock : from + 1
     await new Promise((r) => setTimeout(r, 250))
   }
   const pools = new Set()
@@ -197,12 +199,20 @@ async function runNetwork(name, cfg, secret, dryRun) {
   // the queue is at least what the running stream has left.
   const revenue = new ethers.Contract(await collector.revenue(), REVENUE_ABI, signer)
   const now = BigInt((await provider.getBlock('latest')).timestamp)
+  const duration = BigInt(await revenue.reward_duration())
   const pending = []
   for (const t of await revenue.get_reward_tokens()) {
-    const [unsynced, r] = await Promise.all([revenue.unsynced(t), revenue.reward_data(t)])
+    let unsynced = 0n
+    let r
+    try {
+      ;[unsynced, r] = await Promise.all([revenue.unsynced(t), revenue.reward_data(t)])
+    } catch {
+      continue
+    }
     const running = now < r.period_finish
     const remaining = running ? r.rate * (r.period_finish - now) : 0n
-    const startable = running ? r.queued > 0n && r.queued >= remaining : r.queued >= STREAM_SCALE
+    const pot = r.queued + remaining
+    const startable = r.queued >= remaining && (pot / duration) * duration >= STREAM_SCALE
     if (unsynced > 0n || startable) pending.push(t)
   }
   if (pending.length) await send(`syncAll(${pending.length} tokens)`, () => revenue.syncAll(fees))

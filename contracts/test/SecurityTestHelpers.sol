@@ -73,3 +73,43 @@ contract RogueERC223 {
         balanceOf[msg.sender] -= value; balanceOf[to] += value; return true;
     }
 }
+
+/// @dev Mock pool used to test SwapRouter defense against forged / zero-delivery intermediate hops
+///      and unverified pool addresses in exactInputDoubleStandard.
+contract ForgedSwapPool {
+    int256 public forgedAmount0;
+    int256 public forgedAmount1;
+    bool public triggerCallback;
+    int256 public cbDelta0;
+    int256 public cbDelta1;
+
+    function configure(int256 _a0, int256 _a1, bool _cb, int256 _d0, int256 _d1) external {
+        forgedAmount0 = _a0;
+        forgedAmount1 = _a1;
+        triggerCallback = _cb;
+        cbDelta0 = _d0;
+        cbDelta1 = _d1;
+    }
+
+    function swap(
+        address,
+        bool,
+        int256,
+        uint160,
+        bool,
+        bytes memory data
+    ) external returns (int256, int256) {
+        if (triggerCallback) {
+            (bool ok, bytes memory ret) = msg.sender.call(
+                abi.encodeWithSignature("uniswapV3SwapCallback(int256,int256,bytes)", cbDelta0, cbDelta1, data)
+            );
+            if (!ok) {
+                assembly {
+                    revert(add(ret, 32), mload(ret))
+                }
+            }
+        }
+        return (forgedAmount0, forgedAmount1);
+    }
+}
+

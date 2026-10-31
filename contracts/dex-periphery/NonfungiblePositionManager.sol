@@ -329,7 +329,7 @@ IERC223Recipient
         require(positionLiquidity >= params.liquidity);
 
         PoolAddress.PoolKey memory poolKey = _poolIdToPoolKey[position.poolId];
-        IUniswapV3Pool pool = IUniswapV3Pool(PoolAddress.computeAddress(factory, poolKey));
+        IUniswapV3Pool pool = IUniswapV3Pool(IDex223Factory(factory).getPool(poolKey.token0, poolKey.token1, poolKey.fee));
         (amount0, amount1) = pool.burn(position.tickLower, position.tickUpper, params.liquidity);
 
         require(amount0 >= params.amount0Min && amount1 >= params.amount1Min);//, 'Price slippage check');

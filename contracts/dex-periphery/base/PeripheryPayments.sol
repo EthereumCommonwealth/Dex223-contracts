@@ -3,6 +3,7 @@ pragma solidity >=0.7.5;
 
 import '../../tokens/interfaces/IWETH9.sol';
 import '../../tokens/interfaces/IERC20.sol';
+import '../../libraries/LowGasSafeMath.sol';
 import '../../libraries/TransferHelper.sol';
 
 import '../interfaces/IPeripheryPayments.sol';
@@ -25,6 +26,7 @@ interface IERC223 {
 /// @title PeripheryPayments
 /// @notice Handles ETH/WETH and ERC-223 token payment flows for DEX periphery contracts
 abstract contract PeripheryPayments is IPeripheryPayments, PeripheryImmutableState {
+    using LowGasSafeMath for uint256;
 
     /// @dev User => Token => Balance
     mapping(address => mapping(address => uint256)) internal _erc223Deposits;
@@ -115,7 +117,7 @@ abstract contract PeripheryPayments is IPeripheryPayments, PeripheryImmutableSta
     function unwrapWETH9(uint256 amountMinimum, address recipient) public payable override {
         require(recipient != address(0), 'Invalid recipient');
 
-        uint256 balanceWETH9 = IWETH9(WETH9).balanceOf(address(this));
+        uint256 balanceWETH9 = IWETH9(WETH9).balanceOf(address(this)).sub(_erc223TotalDeposits[WETH9]);
         require(balanceWETH9 >= amountMinimum, 'Insufficient WETH9');
 
         if (balanceWETH9 > 0) {
@@ -166,7 +168,12 @@ abstract contract PeripheryPayments is IPeripheryPayments, PeripheryImmutableSta
             TransferHelper.safeTransferFrom(token, address(this), recipient, value);
         }
         else if (payer == address(this)) {
-            // pay with tokens already in the contract (for the exact input multihop case)
+            // pay with tokens already in the contract (for the exact input multihop case),
+            // leaving depositors' _erc223TotalDeposits untouched.
+            require(
+                IERC20(token).balanceOf(address(this)).sub(_erc223TotalDeposits[token]) >= value,
+                'Insufficient router balance'
+            );
             TransferHelper.safeTransfer(token, recipient, value);
         } else {
             // pull payment
