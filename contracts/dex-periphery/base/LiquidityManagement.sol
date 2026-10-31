@@ -33,6 +33,8 @@ contract IDex223Pool
 abstract contract LiquidityManagement is IUniswapV3MintCallback, PeripheryImmutableState, PeripheryPayments {
     struct MintCallbackData {
         PoolAddress.PoolKey poolKey;
+        address token0;
+        address token1;
         address payer;
     }
 
@@ -54,7 +56,7 @@ abstract contract LiquidityManagement is IUniswapV3MintCallback, PeripheryImmuta
             }
             else
             {
-                pay(decoded.poolKey.token0, decoded.payer, msg.sender, amount0Owed);
+                pay(decoded.token0, decoded.payer, msg.sender, amount0Owed);
             }
         }
         if (amount1Owed > 0)
@@ -66,7 +68,7 @@ abstract contract LiquidityManagement is IUniswapV3MintCallback, PeripheryImmuta
             }
             else
             {
-                pay(decoded.poolKey.token1, decoded.payer, msg.sender, amount1Owed);
+                pay(decoded.token1, decoded.payer, msg.sender, amount1Owed);
             }
         }
     }
@@ -91,16 +93,21 @@ abstract contract LiquidityManagement is IUniswapV3MintCallback, PeripheryImmuta
             uint128 liquidity,
             uint256 amount0,
             uint256 amount1,
-            IUniswapV3Pool pool
+            IUniswapV3Pool pool,
+            PoolAddress.PoolKey memory poolKey
         )
     {
-        PoolAddress.PoolKey memory poolKey =
-            PoolAddress.PoolKey({token0: params.token0, token1: params.token1, fee: params.fee});
-
         //pool = IUniswapV3Pool(PoolAddress.computeAddress(factory, poolKey));
         address poolAddr = IDex223Factory(factory).getPool(params.token0, params.token1, params.fee);
         require(poolAddr != address(0), 'LM: pool does not exist');
         pool = IUniswapV3Pool(poolAddr);
+
+        {
+            (address token0, address token0_223) = IDex223Pool(poolAddr).token0();
+            (address token1, ) = IDex223Pool(poolAddr).token1();
+            require(params.token0 == token0 || params.token0 == token0_223);
+            poolKey = PoolAddress.PoolKey({token0: token0, token1: token1, fee: params.fee});
+        }
 
         // compute the liquidity amount
         {
@@ -124,7 +131,14 @@ abstract contract LiquidityManagement is IUniswapV3MintCallback, PeripheryImmuta
             params.tickLower,
             params.tickUpper,
             liquidity,
-            abi.encode(MintCallbackData({poolKey: poolKey, payer: msg.sender}))
+            abi.encode(
+                MintCallbackData({
+                    poolKey: poolKey,
+                    token0: params.token0,
+                    token1: params.token1,
+                    payer: msg.sender
+                })
+            )
         );
 
         require(amount0 >= params.amount0Min && amount1 >= params.amount1Min, 'Price slippage check');
