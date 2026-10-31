@@ -32,9 +32,11 @@ const NETWORKS = {
   sepolia: {
     chainId: 11155111,
     rpc: process.env.SEPOLIA_RPC_URL || 'https://ethereum-sepolia-rpc.publicnode.com',
-    factory: '0xeA0A163e0196Bf1500B1B41d3ADdA0476dC137eb',
-    collector: '0x9B96be5B9668747Bb50Ff32029140bb7EAea69A5',
-    fromBlock: 11755632,
+    // Sepolia v4 (2026-10-30, deployments/sepolia-v4.json). The collector only acts on its own factory's pools,
+    // so the two must move together.
+    factory: '0x4EC06106Cf666A817586563ae042ffF8B76e3460',
+    collector: '0x77Ff8BC37218362efa7b088a6f0D70fE90b74555',
+    fromBlock: 12026940,
     // Sepolia's suggested fee is thousands of times the real one; pin it.
     fixedFeeGwei: '0.001',
   },
