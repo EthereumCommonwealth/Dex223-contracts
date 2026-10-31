@@ -465,6 +465,8 @@ contract MarginModule is IOrderParams
     {
         Order storage order = orders[_orderId];
         require(order_status[_orderId].positions == 0, "Order has active positions");
+        require(_leverage > 1);
+        require(_deadline > block.timestamp);
         _requirePriceOracle(_oracle);
 
         order.whitelist     = _whitelist;
@@ -754,6 +756,7 @@ contract MarginModule is IOrderParams
         // Increment the amount of active positions associated with the parent order,
         // we are tracking the active positions to make sure that the Order owner
         // will not modify an Order that has any active positins.
+        require(order_status[_orderId].positions < type(uint8).max, "Max positions reached");
         order_status[_orderId].positions++;
 
         emit PositionOpened(_positionId, msg.sender, _amount, order.baseAsset, order.collateralAssets[_collateralIdx], _collateralAmount);

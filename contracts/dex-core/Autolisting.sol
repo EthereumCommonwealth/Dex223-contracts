@@ -907,36 +907,34 @@ contract Dex223OwnableListing {
 
     function isListed(address _token) public view returns (bool)
     {
-        return (listed_tokens[_token] != 0);
+        return (listed_tokens[_token] != 0 && banned_tokens[_token] == 0);
     }
 
     function listTokenByOwner(address _token20, address _token223) public onlyOwner
     {
         checkListing(_token20, _token223);
-
-        if(_token20 != address(0))
-        {
-            registry.recordListing(_token20, address(0));
-        }
-        if(_token223 != address(0))
-        {
-            registry.recordListing(address(0), _token223);
-        }
         last_update = block.timestamp;
     }
 
     function banToken(address _token20, address _token223) public onlyOwner
     {
+        require(_token20 != address(0) || _token223 != address(0), "Zero token");
+        num_banned_tokens++;
         registry.tokenBanned(_token20, _token223);
 
         if(_token20 != address(0))
         {
+            banned_tokens[_token20] = num_banned_tokens;
+            delete listed_tokens[_token20];
             emit TokenBanned(_token20);
         }
         if(_token223 != address(0))
         {
+            banned_tokens[_token223] = num_banned_tokens;
+            delete listed_tokens[_token223];
             emit TokenBanned(_token223);
         }
+        last_update = block.timestamp;
     }
 
     function _isFullyListed(address _erc20, address _erc223) internal view returns (bool)
@@ -999,6 +997,7 @@ contract Dex223OwnableListing {
 
     function checkListing(address _token_erc20, address _token_erc223) internal
     {
+        require(banned_tokens[_token_erc20] == 0 && banned_tokens[_token_erc223] == 0, "Token is banned");
 
         // There are two possible scenarios here:
         // 1. We are listing a new token on Dex223.
