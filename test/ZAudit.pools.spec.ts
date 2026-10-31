@@ -3,7 +3,7 @@ import { expect } from 'chai'
 import { loadFixture } from '@nomicfoundation/hardhat-network-helpers'
 import { poolFixture } from './shared/fixtures'
 import { completeFixture } from './shared/completeFixture'
-import { expandTo18Decimals, FeeAmount } from './shared/utilities'
+import { expandTo18Decimals, FeeAmount, encodePriceSqrt, MIN_SQRT_RATIO, MAX_SQRT_RATIO } from './shared/utilities'
 
 /**
  * Fund-safety regressions from the 2026-10 audit of the pools, factory, router and converter.
@@ -118,6 +118,107 @@ describe('fund safety: pools, factory, router, converter (2026-10 audit)', () =>
       expect(await token0.balanceOf(converter.target)).to.eq(deposit0)
       expect(await converter.erc20Supply(token0.target)).to.eq(supply0)
       expect(await wrapper0.totalSupply()).to.eq(wrapperSupply0)
+    })
+  })
+  describe('quoteSwap and swapExactInput audit regressions (#36)', () => {
+    it('exact-output quoteSwap (amountSpecified < 0) returns required input instead of echo amountSpecified', async () => {
+      const { token0, token1, createPool, swapTargetCallee } = await loadFixture(poolFixture)
+      const TS = 60
+      const pool = await createPool(3000, TS)
+      const [wallet] = await ethers.getSigners()
+
+      await pool.initialize(encodePriceSqrt(1n, 1n))
+      await token0.approve(swapTargetCallee.target, ethers.MaxUint256)
+      await token1.approve(swapTargetCallee.target, ethers.MaxUint256)
+      await swapTargetCallee.mint(pool.target, wallet.address, -600, 600, expandTo18Decimals(10))
+
+      // exact-output swap for zeroForOne = true (buying token1 with token0, amountSpecified < 0)
+      const exactOutputAmount = -expandTo18Decimals(1)
+      const minSqrtRatio = MIN_SQRT_RATIO + 1n
+      const quote0For1 = await pool.quoteSwap.staticCall(
+        wallet.address,
+        true,
+        exactOutputAmount,
+        minSqrtRatio,
+        false,
+        '0x'
+      )
+      // Must return required positive input amount of token0, NOT the echo of exactOutputAmount
+      expect(quote0For1).to.be.gt(0n)
+      expect(quote0For1).to.not.equal(exactOutputAmount)
+
+      // exact-output swap for zeroForOne = false (buying token0 with token1, amountSpecified < 0)
+      const maxSqrtRatio = MAX_SQRT_RATIO - 1n
+      const quote1For0 = await pool.quoteSwap.staticCall(
+        wallet.address,
+        false,
+        exactOutputAmount,
+        maxSqrtRatio,
+        false,
+        '0x'
+      )
+      // Must return required positive input amount of token1, NOT the echo of exactOutputAmount
+      expect(quote1For0).to.be.gt(0n)
+      expect(quote1For0).to.not.equal(exactOutputAmount)
+    })
+
+    it('quoteSwap bubbles up internal reverts instead of decoding them into corrupted int256', async () => {
+      const { createPool } = await loadFixture(poolFixture)
+      const TS = 60
+      const pool = await createPool(3000, TS)
+      const [wallet] = await ethers.getSigners()
+
+      // Invalid sqrtPriceLimitX96 <= MIN_SQRT_RATIO for zeroForOne = true triggers require(sqrtPriceLimitX96 > MIN_SQRT_RATIO, 'SPL')
+      const invalidSqrtRatio = MIN_SQRT_RATIO
+
+      // Before fix: retdata.length >= 32 treated Error('SPL') as success and returned ~3.96e75.
+      // After fix: retdata.length != 32 bubbles up the revert with 'SPL'.
+      await expect(
+        pool.quoteSwap.staticCall(
+          wallet.address,
+          true,
+          expandTo18Decimals(1),
+          invalidSqrtRatio,
+          false,
+          '0x'
+        )
+      ).to.be.revertedWith('SPL')
+    })
+
+    it('swapExactInput reverts with AS when amountSpecified <= 0', async () => {
+      const { createPool } = await loadFixture(poolFixture)
+      const TS = 60
+      const pool = await createPool(3000, TS)
+      const [wallet] = await ethers.getSigners()
+      const deadline = 999999999999n
+
+      await expect(
+        pool.swapExactInput(
+          wallet.address,
+          true,
+          -100n,
+          0n,
+          MIN_SQRT_RATIO + 1n,
+          false,
+          '0x',
+          deadline,
+          false
+        )
+      ).to.be.revertedWith('AS')
+
+      await expect(
+        pool.swapExactInput(
+          wallet.address,
+          true,
+          0n,
+          0n,
+          MIN_SQRT_RATIO + 1n,
+          false,
+          '0x',
+          deadline,
+          false
+        )
+      ).to.be.revertedWith('AS')
     })
   })
 })
