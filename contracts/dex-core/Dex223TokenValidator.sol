@@ -108,11 +108,11 @@ contract Dex223TokenValidator {
         // converter would deterministically derive for _token223, which the caller cannot forge, and the
         // scenario 2 branch still requires the ERC-223 origin to exist and to report `standard() == 223`.
         bool _tokenIsErc20Wrapper = converter.isWrapper(_token);
+        uint256 _token20_code_size;
+        // solhint-disable-next-line no-inline-assembly
+        assembly { _token20_code_size := extcodesize(_token) }
         if(!_tokenIsErc20Wrapper)
         {
-            uint256 _token20_code_size;
-            // solhint-disable-next-line no-inline-assembly
-            assembly { _token20_code_size := extcodesize(_token) }
             if(_token20_code_size == 0 && converter.predictWrapperAddress(_token223, false) == _token)
             {
                 _tokenIsErc20Wrapper = true;
@@ -122,6 +122,7 @@ contract Dex223TokenValidator {
         if(!_tokenIsErc20Wrapper)
         {
             // We assume scenario 1, _token is ERC-20 origin.
+            require(_token20_code_size > 0, "FACTORY: NO_ERC20_ORIGIN"); // ERC-20 origin MUST exist.
 
             // Now check if the _token223 is a ERC-223 wrapper or can be predicted as a ERC-223 wrapper by the converter.
             uint256 _code_size;
