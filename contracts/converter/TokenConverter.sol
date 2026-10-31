@@ -227,7 +227,7 @@ contract ERC223WrapperToken is IERC223, ERC165, ERC20Rescue
     function transfer(address _to, uint _value) public override returns (bool success)
     {
         require(_to != address(0), "ERC223: transfer to the zero address");
-        bytes memory _empty = hex"00000000";
+        bytes memory _empty = "";
         balances[msg.sender] = balances[msg.sender] - _value;
         balances[_to] = balances[_to] + _value;
         emit Transfer(msg.sender, _to, _value, _empty);

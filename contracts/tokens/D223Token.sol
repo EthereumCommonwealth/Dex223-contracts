@@ -216,7 +216,7 @@ contract D223Token {
     function transfer(address _to, uint _value) public payable returns (bool success)
     {
         if(msg.value > 0) payable(_to).transfer(msg.value);
-        bytes memory _empty = hex"00000000";
+        bytes memory _empty = "";
         balances[msg.sender] = balances[msg.sender] - _value;
         balances[_to] = balances[_to] + _value;
         if(Address.isContract(_to)) {
