@@ -109,4 +109,50 @@ describe('AutoListing', () => {
         })
 
     })
+
+    // An ERC-223 origin (like D223) is listed with its converter-made ERC-20 wrapper. The converter's ERC-223
+    // wrapper of that wrapper is a different, codeless address; it must never replace the origin in the listing.
+    describe('listing pairs', () => {
+        async function erc223Origin() {
+            const origin = await (await ethers.getContractFactory('ERC223HybridToken')).deploy('origin', 'O', 18n)
+            const w20 = await converter.predictWrapperAddress(origin.target, false)
+            const wrapperOfWrapper = await converter.predictWrapperAddress(w20, true)
+            return { origin: origin.target.toString(), w20, wrapperOfWrapper }
+        }
+
+        it('core listSingle refuses an ERC-20 wrapper or a codeless address as the ERC-20 origin', async () => {
+            const core = await (await ethers.getContractFactory('Dex223CoreAutoListing'))
+                .deploy(factory.target, registry.target, converter.target, 'core', 'https://core')
+            const { origin, w20, wrapperOfWrapper } = await erc223Origin()
+
+            // The ERC-20 wrapper does not exist yet: no code.
+            await expect(core.listSingle(w20, wrapperOfWrapper, ethers.ZeroAddress)).to.be.revertedWith('Not an ERC-20 origin')
+
+            await converter.createERC20Wrapper(origin)
+            await expect(core.listSingle(w20, wrapperOfWrapper, ethers.ZeroAddress)).to.be.revertedWith('Not an ERC-20 origin')
+            expect(await core.isListed(w20)).to.eq(false)
+
+            // A real ERC-20 origin still lists with its ERC-223 wrapper.
+            await core.listSingle(token0.target, token3, ethers.ZeroAddress)
+            expect(await core.tokens(await core.listed_tokens(token0.target))).to.deep.eq([token0.target.toString(), token3])
+        })
+
+        it('an update never re-pairs a listed token, and a zero half leaves it as it is', async () => {
+            // checkListing is shared by all three listings. The owner's listTokenByOwner passes any pair to it,
+            // so the guard is tested here independently of how a contradicting pair might arrive (on the free
+            // listing that was a pool squatting a wrapper address, which the validator now refuses).
+            const ownable = await (await ethers.getContractFactory('Dex223OwnableListing'))
+                .deploy(factory.target, registry.target, 'ownable', 'https://ownable')
+            const { origin, w20, wrapperOfWrapper } = await erc223Origin()
+
+            await ownable.listTokenByOwner(w20, origin)
+            const id = await ownable.listed_tokens(w20)
+            expect(await ownable.getToken(id)).to.deep.eq([w20, origin])
+
+            await expect(ownable.listTokenByOwner(w20, wrapperOfWrapper)).to.be.revertedWith('Listing pair mismatch')
+            await ownable.listTokenByOwner(w20, ethers.ZeroAddress)
+            expect(await ownable.getToken(id)).to.deep.eq([w20, origin])
+            expect(await ownable.isListed(wrapperOfWrapper)).to.eq(false)
+        })
+    })
 })
