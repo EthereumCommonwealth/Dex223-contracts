@@ -120,4 +120,61 @@ describe('fund safety: pools, factory, router, converter (2026-10 audit)', () =>
       expect(await wrapper0.totalSupply()).to.eq(wrapperSupply0)
     })
   })
+
+  describe('issue #36 regressions (quoteSwap, swapExactInput, ProtocolFeeCollector)', () => {
+    it('F-01: quoteSwap exact-output (amountSpecified < 0) returns computed required input instead of echoing output parameter', async () => {
+      const { pool, trader } = await loadFixture(poolFixture)
+      const exactOut = -expandTo18Decimals(1)
+      const minSqrtRatio = 4295128740n
+      const maxSqrtRatio = 1461446703485210103287273052203988822378723970341n
+
+      const quotedIn0 = await pool.quoteSwap.staticCall(
+        trader.address,
+        true,
+        exactOut,
+        minSqrtRatio,
+        false,
+        '0x'
+      )
+      expect(quotedIn0).to.be.gt(expandTo18Decimals(1))
+
+      const quotedIn1 = await pool.quoteSwap.staticCall(
+        trader.address,
+        false,
+        exactOut,
+        maxSqrtRatio,
+        false,
+        '0x'
+      )
+      expect(quotedIn1).to.be.gt(expandTo18Decimals(1))
+    })
+
+    it('F-02: quoteSwap bubbles Error(string) reverts instead of ABI-decoding them as bogus int256 quotes', async () => {
+      const { pool, trader } = await loadFixture(poolFixture)
+      await expect(
+        pool.quoteSwap.staticCall(trader.address, true, 0n, 4295128740n, false, '0x')
+      ).to.be.revertedWith('AS')
+
+      await expect(
+        pool.quoteSwap.staticCall(trader.address, true, expandTo18Decimals(1), 0n, false, '0x')
+      ).to.be.revertedWith('SPL')
+    })
+
+    it('F-04: swapExactInput rejects non-positive amountSpecified (amountSpecified <= 0)', async () => {
+      const { pool, trader } = await loadFixture(poolFixture)
+      await expect(
+        pool.connect(trader).swapExactInput(
+          trader.address,
+          true,
+          -expandTo18Decimals(1),
+          0n,
+          4295128740n,
+          false,
+          '0x',
+          ethers.MaxUint256,
+          false
+        )
+      ).to.be.revertedWith('AS')
+    })
+  })
 })
