@@ -213,5 +213,16 @@ describe('ProtocolFeeCollector', () => {
       await f.collector.setDefaultFeeProtocol(0, 10)
       expect(await f.collector.defaultFeeProtocol1()).to.eq(10)
     })
+
+    it('owner can configure collectGas down to COLLECT_GAS (300,000), and lower values revert', async () => {
+      const f = await handedOver()
+      expect(await f.collector.collectGas()).to.eq(1_000_000n)
+      await expect(f.collector.connect(f.keeper).setCollectGas(500_000)).to.be.revertedWith('NOT_OWNER')
+      await expect(f.collector.setCollectGas(299_999)).to.be.revertedWith('LOW_GAS')
+      await expect(f.collector.setCollectGas(300_000))
+        .to.emit(f.collector, 'CollectGasUpdated')
+        .withArgs(300_000n)
+      expect(await f.collector.collectGas()).to.eq(300_000n)
+    })
   })
 })

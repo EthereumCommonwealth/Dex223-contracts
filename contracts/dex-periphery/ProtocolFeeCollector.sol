@@ -37,11 +37,13 @@ contract ProtocolFeeCollector {
     ///         gas it is given; capped, such a pool is skipped without starving the rest of the batch.
     ///         A pool that needs more can still be collected by the owner through `execute`.
     uint256 public constant COLLECT_GAS = 300_000;
+    uint256 public collectGas = 1_000_000;
     uint256 public constant SET_FEE_GAS = 100_000;
     uint256 public constant FACTORY_CHECK_GAS = 30_000;
     uint256 private constant RESERVE_OVERHEAD = 20_000;
 
     event OwnershipTransferStarted(address indexed previousOwner, address indexed newOwner);
+    event CollectGasUpdated(uint256 collectGas);
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
     event RevenueUpdated(address indexed revenue);
     event DefaultFeeProtocolUpdated(uint8 feeProtocol0, uint8 feeProtocol1);
@@ -84,13 +86,14 @@ contract ProtocolFeeCollector {
     ///         OUT_OF_GAS if the transaction cannot give every pool its full allowance.
     function collect(address[] calldata pools) external {
         address _revenue = revenue;
+        uint256 _collectGas = collectGas;
         for (uint256 i = 0; i < pools.length; i++) {
             if (!isFactoryPool(pools[i])) {
                 emit PoolSkipped(pools[i], 'NOT_FACTORY_POOL');
                 continue;
             }
-            reserveGas(COLLECT_GAS);
-            try IFeeCollectorPool(pools[i]).collectProtocol{gas: COLLECT_GAS}(_revenue, type(uint128).max, type(uint128).max, false, false) returns (
+            reserveGas(_collectGas);
+            try IFeeCollectorPool(pools[i]).collectProtocol{gas: _collectGas}(_revenue, type(uint128).max, type(uint128).max, false, false) returns (
                 uint128 amount0,
                 uint128 amount1
             ) {
@@ -144,6 +147,12 @@ contract ProtocolFeeCollector {
         require(_revenue != address(0), 'ZERO_REVENUE');
         revenue = _revenue;
         emit RevenueUpdated(_revenue);
+    }
+
+    function setCollectGas(uint256 _collectGas) external onlyOwner {
+        require(_collectGas >= COLLECT_GAS, 'LOW_GAS');
+        collectGas = _collectGas;
+        emit CollectGasUpdated(_collectGas);
     }
 
     function setDefaultFeeProtocol(uint8 feeProtocol0, uint8 feeProtocol1) external onlyOwner {
