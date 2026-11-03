@@ -11,6 +11,7 @@
 import { ethers, network } from 'hardhat'
 import * as fs from 'fs'
 import * as path from 'path'
+import { mined } from './tx-wait'
 
 const DEPLOYER = '0x1b305f986F8015DB6B42fFb4D231C77B3d5Af982'
 const RED = '0x1DEf777468F76ed1E74fC87bD32334d3Ccb520d0'
@@ -27,10 +28,21 @@ const ERC20 = [
 
 async function main() {
   if (network.name !== 'sepolia') fail('run with --network sepolia')
-  const st = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'deployments', 'sepolia-v3.json'), 'utf8'))
+  const st = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'deployments', process.env.STATE_FILE || 'sepolia-v3.json'), 'utf8'))
   const rpc = new ethers.JsonRpcProvider((network.config as any).url, 11155111, { staticNetwork: true })
-  const s = new ethers.Wallet(process.env.SEPOLIA_DEPLOYER_KEY || fail('set SEPOLIA_DEPLOYER_KEY'), rpc)
+  let s: any
+  if (process.env.REHEARSAL === '1') {
+    // As in seed-sepolia-v3.ts: on a local anvil fork, impersonate the deployer instead of using its key.
+    const client: string = await rpc.send('web3_clientVersion', [])
+    if (!/anvil/i.test(client)) fail(`REHEARSAL=1 needs a local anvil fork, got '${client}'`)
+    await rpc.send('anvil_impersonateAccount', [DEPLOYER])
+    s = await rpc.getSigner(DEPLOYER)
+  } else {
+    s = new ethers.Wallet(process.env.SEPOLIA_DEPLOYER_KEY || fail('set SEPOLIA_DEPLOYER_KEY'), rpc)
+  }
   if (!eq(s.address, DEPLOYER)) fail(`key is for ${s.address}`)
+  // Deadlines from chain time, not the local clock: equal on a live network, and right on a fork whose clock was advanced.
+  const now = (await rpc.getBlock('latest'))!.timestamp
   const rawEstimate = rpc.estimateGas.bind(rpc)
   ;(rpc as any).estimateGas = async (tx: any) => ((await rawEstimate(tx)) * 130n) / 100n
   const fees = async () => {
@@ -40,8 +52,7 @@ async function main() {
   }
   const send = async (label: string, p: Promise<any>) => {
     const tx = await p
-    const r = await tx.wait()
-    if (r.status !== 1) fail(`${label} reverted`)
+    const r = await mined(rpc, tx.hash)
     console.log(`  ok    ${label}  ${tx.hash}`)
     return r
   }
@@ -58,7 +69,7 @@ async function main() {
   const router = await ethers.getContractAt('contracts/dex-periphery/SwapRouter.sol:ERC223SwapRouter', st.router, s)
   const before = await tot1.balanceOf(DEPLOYER)
   await send('router: swap 5 RED -> TOT1', router.exactInputSingle({
-    tokenIn: RED, tokenOut: TOT1, fee: 3000, recipient: DEPLOYER, deadline: Math.floor(Date.now() / 1000) + 600,
+    tokenIn: RED, tokenOut: TOT1, fee: 3000, recipient: DEPLOYER, deadline: now + 600,
     amountIn: 5n * ONE, amountOutMinimum: 1n, sqrtPriceLimitX96: 0, prefer223Out: false,
   }, await fees()))
   console.log(`        received ${ethers.formatEther((await tot1.balanceOf(DEPLOYER)) - before)} TOT1`)
@@ -71,7 +82,7 @@ async function main() {
   const params = {
     whitelistId, interestRate: 100n, duration: 7n * 24n * 3600n, minLoan: ONE,
     liquidationRewardAmount: ONE / 100n, liquidationRewardAsset: RED, asset: RED,
-    deadline: BigInt(Math.floor(Date.now() / 1000) + 30 * 24 * 3600), currencyLimit: 4n, leverage: 5n,
+    deadline: BigInt(now + 30 * 24 * 3600), currencyLimit: 4n, leverage: 5n,
     oracle: st.marginOracle, collateral: [TOT1],
   }
   try {

@@ -22,9 +22,10 @@
 import { ethers, network } from 'hardhat'
 import * as fs from 'fs'
 import * as path from 'path'
+import { mined } from './tx-wait'
 
 const DEPLOYER = '0x1b305f986F8015DB6B42fFb4D231C77B3d5Af982'
-const STATE_FILE = path.join(process.cwd(), 'deployments', 'sepolia-v3.json')
+const STATE_FILE = path.join(process.cwd(), 'deployments', process.env.STATE_FILE || 'sepolia-v3.json')
 const RED = '0x1DEf777468F76ed1E74fC87bD32334d3Ccb520d0'
 const TOT1 = '0x51a3F4b5fFA9125Da78b55ed201eFD92401604fa'
 const FEE = 3000
@@ -82,8 +83,7 @@ async function main() {
   }
   const send = async (label: string, p: Promise<any>) => {
     const tx = await p
-    const r = await tx.wait()
-    if (r.status !== 1) fail(`${label} reverted`)
+    await mined(s.provider!, tx.hash)
     console.log(`  sent   ${label} ${tx.hash}`)
   }
 
