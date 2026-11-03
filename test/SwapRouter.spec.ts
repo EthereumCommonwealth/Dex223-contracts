@@ -1461,9 +1461,11 @@ describe('SwapRouter', function () {
       const feeRecipient = '0xfEE0000000000000000000000000000000000000'
 
       it('prevents unauthorized token extraction by omitting sweepTokenWithFee (Beosin-06 / #44)', async () => {
-        expect(() =>
-          router.interface.getFunction('sweepTokenWithFee')
-        ).to.throw()
+        // ethers v6 returns null for an unknown function rather than throwing.
+        expect((router.interface as any).getFunction('sweepTokenWithFee')).to.equal(null)
+        // The ABI alone could be stale, so also check the deployed code has no dispatch for the selector.
+        const selector = ethers.id('sweepTokenWithFee(address,uint256,address,uint256,address)').slice(2, 10)
+        expect(await ethers.provider.getCode(router.target)).to.not.include(`63${selector}`)
       })
 
       it('#unwrapWETH9WithFee', async () => {

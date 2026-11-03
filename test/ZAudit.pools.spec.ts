@@ -58,9 +58,9 @@ describe('fund safety: pools, factory, router, converter (2026-10 audit)', () =>
   })
 
   describe('router', () => {
-    it('sweepTokenWithFee cannot take another user\'s unspent ERC-223 deposit', async () => {
+    it('an unspent ERC-223 deposit stays with its owner (no sweep path exists)', async () => {
       const { router, tokens } = await loadFixture(completeFixture)
-      const [victim, attacker] = await ethers.getSigners()
+      const [victim] = await ethers.getSigners()
       const t223 = tokens[3]   // ERC-223 wrapper of tokens[0], held by `victim`
       const amount = expandTo18Decimals(5)
 
@@ -68,24 +68,24 @@ describe('fund safety: pools, factory, router, converter (2026-10 audit)', () =>
       await (t223 as any)['transfer(address,uint256,bytes)'](router.target, amount, '0x')
       expect(await router.depositedTokens(victim.address, t223.target)).to.eq(amount)
 
-      const before = await t223.balanceOf(attacker.address)
-      await router.connect(attacker).sweepTokenWithFee(t223.target, 0, attacker.address, 1, attacker.address)
-      expect(await t223.balanceOf(attacker.address)).to.eq(before)
+      // sweepTokenWithFee was the only path that could move router-held tokens without a deposit record.
+      expect((router.interface as any).getFunction('sweepTokenWithFee')).to.equal(null)
 
       // The victim can still take the whole deposit back.
       await router.withdraw(t223.target, victim.address, 0)
       expect(await router.depositedTokens(victim.address, t223.target)).to.eq(0n)
     })
 
-    it('sweepTokenWithFee still sweeps tokens nobody has deposited', async () => {
+    it('tokens sent to the router by mistake stay there: nothing can sweep them', async () => {
       const { router, tokens } = await loadFixture(completeFixture)
-      const [, recipient, feeTo] = await ethers.getSigners()
       const t20 = tokens[0]
       const stray = expandTo18Decimals(1)
       await t20.transfer(router.target, stray)
-      await router.sweepTokenWithFee(t20.target, stray, recipient.address, 100, feeTo.address)
-      expect(await t20.balanceOf(feeTo.address)).to.eq(stray / 100n)
-      expect(await t20.balanceOf(recipient.address)).to.eq(stray - stray / 100n)
+      // The accepted trade-off of removing sweepTokenWithFee (Beosin-06): no recovery path for stray tokens.
+      for (const f of ['sweepToken', 'sweepTokenWithFee']) {
+        expect((router.interface as any).getFunction(f)).to.equal(null)
+      }
+      expect(await t20.balanceOf(router.target)).to.eq(stray)
     })
   })
 
