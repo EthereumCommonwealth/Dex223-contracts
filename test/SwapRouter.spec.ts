@@ -1460,32 +1460,12 @@ describe('SwapRouter', function () {
     describe('*WithFee', () => {
       const feeRecipient = '0xfEE0000000000000000000000000000000000000'
 
-      it('#sweepTokenWithFee', async () => {
-        const amountOutMinimum = 100
-        const params = {
-          path: encodePath([tokens[0].target.toString(), tokens[1].target.toString()], [FeeAmount.MEDIUM]),
-          recipient: router.target.toString(),
-          deadline: 1,
-          amountIn: 102,
-          amountOutMinimum,
-          prefer223Out: false
-        }
-
-        const data = [
-          router.interface.encodeFunctionData('exactInput', [params]),
-          router.interface.encodeFunctionData('sweepTokenWithFee', [
-            tokens[1].target.toString(),
-            amountOutMinimum,
-            trader.address,
-            100,
-            feeRecipient,
-          ]),
-        ]
-
-        await router.connect(trader).multicall(data)
-
-        const balance = await tokens[1].balanceOf(feeRecipient)
-        expect(balance == 1n).to.be.eq(true)
+      it('prevents unauthorized token extraction by omitting sweepTokenWithFee (Beosin-06 / #44)', async () => {
+        // ethers v6 returns null for an unknown function rather than throwing.
+        expect((router.interface as any).getFunction('sweepTokenWithFee')).to.equal(null)
+        // The ABI alone could be stale, so also check the deployed code has no dispatch for the selector.
+        const selector = ethers.id('sweepTokenWithFee(address,uint256,address,uint256,address)').slice(2, 10)
+        expect(await ethers.provider.getCode(router.target)).to.not.include(`63${selector}`)
       })
 
       it('#unwrapWETH9WithFee', async () => {
