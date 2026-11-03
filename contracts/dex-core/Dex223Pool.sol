@@ -238,6 +238,15 @@ contract Dex223Pool is IUniswapV3Pool, NoDelegateCall, PeripheryValidation {
         // `uniswapV3SwapCallback` on it, or to dispatch an arbitrary call through the delegatecall below.
         require(msg.sender == token0.erc223 || msg.sender == token1.erc223, 'IT');
 
+        // A pool short of an ERC-223 origin (such as D223) mid-delivery converts its ERC-20 wrapper through the
+        // converter, which pays the origin back with a plain ERC-223 transfer while the pool is still locked.
+        // Take that payment as a balance only: it opens no deposit, dispatches nothing and refunds nothing.
+        // Pool accounting reads balances, so nothing more is needed; any other sender still meets the lock.
+        if (!slot0.unlocked) {
+            require(_from == address(converter), 'LOK');
+            return 0x8943ec02;
+        }
+
         // Take the pool-wide reentrancy lock and hold it for the whole body, so that nothing can be executed
         // from within the context of an ERC-223 deposit. Note this also rejects deposits before the pool is
         // initialized, since `slot0.unlocked` is false until then.
