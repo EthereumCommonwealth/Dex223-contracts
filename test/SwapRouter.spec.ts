@@ -1460,32 +1460,10 @@ describe('SwapRouter', function () {
     describe('*WithFee', () => {
       const feeRecipient = '0xfEE0000000000000000000000000000000000000'
 
-      it('#sweepTokenWithFee', async () => {
-        const amountOutMinimum = 100
-        const params = {
-          path: encodePath([tokens[0].target.toString(), tokens[1].target.toString()], [FeeAmount.MEDIUM]),
-          recipient: router.target.toString(),
-          deadline: 1,
-          amountIn: 102,
-          amountOutMinimum,
-          prefer223Out: false
-        }
-
-        const data = [
-          router.interface.encodeFunctionData('exactInput', [params]),
-          router.interface.encodeFunctionData('sweepTokenWithFee', [
-            tokens[1].target.toString(),
-            amountOutMinimum,
-            trader.address,
-            100,
-            feeRecipient,
-          ]),
-        ]
-
-        await router.connect(trader).multicall(data)
-
-        const balance = await tokens[1].balanceOf(feeRecipient)
-        expect(balance == 1n).to.be.eq(true)
+      it('prevents unauthorized token extraction by omitting sweepTokenWithFee (Beosin-06 / #44)', async () => {
+        expect(() =>
+          router.interface.getFunction('sweepTokenWithFee')
+        ).to.throw()
       })
 
       it('#unwrapWETH9WithFee', async () => {
