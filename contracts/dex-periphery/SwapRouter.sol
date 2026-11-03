@@ -95,6 +95,15 @@ IERC223Recipient
     // the router afterwards.
     bool public erc223CallPermit = false;
 
+    // The one pool allowed to call `uniswapV3SwapCallback` right now: set immediately before the router hands
+    // a swap to a pool, cleared as the callback is entered and again once the swap returns. The callback pays
+    // from `data.payer`, so without this binding any canonical pool could invoke it while the router is idle
+    // or busy with another pool - and a pool's `swap_sender` can be set by its own ERC-223 token, which for an
+    // ERC-223 origin is an arbitrary contract.
+    // The idle value is a non-zero placeholder, as for `amountInCached`, so the per-swap writes stay cheap.
+    address private constant NO_CALLBACK_POOL = address(1);
+    address private expectedCallbackPool = NO_CALLBACK_POOL;
+
     /// @dev `tokenReceived` holds this lock across its entire body so that no router function can run inside
     /// the context of an ERC-223 deposit - where `call_sender` and `token_sender` still point at the
     /// depositor and their deposit is still spendable. The one call `tokenReceived` is meant to dispatch is
@@ -187,6 +196,8 @@ IERC223Recipient
         bytes calldata _data
     ) external override {
         require(amount0Delta > 0 || amount1Delta > 0); // swaps entirely within 0-liquidity regions are not supported
+        require(msg.sender == expectedCallbackPool, 'UCB'); // only the pool this router is swapping through
+        expectedCallbackPool = NO_CALLBACK_POOL;            // one callback per swap
         SwapCallbackData memory data = abi.decode(_data, (SwapCallbackData));
         (address tokenIn, address tokenOut, uint24 fee) = data.path.decodeFirstPool();
         CallbackValidation.verifyCallback(factory, tokenIn, tokenOut, fee);
@@ -286,7 +297,9 @@ IERC223Recipient
                                                               // `msg.sender` is the address of the contract here because this function
                                                               // is called within `tokenReceived`
                                                               // `call_sender` is the sender of the token.
+        expectedCallbackPool = swapData.pool;
         require(IERC223(token_sender).transfer(swapData.pool, amountIn, _data));
+        expectedCallbackPool = NO_CALLBACK_POOL;
 
         return uint256(IERC20(_tokenOut).balanceOf(recipient) - balance1before);
     }
@@ -298,6 +311,7 @@ IERC223Recipient
         SwapData memory swapData
     ) private returns (uint256 amountOut) {
 
+        expectedCallbackPool = swapData.pool;
         (int256 amount0, int256 amount1) =
             IDex223Pool(swapData.pool).swap(
                 recipient,
@@ -309,6 +323,7 @@ IERC223Recipient
                 swapData.prefer223Out,
                 abi.encode(data)
             );
+        expectedCallbackPool = NO_CALLBACK_POOL;
 
         return uint256(-(swapData.zeroForOne ? amount1 : amount0));
     }
@@ -388,6 +403,7 @@ IERC223Recipient
         //(address tokenIn, address tokenOut, uint24 fee) = data.path.decodeFirstPool();
         //bool zeroForOne = tokenIn < tokenOut;
 
+        expectedCallbackPool = data.pool;
         (int256 amount0, int256 amount1) =
                                 IDex223Pool(data.pool).swap(
                 data.recipient,
@@ -399,6 +415,7 @@ IERC223Recipient
 
                 abi.encode( SwapCallbackData({path: abi.encodePacked(data.tokenIn, data.fee, data.tokenOut), payer: call_sender}) )
             );
+        expectedCallbackPool = NO_CALLBACK_POOL;
 
         //return uint256(-(zeroForOne ? amount1 : amount0));
         //require(amountOut >= amountOutMin, 'Too little received');
@@ -481,8 +498,9 @@ IERC223Recipient
 
         bool zeroForOne = tokenIn < tokenOut;
 
+        expectedCallbackPool = address(getPool(tokenIn, tokenOut, fee));
         (int256 amount0Delta, int256 amount1Delta) =
-                                getPool(tokenIn, tokenOut, fee).swap(
+                                IDex223Pool(expectedCallbackPool).swap(
                 recipient,
                 zeroForOne,
                 -amountOut.toInt256(),
@@ -492,6 +510,7 @@ IERC223Recipient
                 false,
                 abi.encode(data)
             );
+        expectedCallbackPool = NO_CALLBACK_POOL;
 
         uint256 amountOutReceived;
         (amountIn, amountOutReceived) = zeroForOne

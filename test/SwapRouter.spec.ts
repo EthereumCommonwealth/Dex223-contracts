@@ -229,6 +229,30 @@ describe('SwapRouter', function () {
       await createPool(tokens[0].target.toString(), tokens[6].target.toString(), tokens[3].target.toString(), tokens[7].target.toString());
     })
 
+    describe('#uniswapV3SwapCallback', () => {
+      // The callback pays from `data.payer`. Being a canonical pool is not enough to call it: only the pool the
+      // router is swapping through right now may, so an idle router never moves a payer's approved tokens.
+      it('rejects a canonical pool the router is not swapping through', async () => {
+        const pool = await factory.getPool(tokens[0].target.toString(), tokens[1].target.toString(), FeeAmount.MEDIUM)
+        await tokens[0].connect(trader).approve(router.target.toString(), ethers.MaxUint256)
+
+        await ethers.provider.send('hardhat_impersonateAccount', [pool])
+        await ethers.provider.send('hardhat_setBalance', [pool, '0x56BC75E2D63100000'])
+        const poolSigner = await ethers.getSigner(pool)
+
+        const data = ethers.AbiCoder.defaultAbiCoder().encode(
+          ['tuple(bytes path, address payer)'],
+          [{ path: encodePath([tokens[0].target.toString(), tokens[1].target.toString()], [FeeAmount.MEDIUM]), payer: trader.address }]
+        )
+        const traderBefore = await tokens[0].balanceOf(trader.address)
+
+        await expect(router.connect(poolSigner).uniswapV3SwapCallback(1000, -900, data)).to.be.revertedWith('UCB')
+
+        expect(await tokens[0].balanceOf(trader.address)).to.eq(traderBefore)
+        await ethers.provider.send('hardhat_stopImpersonatingAccount', [pool])
+      })
+    })
+
     describe('#exactInput', () => {
       async function exactInput(
         tokens: string[],
