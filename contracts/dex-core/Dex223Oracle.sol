@@ -25,6 +25,7 @@ interface IDex223PoolQuotable
 interface IDex223PoolTokens
 {
     function token0() external view returns (address, address);
+    function token1() external view returns (address, address);
 }
 
 contract Oracle {
@@ -55,11 +56,61 @@ contract Oracle {
     // priced against it; anyone may grow the ring.
     uint32 public immutable twapWindow;
 
+    // The window is read in this many equal slices; getTwap leaves out the slices in which the
+    // pool's price sat on little or no liquidity.
+    uint32 public constant TWAP_SLICES = 6;
+
+    /// @notice In-range liquidity (the pool's `liquidity()` unit) a slice of a pair's window must
+    ///         average, harmonically, to count towards that pair's price. Keyed by the pair's
+    ///         ERC-20 addresses in ascending order. 0 (the default) keeps the built-in minimum only.
+    /// @dev Liquidity units differ by pair (they carry both tokens' decimals), so this cannot be one
+    ///      number for all pairs. The owner sets it per pair the way a lender would set a risk
+    ///      parameter; it is the only mutable state here.
+    mapping(address => mapping(address => uint128)) public minLiquidity;
+
+    address public owner;
+    address public pendingOwner;
+
+    event OwnershipTransferStarted(address indexed previousOwner, address indexed newOwner);
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+    event MinLiquidityUpdated(address indexed token0, address indexed token1, uint128 minLiquidity);
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Oracle: not owner");
+        _;
+    }
+
     constructor (address _factory, uint32 _twapWindow) {
         require(_factory != address(0), "Oracle: zero factory");
         require(_twapWindow > 0, "Oracle: zero window");
+        require(_twapWindow % TWAP_SLICES == 0, "Oracle: window not divisible");
         factory = IUniswapV3Factory(_factory);
         twapWindow = _twapWindow;
+        owner = msg.sender;
+        emit OwnershipTransferred(address(0), msg.sender);
+    }
+
+    function transferOwnership(address newOwner) external onlyOwner {
+        require(newOwner != address(0), "Oracle: zero owner");
+        pendingOwner = newOwner;
+        emit OwnershipTransferStarted(owner, newOwner);
+    }
+
+    function acceptOwnership() external {
+        require(msg.sender == pendingOwner, "Oracle: not pending owner");
+        emit OwnershipTransferred(owner, msg.sender);
+        owner = msg.sender;
+        pendingOwner = address(0);
+    }
+
+    /// @notice Set the liquidity a slice must average for `tokenA`/`tokenB` to count towards the
+    ///         price. Choose it below the pair's honest full-range liquidity (so no honest slice is
+    ///         ever left out) and above anything a dust position would add.
+    function setMinLiquidity(address tokenA, address tokenB, uint128 _minLiquidity) external onlyOwner {
+        require(tokenA != tokenB && tokenA != address(0) && tokenB != address(0), "Oracle: bad pair");
+        (address token0, address token1) = tokenA < tokenB ? (tokenA, tokenB) : (tokenB, tokenA);
+        minLiquidity[token0][token1] = _minLiquidity;
+        emit MinLiquidityUpdated(token0, token1, _minLiquidity);
     }
 
     // @audit-info: Helper to return fee tier by index (replaces mutable storage array).
@@ -97,19 +148,74 @@ contract Oracle {
         return tick;
     }
 
-    /// @notice Arithmetic mean tick of `poolAddress` over the last `twapWindow` seconds.
-    /// @dev Reverts with the pool's "OLD" if the observation ring does not reach back that far;
-    ///      findPoolWithHighestLiquidity filters such pools out first.
-    function getTwapTick(address poolAddress) public view returns (int24 tick) {
+    /// @notice Mean tick, and harmonic-mean in-range liquidity, of `poolAddress` over the last
+    ///         `twapWindow` seconds, counting only the slices of the window in which the pool's price
+    ///         sat on enough liquidity. getAmountOut values collateral at this tick.
+    /// @dev A pool whose liquidity is concentrated can be pushed past its ranges by a small sale. The
+    ///      price then sits wherever the sale stopped, as far as MIN_TICK or MAX_TICK, on nothing, or
+    ///      on a dust position anyone can mint across the whole range. Nothing trades there, so
+    ///      holding that price costs nothing, yet a plain mean of ticks over time follows it (seen on
+    ///      Sepolia, 2026-10-31). Such time is left out.
+    ///      Each slice's harmonic-mean liquidity comes from the pool's secondsPerLiquidity
+    ///      accumulator, where a second at liquidity L adds 2**128 / L and a second at zero counts as
+    ///      L = 1. A slice counts when that mean is above `twapWindow / TWAP_SLICES` units, which a
+    ///      slice that touched zero can never reach, and at least minLiquidity for the pair. The
+    ///      bar is absolute on purpose: a bar relative to the pool's deepest slice let one slice of
+    ///      concentrated liquidity at a false price discard every honest slice. Liquidity added for
+    ///      a moment barely moves a harmonic mean either way. A kept slice counts as on any TWAP:
+    ///      holding a price for it costs the holder what arbitrage takes for that long.
+    ///      Reverts with the pool's "OLD" if the observation ring does not reach back a full window,
+    ///      and with "Oracle: no liquidity in window" if no slice counts; an unpriced pair cannot be
+    ///      valued, opened, closed or liquidated until a slice does.
+    function getTwap(address poolAddress) public view returns (int24 tick, uint128 liquidity) {
         require(poolAddress != address(0), "Oracle: zero pool");
-        uint32[] memory secondsAgos = new uint32[](2);
-        secondsAgos[0] = twapWindow;
-        secondsAgos[1] = 0;
-        (int56[] memory tickCumulatives, ) = IUniswapV3Pool(poolAddress).observe(secondsAgos);
-        int56 delta = tickCumulatives[1] - tickCumulatives[0];
-        tick = int24(delta / int56(uint56(twapWindow)));
+        (address t0, ) = IDex223PoolTokens(poolAddress).token0();
+        (address t1, ) = IDex223PoolTokens(poolAddress).token1();
+        bool ok;
+        (ok, tick, liquidity) = _twap(poolAddress, minLiquidity[t0][t1]);
+        require(ok, "Oracle: no liquidity in window");
+    }
+
+    /// @notice The tick getAmountOut values at: getTwap's mean tick.
+    function getTwapTick(address poolAddress) public view returns (int24 tick) {
+        (tick, ) = getTwap(poolAddress);
+    }
+
+    function _twap(address poolAddress, uint128 floor) internal view returns (bool ok, int24 tick, uint128 liquidity) {
+        uint32 step = twapWindow / TWAP_SLICES;
+        uint32[] memory secondsAgos = new uint32[](TWAP_SLICES + 1);
+        for (uint32 i = 0; i <= TWAP_SLICES; i++) secondsAgos[i] = twapWindow - i * step;
+        (int56[] memory tickCumulatives, uint160[] memory secondsPerLiquidityX128s) =
+            IUniswapV3Pool(poolAddress).observe(secondsAgos);
+
+        int56 tickSum;
+        uint256 perLiquiditySum;
+        uint256 kept;
+        for (uint256 i = 0; i < TWAP_SLICES; i++) {
+            // Seconds / L over the slice, scaled by 2**128; wraps like the pool's own accumulator.
+            uint160 perLiquidity = secondsPerLiquidityX128s[i + 1] - secondsPerLiquidityX128s[i];
+            if (perLiquidity >= (uint160(1) << 128)) continue;
+            if (_harmonic(step, perLiquidity) < floor) continue;
+            tickSum += tickCumulatives[i + 1] - tickCumulatives[i];
+            perLiquiditySum += perLiquidity;
+            kept++;
+        }
+        if (kept == 0) return (false, 0, 0);
+
+        int56 secs = int56(uint56(kept * step));
+        tick = int24(tickSum / secs);
         // Round toward negative infinity, matching Uniswap's OracleLibrary.consult.
-        if (delta < 0 && (delta % int56(uint56(twapWindow)) != 0)) tick--;
+        if (tickSum < 0 && (tickSum % secs != 0)) tick--;
+        liquidity = _harmonic(kept * step, perLiquiditySum);
+        ok = true;
+    }
+
+    /// @dev Harmonic-mean liquidity over `secs` seconds whose seconds-per-liquidity sum is
+    ///      `perLiquidityX128`, as OracleLibrary.consult: seconds / sum(seconds / L).
+    function _harmonic(uint256 secs, uint256 perLiquidityX128) internal pure returns (uint128) {
+        if (perLiquidityX128 == 0) return type(uint128).max;
+        uint256 l = (secs << 128) / perLiquidityX128;
+        return l > type(uint128).max ? type(uint128).max : uint128(l);
     }
 
     /// @notice sqrt price (Q64.96) that getAmountOut values positions at: the TWAP over `twapWindow`.
@@ -159,10 +265,10 @@ contract Oracle {
         address sell,
         uint256 amountToSell
     ) public view returns(uint256 amountBought) {
-        (address _pool, , ) = findPoolWithHighestLiquidity(buy, sell);
+        (address _pool, , , int24 twapTick) = _findPool(buy, sell);
         require(amountToSell > 0, "Oracle: zero amount");
 
-        uint160 sqrtRatioX96 = getTwapSqrtPriceX96(_pool);
+        uint160 sqrtRatioX96 = TickMath.getSqrtRatioAtTick(twapTick);
 
         // The pool's price is token1 per token0, and the pool orders its sides by ERC-20 address.
         // `sell` may be either version of its token, and an ERC-223 address can sort the other way
@@ -190,8 +296,9 @@ contract Oracle {
         return token == t0_20 || token == t0_223;
     }
 
-    /// @notice Harmonic mean of `poolAddress`'s in-range liquidity over the last `twapWindow` seconds.
-    ///         Mirrors OracleLibrary.consult. Liquidity held for a moment barely moves it.
+    /// @notice Harmonic mean of `poolAddress`'s in-range liquidity over the whole last `twapWindow`
+    ///         seconds, thin slices included. Mirrors OracleLibrary.consult. Informational: pool
+    ///         selection ranks by getTwap's liquidity, which counts the kept slices only.
     function harmonicMeanLiquidity(address poolAddress) public view returns (uint128) {
         uint32[] memory secondsAgos = new uint32[](2);
         secondsAgos[0] = twapWindow;
@@ -207,6 +314,15 @@ contract Oracle {
         address tokenA,
         address tokenB
     ) public view returns (address poolAddress, uint128 liquidity, uint24 fee) {
+        (poolAddress, liquidity, fee, ) = _findPool(tokenA, tokenB);
+    }
+
+    /// @dev findPoolWithHighestLiquidity, also returning the chosen pool's getTwap tick, so that
+    ///      getAmountOut reads each pool's observations once.
+    function _findPool(
+        address tokenA,
+        address tokenB
+    ) internal view returns (address poolAddress, uint128 liquidity, uint24 fee, int24 tick) {
         require(tokenA != tokenB, "Oracle: identical tokens");
         require(tokenA != address(0), "Oracle: zero address tokenA");
         // @audit-fix V8: Also validate tokenB is non-zero.
@@ -215,6 +331,7 @@ contract Oracle {
         require(tokenB != address(0), "Oracle: zero address tokenB");
 
         (address token0, address token1) = tokenA < tokenB ? (tokenA, tokenB) : (tokenB, tokenA);
+        uint128 floor = minLiquidity[token0][token1];
 
         for (uint256 i = 0; i < NUM_FEE_TIERS; i++) {
             address pool = factory.getPool(token0, token1, _feeTier(i));
@@ -222,14 +339,16 @@ contract Oracle {
             // gained liquidity but has no history would otherwise win the selection and then
             // revert every valuation with "OLD", which would block liquidations.
             if (pool != address(0) && poolCanServeWindow(pool)) {
-                // Ranked by liquidity averaged over the TWAP window, not by liquidity() right now.
-                // Spot liquidity can be added and removed within one transaction, which let anyone
-                // steer the valuation to a thin pool whose TWAP they had skewed.
-                uint128 currentLiquidity = harmonicMeanLiquidity(pool);
-                if (currentLiquidity >= liquidity) {
-                    liquidity = currentLiquidity;
+                // Ranked by liquidity averaged over the kept slices of the window (getTwap), not by
+                // liquidity() right now. Spot liquidity can be added and removed within one
+                // transaction, which let anyone steer the valuation to a thin pool whose TWAP they
+                // had skewed. A pool none of whose slices count is not a candidate.
+                (bool ok, int24 poolTick, uint128 poolLiquidity) = _twap(pool, floor);
+                if (ok && poolLiquidity >= liquidity) {
+                    liquidity = poolLiquidity;
                     poolAddress = pool;
                     fee = _feeTier(i);
+                    tick = poolTick;
                 }
             }
         }

@@ -91,6 +91,8 @@ function resolveInputs() {
   const router = process.env.ROUTER || d.router || fail(`no ROUTER for network '${network.name}': set ROUTER=0x...`)
   const twapWindow = Number(process.env.TWAP_WINDOW || 1800)
   if (!Number.isInteger(twapWindow) || twapWindow <= 0 || twapWindow > 0xffffffff) fail(`TWAP_WINDOW must be a positive uint32, got '${process.env.TWAP_WINDOW}'`)
+  // The oracle reads the window in six slices (Oracle.TWAP_SLICES) and refuses a window they do not divide.
+  if (twapWindow % 6 !== 0) fail(`TWAP_WINDOW must be a multiple of 6 seconds, got ${twapWindow}`)
   return { factory: ethers.getAddress(factory), router: ethers.getAddress(router), twapWindow }
 }
 
