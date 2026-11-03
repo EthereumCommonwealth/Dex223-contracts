@@ -3,7 +3,7 @@ import { expect } from 'chai'
 import { loadFixture } from '@nomicfoundation/hardhat-network-helpers'
 import { poolFixture } from './shared/fixtures'
 import { completeFixture } from './shared/completeFixture'
-import { expandTo18Decimals, FeeAmount } from './shared/utilities'
+import { expandTo18Decimals, FeeAmount, encodePriceSqrt, MIN_SQRT_RATIO, MAX_SQRT_RATIO, getMinTick, getMaxTick, TICK_SPACINGS } from './shared/utilities'
 
 /**
  * Fund-safety regressions from the 2026-10 audit of the pools, factory, router and converter.
@@ -136,6 +136,78 @@ describe('fund safety: pools, factory, router, converter (2026-10 audit)', () =>
       expect(await token0.balanceOf(converter.target)).to.eq(deposit0)
       expect(await converter.erc20Supply(token0.target)).to.eq(supply0)
       expect(await wrapper0.totalSupply()).to.eq(wrapperSupply0)
+    })
+  })
+  describe('quoteSwap and swapExactInput audit regressions (#36)', () => {
+    // A real factory pool: poolFixture's MockTimeDex223Pool has no quote library set (a delegatecall to
+    // address 0 returns empty data) and overrides swapExactInput, so it cannot exercise these fixes.
+    async function realPool() {
+      const { factory, nft, tokens, converter } = await loadFixture(completeFixture)
+      let [a, b] = [tokens[0].target.toString(), tokens[1].target.toString()]
+      if (a.toLowerCase() > b.toLowerCase()) [a, b] = [b, a]
+      const a223 = await converter.predictWrapperAddress(a, true)
+      const b223 = await converter.predictWrapperAddress(b, true)
+      await nft.createAndInitializePoolIfNecessary(a, b, a223, b223, FeeAmount.MEDIUM, encodePriceSqrt(1n, 1n))
+      for (const t of tokens.slice(0, 2)) await (t as any).approve(nft.target, ethers.MaxUint256)
+      const [wallet] = await ethers.getSigners()
+      await nft.mint({
+        token0: a, token1: b, fee: FeeAmount.MEDIUM,
+        tickLower: getMinTick(TICK_SPACINGS[FeeAmount.MEDIUM]), tickUpper: getMaxTick(TICK_SPACINGS[FeeAmount.MEDIUM]),
+        recipient: wallet.address, amount0Desired: expandTo18Decimals(1000), amount1Desired: expandTo18Decimals(1000),
+        amount0Min: 0, amount1Min: 0, deadline: 1,
+      })
+      const pool = await ethers.getContractAt('Dex223Pool', await factory.getPool(a, b, FeeAmount.MEDIUM))
+      return { pool, wallet }
+    }
+
+    it('exact-output quoteSwap (amountSpecified < 0) returns the required input, not the requested output', async () => {
+      const { pool, wallet } = await realPool()
+      const exactOutputAmount = -expandTo18Decimals(1)
+
+      // zeroForOne = true: buy 1 token1 with token0. At price 1 the input is a little over 1 (fee + impact).
+      const quote0For1 = await pool.quoteSwap.staticCall(wallet.address, true, exactOutputAmount, MIN_SQRT_RATIO + 1n, false, '0x')
+      expect(quote0For1).to.be.gt(expandTo18Decimals(1))
+      expect(quote0For1).to.be.lt(expandTo18Decimals(1) * 102n / 100n)
+
+      // zeroForOne = false: buy 1 token0 with token1.
+      const quote1For0 = await pool.quoteSwap.staticCall(wallet.address, false, exactOutputAmount, MAX_SQRT_RATIO - 1n, false, '0x')
+      expect(quote1For0).to.be.gt(expandTo18Decimals(1))
+      expect(quote1For0).to.be.lt(expandTo18Decimals(1) * 102n / 100n)
+
+      // Exact input is unchanged: 1 in returns a little under 1 out, reported as the (negative) output side.
+      const quoteIn = await pool.quoteSwap.staticCall(wallet.address, true, expandTo18Decimals(1), MIN_SQRT_RATIO + 1n, false, '0x')
+      expect(-quoteIn).to.be.lt(expandTo18Decimals(1))
+      expect(-quoteIn).to.be.gt(expandTo18Decimals(1) * 98n / 100n)
+    })
+
+    it('quoteSwap bubbles up internal reverts instead of decoding them into corrupted int256', async () => {
+      const { pool, wallet } = await realPool()
+      // sqrtPriceLimitX96 <= MIN_SQRT_RATIO for zeroForOne = true fails require(..., 'SPL'). Before the fix a
+      // revert payload of 32+ bytes passed the length check and was decoded as a number.
+      await expect(
+        pool.quoteSwap.staticCall(wallet.address, true, expandTo18Decimals(1), MIN_SQRT_RATIO, false, '0x')
+      ).to.be.revertedWith('SPL')
+    })
+
+    it('swapExactInput refuses amountSpecified <= 0 before touching the pool library (the AS check)', async () => {
+      const { pool, wallet } = await realPool()
+      const deadline = 999999999999n
+      // Dex223Pool is compiled with revertStrings: "strip" (hardhat.config.ts), so the 'AS' reason is not
+      // observable. What is observable: the guard reverts before the delegatecall into the pool library, so
+      // the trace has no DELEGATECALL. Without the guard (main) the amount reaches the library.
+      const delegated = async (amount: bigint) => {
+        const data = pool.interface.encodeFunctionData('swapExactInput', [wallet.address, true, amount, 0n, MIN_SQRT_RATIO + 1n, false, '0x', deadline, false])
+        const trace: any = await ethers.provider.send('debug_traceCall', [{ from: wallet.address, to: pool.target, data }, 'latest'])
+        return (trace.structLogs as any[]).some((l) => l.op === 'DELEGATECALL')
+      }
+      for (const amount of [-100n, 0n]) {
+        await expect(
+          pool.swapExactInput(wallet.address, true, amount, 0n, MIN_SQRT_RATIO + 1n, false, '0x', deadline, false)
+        ).to.be.revertedWithoutReason()
+        expect(await delegated(amount), `amount ${amount} reached the pool library`).to.eq(false)
+      }
+      // Positive control: a positive amount gets past the guard and into the library.
+      expect(await delegated(1000n)).to.eq(true)
     })
   })
 })
