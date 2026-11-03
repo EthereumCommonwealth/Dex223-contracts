@@ -107,6 +107,7 @@ contract IERC7417Converter
                                                     // ERC223 wrapper for that token.
                                                     // Otherwise we will predict ERC20 wrapper address.
                                   ) view external returns (address) { }
+    function isWrapper(address _token) view external returns (bool) { }
 }
 
 contract AutoListingsRegistry {
@@ -344,21 +345,26 @@ contract Dex223AutoListing {
         else
         {
             // Adding a new version (standard) to a previously listed token.
-            if(isListed(_token_erc20))
-            {
-                // If the token is already listed as ERC-20;
-                tokens[listed_tokens[_token_erc20]] = Token(_token_erc20, _token_erc223);
-                if (_token_erc223 != address(0)) {
-                    listed_tokens[_token_erc223]    = listed_tokens[_token_erc20];
-                }
+            // A recorded pairing is never changed, only completed: a second, different counterpart can only be
+            // wrong (for example a pool created at a token's ERC-20 wrapper address before the wrapper existed),
+            // and overwriting the entry would repoint the listing. Missing halves are filled in; zero leaves a
+            // half as it is.
+            uint256 _id = isListed(_token_erc20) ? listed_tokens[_token_erc20] : listed_tokens[_token_erc223];
+            Token storage _listed = tokens[_id];
+            require(
+                (!isListed(_token_erc20)  || listed_tokens[_token_erc20]  == _id) &&
+                (!isListed(_token_erc223) || listed_tokens[_token_erc223] == _id) &&
+                (_token_erc20  == address(0) || _listed.erc20  == address(0) || _listed.erc20  == _token_erc20) &&
+                (_token_erc223 == address(0) || _listed.erc223 == address(0) || _listed.erc223 == _token_erc223),
+                "Listing pair mismatch"
+            );
+            if (_token_erc20 != address(0)) {
+                _listed.erc20                = _token_erc20;
+                listed_tokens[_token_erc20]  = _id;
             }
-            else
-            {
-                // Otherwise the token is listed as ERC-223;
-                tokens[listed_tokens[_token_erc223]] = Token(_token_erc20, _token_erc223);
-                if (_token_erc20 != address(0)) {
-                    listed_tokens[_token_erc20]      = listed_tokens[_token_erc223];
-                }
+            if (_token_erc223 != address(0)) {
+                _listed.erc223               = _token_erc223;
+                listed_tokens[_token_erc223] = _id;
             }
 
             // Record the listing via Auto-listings Registry for Subgraph logging.
@@ -634,6 +640,12 @@ contract Dex223CoreAutoListing {
 
         // Checking if we are listing a token which has a pool at Dex223.
         require(converter.predictWrapperAddress(token20, true) == token223, "Provided token standards are incorrect.");
+        // That check pairs `token20` with its ERC-223 wrapper, which is right only for a real ERC-20 origin.
+        // A converter-made ERC-20 wrapper (or one not deployed yet, which has no code) belongs with its
+        // ERC-223 origin; listing it here recorded a codeless wrapper-of-a-wrapper as its ERC-223 version.
+        uint256 _token20CodeSize;
+        assembly { _token20CodeSize := extcodesize(token20) }
+        require(_token20CodeSize > 0 && !converter.isWrapper(token20), "Not an ERC-20 origin");
 
         checkListing(token20, token223);
 
@@ -685,21 +697,26 @@ contract Dex223CoreAutoListing {
         else
         {
             // Adding a new version (standard) to a previously listed token.
-            if(isListed(_token_erc20))
-            {
-                // If the token is already listed as ERC-20;
-                tokens[listed_tokens[_token_erc20]] = Token(_token_erc20, _token_erc223);
-                if (_token_erc223 != address(0)) {
-                    listed_tokens[_token_erc223]    = listed_tokens[_token_erc20];
-                }
+            // A recorded pairing is never changed, only completed: a second, different counterpart can only be
+            // wrong (for example a pool created at a token's ERC-20 wrapper address before the wrapper existed),
+            // and overwriting the entry would repoint the listing. Missing halves are filled in; zero leaves a
+            // half as it is.
+            uint256 _id = isListed(_token_erc20) ? listed_tokens[_token_erc20] : listed_tokens[_token_erc223];
+            Token storage _listed = tokens[_id];
+            require(
+                (!isListed(_token_erc20)  || listed_tokens[_token_erc20]  == _id) &&
+                (!isListed(_token_erc223) || listed_tokens[_token_erc223] == _id) &&
+                (_token_erc20  == address(0) || _listed.erc20  == address(0) || _listed.erc20  == _token_erc20) &&
+                (_token_erc223 == address(0) || _listed.erc223 == address(0) || _listed.erc223 == _token_erc223),
+                "Listing pair mismatch"
+            );
+            if (_token_erc20 != address(0)) {
+                _listed.erc20                = _token_erc20;
+                listed_tokens[_token_erc20]  = _id;
             }
-            else
-            {
-                // Otherwise the token is listed as ERC-223;
-                tokens[listed_tokens[_token_erc223]] = Token(_token_erc20, _token_erc223);
-                if (_token_erc20 != address(0)) {
-                    listed_tokens[_token_erc20]      = listed_tokens[_token_erc223];
-                }
+            if (_token_erc223 != address(0)) {
+                _listed.erc223               = _token_erc223;
+                listed_tokens[_token_erc223] = _id;
             }
 
             // Record the listing via Auto-listings Registry for Subgraph logging.
@@ -1025,21 +1042,26 @@ contract Dex223OwnableListing {
         else
         {
             // Adding a new version (standard) to a previously listed token.
-            if(isListed(_token_erc20))
-            {
-                // If the token is already listed as ERC-20;
-                tokens[listed_tokens[_token_erc20]] = Token(_token_erc20, _token_erc223);
-                if (_token_erc223 != address(0)) {
-                    listed_tokens[_token_erc223]    = listed_tokens[_token_erc20];
-                }
+            // A recorded pairing is never changed, only completed: a second, different counterpart can only be
+            // wrong (for example a pool created at a token's ERC-20 wrapper address before the wrapper existed),
+            // and overwriting the entry would repoint the listing. Missing halves are filled in; zero leaves a
+            // half as it is.
+            uint256 _id = isListed(_token_erc20) ? listed_tokens[_token_erc20] : listed_tokens[_token_erc223];
+            Token storage _listed = tokens[_id];
+            require(
+                (!isListed(_token_erc20)  || listed_tokens[_token_erc20]  == _id) &&
+                (!isListed(_token_erc223) || listed_tokens[_token_erc223] == _id) &&
+                (_token_erc20  == address(0) || _listed.erc20  == address(0) || _listed.erc20  == _token_erc20) &&
+                (_token_erc223 == address(0) || _listed.erc223 == address(0) || _listed.erc223 == _token_erc223),
+                "Listing pair mismatch"
+            );
+            if (_token_erc20 != address(0)) {
+                _listed.erc20                = _token_erc20;
+                listed_tokens[_token_erc20]  = _id;
             }
-            else
-            {
-                // Otherwise the token is listed as ERC-223;
-                tokens[listed_tokens[_token_erc223]] = Token(_token_erc20, _token_erc223);
-                if (_token_erc20 != address(0)) {
-                    listed_tokens[_token_erc20]      = listed_tokens[_token_erc223];
-                }
+            if (_token_erc223 != address(0)) {
+                _listed.erc223               = _token_erc223;
+                listed_tokens[_token_erc223] = _id;
             }
 
             // Record the listing via Auto-listings Registry for Subgraph logging.
