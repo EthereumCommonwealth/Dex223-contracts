@@ -42,6 +42,10 @@ describe('Dex223Factory', () => {
     const factoryFactory = await ethers.getContractFactory('Dex223Factory')
     const factory =  (await factoryFactory.deploy(validator.target)) as Dex223Factory;
 
+    // The two ERC-20 placeholders stand for tokens that already exist, and the validator requires an ERC-20
+    // origin to have code. A one-byte STOP keeps their addresses (and so every expected pool address).
+    for (const a of TEST_ADDRESSES.slice(0, 2)) await ethers.provider.send('hardhat_setCode', [a, '0x00'])
+
     TEST_ADDRESSES[2] = await converter.predictWrapperAddress(TEST_ADDRESSES[0], true);
     TEST_ADDRESSES[3] = await converter.predictWrapperAddress(TEST_ADDRESSES[1], true);
 

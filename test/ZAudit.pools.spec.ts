@@ -37,6 +37,24 @@ describe('fund safety: pools, factory, router, converter (2026-10 audit)', () =>
       expect(await factory.getPool(token0_223, token1_223, FeeAmount.MEDIUM)).to.eq(real)
       expect(await factory.getPool(token0_223, token1.target, FeeAmount.MEDIUM)).to.eq(real)
     })
+
+    it('a pool cannot take an ERC-223 origin\'s future ERC-20 wrapper address before the wrapper exists', async () => {
+      const { token1, token1_223, factory, converter } = await fx()
+      const origin = await (await ethers.getContractFactory('D223Token')).deploy()
+      const w20 = await converter.predictWrapperAddress(origin.target, false)
+      const wrapperOfWrapper = await converter.predictWrapperAddress(w20, true)
+      expect(await ethers.provider.getCode(w20)).to.eq('0x')
+
+      // Pairing the future wrapper with its own "ERC-223 wrapper" would squat the canonical (w20, token1) pool.
+      await expect(
+        factory.createPool(w20, token1.target, wrapperOfWrapper, token1_223, FeeAmount.MEDIUM)
+      ).to.be.revertedWith('FACTORY: NO_ERC20_ORIGIN')
+
+      // The real pairing, with the wrapper still undeployed, is unaffected.
+      await factory.createPool(w20, token1.target, origin.target, token1_223, FeeAmount.MEDIUM)
+      const pool = await factory.getPool(w20, token1.target, FeeAmount.MEDIUM)
+      expect(await factory.getPool(origin.target, token1_223, FeeAmount.MEDIUM)).to.eq(pool)
+    })
   })
 
   describe('router', () => {
