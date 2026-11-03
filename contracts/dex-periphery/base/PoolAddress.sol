@@ -7,7 +7,7 @@ library PoolAddress {
     // MUST be regenerated whenever Dex223Pool.sol or the compiler settings change, otherwise every
     // periphery contract computes the wrong pool address and all pool lookups silently fail:
     //   node -e "console.log(require('ethers').keccak256(require('./artifacts/contracts/dex-core/Dex223Pool.sol/Dex223Pool.json').bytecode))"
-    bytes32 internal constant POOL_INIT_CODE_HASH = 0x5430bdad1581f0792683bc843126b9790788f74629bc98c072f809a1498a967f;
+    bytes32 internal constant POOL_INIT_CODE_HASH = 0x594484e19d3745766c4f31d136117df59fd00e70bd281680364889bcb612ac60;
     /// @notice The identifying key of the pool
     struct PoolKey {
         address token0;
