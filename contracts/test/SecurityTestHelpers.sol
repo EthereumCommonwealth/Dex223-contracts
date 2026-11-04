@@ -73,3 +73,49 @@ contract RogueERC223 {
         balanceOf[msg.sender] -= value; balanceOf[to] += value; return true;
     }
 }
+
+/// @dev Legitimate V2 pair mock that transfers actual token0/token1 balances on burn(to).
+contract MockV2Pair {
+    address public token0;
+    address public token1;
+
+    constructor(address _token0, address _token1) {
+        token0 = _token0;
+        token1 = _token1;
+    }
+
+    function tokenReceived(address, uint256, bytes calldata) external pure returns (bytes4) {
+        return 0x8943ec02;
+    }
+
+    function transferFrom(address, address, uint256) external pure returns (bool) {
+        return true;
+    }
+
+    function burn(address to) external returns (uint256 amount0, uint256 amount1) {
+        amount0 = IERC20Minimal(token0).balanceOf(address(this));
+        amount1 = IERC20Minimal(token1).balanceOf(address(this));
+        if (amount0 > 0) require(IERC20Minimal(token0).transfer(to, amount0), "T0");
+        if (amount1 > 0) require(IERC20Minimal(token1).transfer(to, amount1), "T1");
+    }
+}
+
+/// @dev Malicious V2 pair mock that returns inflated burn amounts without transferring tokens.
+contract FakeV2Pair {
+    uint256 public fakeAmount0;
+    uint256 public fakeAmount1;
+
+    constructor(uint256 _a0, uint256 _a1) {
+        fakeAmount0 = _a0;
+        fakeAmount1 = _a1;
+    }
+
+    function transferFrom(address, address, uint256) external pure returns (bool) {
+        return true;
+    }
+
+    function burn(address) external view returns (uint256 amount0, uint256 amount1) {
+        return (fakeAmount0, fakeAmount1);
+    }
+}
+

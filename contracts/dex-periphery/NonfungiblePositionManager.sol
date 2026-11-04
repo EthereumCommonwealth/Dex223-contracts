@@ -197,7 +197,8 @@ IERC223Recipient
     )
     {
         IUniswapV3Pool pool;
-        (liquidity, amount0, amount1, pool) = addLiquidity(
+        PoolAddress.PoolKey memory poolKey;
+        (liquidity, amount0, amount1, pool, poolKey) = addLiquidity(
             AddLiquidityParams({
                 token0: params.token0,
                 token1: params.token1,
@@ -218,11 +219,7 @@ IERC223Recipient
         (, uint256 feeGrowthInside0LastX128, uint256 feeGrowthInside1LastX128, , ) = pool.positions(positionKey);
 
         // idempotent set
-        uint80 poolId =
-                        cachePoolKey(
-                address(pool),
-                PoolAddress.PoolKey({token0: params.token0, token1: params.token1, fee: params.fee})
-            );
+        uint80 poolId = cachePoolKey(address(pool), poolKey);
 
         _positions[tokenId] = Position({
             nonce: 0,
@@ -271,7 +268,7 @@ IERC223Recipient
         PoolAddress.PoolKey memory poolKey = _poolIdToPoolKey[position.poolId];
 
         IUniswapV3Pool pool;
-        (liquidity, amount0, amount1, pool) = addLiquidity(
+        (liquidity, amount0, amount1, pool, ) = addLiquidity(
             AddLiquidityParams({
                 token0: poolKey.token0,
                 token1: poolKey.token1,

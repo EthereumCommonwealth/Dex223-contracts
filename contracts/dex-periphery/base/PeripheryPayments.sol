@@ -88,9 +88,8 @@ abstract contract PeripheryPayments is IPeripheryPayments, PeripheryImmutableSta
         // Effects before interactions (CEI pattern)
         debitERC223(msg.sender, _token, _quantity);
 
-        // Interaction: transfer tokens to recipient
-        bool success = IERC223(_token).transfer(_recipient, _quantity);
-        require(success, "WT");
+        // Interaction: transfer tokens to recipient (supports non-bool-returning tokens)
+        TransferHelper.safeTransfer(_token, _recipient, _quantity);
 
         emit ERC223Withdrawal(_token, msg.sender, _recipient, _quantity);
     }

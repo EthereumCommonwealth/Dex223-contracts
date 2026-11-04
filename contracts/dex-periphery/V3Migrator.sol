@@ -7,6 +7,7 @@ import '../libraries/TransferHelper.sol';
 import '../libraries/Multicall.sol';
 import '../libraries/SelfPermit.sol';
 import '../interfaces/IUniswapV2Pair.sol';
+import '../interfaces/IERC20Minimal.sol';
 import '../tokens/interfaces/IWETH9.sol';
 
 import './interfaces/INonfungiblePositionManager.sol';
@@ -32,13 +33,26 @@ contract V3Migrator is IV3Migrator, PeripheryImmutableState, PoolInitializer, Mu
         require(msg.sender == WETH9, 'Not WETH9');
     }
 
+    function tokenReceived(address, uint256, bytes calldata) external pure returns (bytes4) {
+        return 0x8943ec02;
+    }
+
     function migrate(MigrateParams calldata params) external override {
         require(params.percentageToMigrate > 0, 'Percentage too small');
         require(params.percentageToMigrate <= 100, 'Percentage too large');
 
+        uint256 balance0Before = IERC20Minimal(params.token0).balanceOf(address(this));
+        uint256 balance1Before = IERC20Minimal(params.token1).balanceOf(address(this));
+
         // burn v2 liquidity to this address
         IUniswapV2Pair(params.pair).transferFrom(msg.sender, params.pair, params.liquidityToMigrate);
         (uint256 amount0V2, uint256 amount1V2) = IUniswapV2Pair(params.pair).burn(address(this));
+
+        require(
+            IERC20Minimal(params.token0).balanceOf(address(this)) >= balance0Before.add(amount0V2) &&
+                IERC20Minimal(params.token1).balanceOf(address(this)) >= balance1Before.add(amount1V2),
+            'V3M: insufficient burned amounts'
+        );
 
         // calculate the amounts to migrate to v3
         uint256 amount0V2ToMigrate = amount0V2.mul(params.percentageToMigrate) / 100;
