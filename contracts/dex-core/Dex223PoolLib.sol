@@ -544,17 +544,21 @@ contract Dex223PoolLib {
 
         if (amount0 > 0) {
             if (amount0 == protocolFees.token0) amount0--; // ensure that the slot is not cleared, for gas savings
-            protocolFees.token0 -= amount0;
-            //TransferHelper.safeTransfer(token0.erc20, recipient, amount0);
-            if (token0_223) optimisticDelivery(token0.erc223, recipient, amount0);
-            else optimisticDelivery(token0.erc20, recipient, amount0);
+            if (amount0 > 0) {
+                protocolFees.token0 -= amount0;
+                //TransferHelper.safeTransfer(token0.erc20, recipient, amount0);
+                if (token0_223) optimisticDelivery(token0.erc223, recipient, amount0);
+                else optimisticDelivery(token0.erc20, recipient, amount0);
+            }
         }
         if (amount1 > 0) {
             if (amount1 == protocolFees.token1) amount1--; // ensure that the slot is not cleared, for gas savings
-            protocolFees.token1 -= amount1;
-            //TransferHelper.safeTransfer(token1.erc20, recipient, amount1);
-            if (token1_223) optimisticDelivery(token1.erc223, recipient, amount1);
-            else optimisticDelivery(token1.erc20, recipient, amount1);
+            if (amount1 > 0) {
+                protocolFees.token1 -= amount1;
+                //TransferHelper.safeTransfer(token1.erc20, recipient, amount1);
+                if (token1_223) optimisticDelivery(token1.erc223, recipient, amount1);
+                else optimisticDelivery(token1.erc20, recipient, amount1);
+            }
         }
 
         emit CollectProtocol(msg.sender, recipient, amount0, amount1);
