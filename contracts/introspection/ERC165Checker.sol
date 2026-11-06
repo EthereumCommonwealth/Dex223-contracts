@@ -125,7 +125,8 @@ library ERC165Checker {
     {
         bytes memory encodedParams = abi.encodeWithSelector(_INTERFACE_ID_ERC165, interfaceId);
         (bool success, bytes memory result) = account.staticcall{ gas: 30000 }(encodedParams);
-        if (result.length < 32) return (false, false);
-        return (success, abi.decode(result, (bool)));
+        if (!success || result.length < 32) return (false, false);
+        uint256 word = abi.decode(result, (uint256));
+        return (word <= 1, word == 1);
     }
 }

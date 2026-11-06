@@ -60,9 +60,11 @@ contract TokenStandardIntrospection {
 
     // @audit-fix V-TSI-01: Changed from simple mapping to accumulating mapping.
     mapping (address => uint256) public erc223Deposits;
+    mapping (address => mapping(address => uint256)) public userDeposits;
 
     // @audit-fix V-TSI-04: Added event for off-chain monitoring of deposit activity.
     event ERC223DepositRecorded(address indexed token, address indexed from, uint256 value);
+    event ERC223DepositWithdrawn(address indexed token, address indexed to, uint256 value);
 
     /// @notice ERC-223 token transfer hook. Called by the token contract during `transfer()`.
     /// @param _from  The address that initiated the token transfer.
@@ -84,14 +86,32 @@ contract TokenStandardIntrospection {
         // @audit-fix V-TSI-03: Reject zero-value deposits as meaningless.
         require(_value > 0, "TSI: zero value");
 
-        // @audit-fix V-TSI-01: Use += to accumulate deposits instead of overwriting.
-        erc223Deposits[msg.sender] += _value;
+        // @audit-fix V-TSI-01: Use += to accumulate deposits instead of overwriting, with overflow guard.
+        uint256 newTotal = erc223Deposits[msg.sender] + _value;
+        require(newTotal >= erc223Deposits[msg.sender], "TSI: deposit overflow");
+        erc223Deposits[msg.sender] = newTotal;
+
+        uint256 newUserTotal = userDeposits[_from][msg.sender] + _value;
+        require(newUserTotal >= userDeposits[_from][msg.sender], "TSI: user deposit overflow");
+        userDeposits[_from][msg.sender] = newUserTotal;
 
         // @audit-fix V-TSI-04: Emit event for off-chain tracking.
         emit ERC223DepositRecorded(msg.sender, _from, _value);
 
         // @audit-fix V-TSI-05: Use named constant instead of magic number.
         return _ERC223_RECEIVED;
+    }
+
+    /// @notice Allows a depositor to recover tokens sent during standard introspection probes.
+    function withdraw(address _token, uint256 _amount) external
+    {
+        uint256 bal = userDeposits[msg.sender][_token];
+        uint256 toWithdraw = _amount == 0 ? bal : _amount;
+        require(toWithdraw > 0 && bal >= toWithdraw, "TSI: insufficient deposit");
+        userDeposits[msg.sender][_token] = bal - toWithdraw;
+        (bool success, bytes memory data) = _token.call(abi.encodeWithSelector(0xa9059cbb, msg.sender, toWithdraw));
+        require(success && (data.length == 0 || abi.decode(data, (bool))), "TSI: transfer failed");
+        emit ERC223DepositWithdrawn(_token, msg.sender, toWithdraw);
     }
 
     /// @notice Returns the total amount of ERC-223 tokens deposited by a specific token contract.

@@ -310,7 +310,11 @@ library NFTDescriptor {
         bool priceBelow1 = adjustedSqrtRatioX96 < 2**96;
         if (priceBelow1) {
             // 10 ** 43 is precision needed to retreive 5 sigfigs of smallest possible price + 1 for rounding
-            value = FullMath.mulDiv(value, 10**44, 1 << 128);
+            if (value == 0 && adjustedSqrtRatioX96 > 0) {
+                value = FullMath.mulDiv(adjustedSqrtRatioX96 * adjustedSqrtRatioX96, 10**44, 1 << 192);
+            } else {
+                value = FullMath.mulDiv(value, 10**44, 1 << 128);
+            }
         } else {
             // leave precision for 4 decimal places + 1 place for rounding
             value = FullMath.mulDiv(value, 10**5, 1 << 128);
@@ -331,6 +335,10 @@ library NFTDescriptor {
         (uint256 sigfigs, bool extraDigit) = sigfigsRounded(value, digits);
         if (extraDigit) {
             digits++;
+            if (priceBelow1 && digits >= 44) {
+                priceBelow1 = false;
+                digits = 5;
+            }
         }
 
         DecimalStringParams memory params;
