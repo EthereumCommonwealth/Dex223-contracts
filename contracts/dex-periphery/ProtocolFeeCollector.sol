@@ -90,13 +90,23 @@ contract ProtocolFeeCollector {
                 continue;
             }
             reserveGas(COLLECT_GAS);
-            try IFeeCollectorPool(pools[i]).collectProtocol{gas: COLLECT_GAS}(_revenue, type(uint128).max, type(uint128).max, false, false) returns (
-                uint128 amount0,
-                uint128 amount1
-            ) {
+            (bool ok, bytes memory ret) = _boundedCall(
+                pools[i],
+                COLLECT_GAS,
+                abi.encodeWithSelector(
+                    IFeeCollectorPool.collectProtocol.selector,
+                    _revenue,
+                    type(uint128).max,
+                    type(uint128).max,
+                    false,
+                    false
+                )
+            );
+            if (ok && ret.length >= 64) {
+                (uint128 amount0, uint128 amount1) = abi.decode(ret, (uint128, uint128));
                 emit Collected(pools[i], _revenue, amount0, amount1);
-            } catch (bytes memory reason) {
-                emit PoolSkipped(pools[i], reason);
+            } else {
+                emit PoolSkipped(pools[i], ret);
             }
         }
     }
@@ -115,10 +125,15 @@ contract ProtocolFeeCollector {
                 continue;
             }
             reserveGas(SET_FEE_GAS);
-            try IFeeCollectorPool(pools[i]).setFeeProtocol{gas: SET_FEE_GAS}(fp0, fp1) {
+            (bool ok, bytes memory ret) = _boundedCall(
+                pools[i],
+                SET_FEE_GAS,
+                abi.encodeWithSelector(IFeeCollectorPool.setFeeProtocol.selector, fp0, fp1)
+            );
+            if (ok) {
                 emit PoolFeeProtocolSet(pools[i], fp0, fp1, false);
-            } catch (bytes memory reason) {
-                emit PoolSkipped(pools[i], reason);
+            } else {
+                emit PoolSkipped(pools[i], ret);
             }
         }
     }
@@ -192,10 +207,36 @@ contract ProtocolFeeCollector {
         }
         if (size == 0) return false;
         reserveGas(FACTORY_CHECK_GAS);
-        try IFeeCollectorPool(pool).factory{gas: FACTORY_CHECK_GAS}() returns (address f) {
-            return f == factory;
-        } catch {
-            return false;
+        address expectedFactory = factory;
+        uint256 checkGas = FACTORY_CHECK_GAS;
+        bool matchFactory;
+        assembly {
+            let ptr := mload(0x40)
+            mstore(ptr, 0xc45a015500000000000000000000000000000000000000000000000000000000)
+            let ok := staticcall(checkGas, pool, ptr, 4, ptr, 32)
+            if and(ok, gt(returndatasize(), 31)) {
+                matchFactory := eq(mload(ptr), expectedFactory)
+            }
+        }
+        return matchFactory;
+    }
+
+    function _boundedCall(
+        address target,
+        uint256 callGas,
+        bytes memory data
+    ) internal returns (bool ok, bytes memory ret) {
+        assembly {
+            ok := call(callGas, target, 0, add(data, 32), mload(data), 0, 0)
+            let len := returndatasize()
+            if gt(len, 256) {
+                len := 256
+            }
+            ret := mload(0x40)
+            mstore(ret, len)
+            let dest := add(ret, 32)
+            returndatacopy(dest, 0, len)
+            mstore(0x40, add(dest, and(add(len, 31), not(31))))
         }
     }
 

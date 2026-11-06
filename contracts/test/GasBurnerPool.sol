@@ -24,3 +24,23 @@ contract GasBurnerPool {
         while (true) sink++;
     }
 }
+
+contract RevertBombPool {
+    address public immutable factory;
+
+    constructor(address _factory) {
+        factory = _factory;
+    }
+
+    function collectProtocol(address, uint128, uint128, bool, bool) external pure returns (uint128, uint128) {
+        assembly {
+            revert(0, 200000)
+        }
+    }
+
+    function setFeeProtocol(uint8, uint8) external pure {
+        assembly {
+            revert(0, 120000)
+        }
+    }
+}

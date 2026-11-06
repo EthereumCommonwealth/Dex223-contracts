@@ -130,6 +130,17 @@ describe('ProtocolFeeCollector', () => {
       await expect(collect).to.emit(f.collector, 'Collected').withArgs(f.pool.target, f.revenue.target, accrued - 1n, 0n)
     })
 
+    it('a pool that reverts with a large payload is capped at 256 bytes without starving the next pool', async () => {
+      const f = await handedOver()
+      const bomber = await (await ethers.getContractFactory('RevertBombPool')).deploy(f.factory.target)
+
+      await f.swap(expandTo18Decimals(1))
+      const accrued = (await f.pool.protocolFees()).token0
+      const collect = f.collector.connect(f.keeper).collect([bomber.target, f.pool.target], { gasLimit: 900_000 })
+      await expect(collect).to.emit(f.collector, 'PoolSkipped')
+      await expect(collect).to.emit(f.collector, 'Collected').withArgs(f.pool.target, f.revenue.target, accrued - 1n, 0n)
+    })
+
     it('a batch sent with too little gas reverts instead of skipping pools', async () => {
       const f = await handedOver()
       await f.collector.enableFees([f.pool.target])
