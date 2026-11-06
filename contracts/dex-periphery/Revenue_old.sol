@@ -97,10 +97,10 @@ contract Revenue {
     }
 
     function stake(address _token, uint256 _amount) public {
-        require(_token == staking_token_erc20 || _token == staking_token_erc20, "Trying to stake a wrong token");
+        require(_token == staking_token_erc20 || _token == staking_token_erc223, "Trying to stake a wrong token");
         _update(msg.sender);
-        staked[msg.sender] += _amount;
         receiveToken(_token, _amount);
+        staked[msg.sender] += _amount;
         staking_timestamp[msg.sender] = block.timestamp;
 
         emit Staked(msg.sender, _amount);
@@ -108,7 +108,7 @@ contract Revenue {
 
     function withdraw(address _token, uint256 amount) public {
         require(staking_timestamp[msg.sender] + claim_delay <= block.timestamp, "Tokens are frozen for a specified duration after the last staking");
-        require(_token == staking_token_erc20 || _token == staking_token_erc20, "Trying to stake a wrong token");
+        require(_token == staking_token_erc20 || _token == staking_token_erc223, "Trying to stake a wrong token");
         _update(msg.sender);
         staked[msg.sender] -= amount;
         sendToken(_token, amount);
@@ -148,9 +148,11 @@ contract Revenue {
         _update(msg.sender);
 
         for (uint256 i = 0; i < tokens.length; i++) {
+            require(tokens[i] != staking_token_erc20 && tokens[i] != staking_token_erc223, "Cannot claim staking token");
             uint256 tokenUnpaidContribution = totalContribution - spentTotalContribution[tokens[i]];
             uint256 unpaidUserContribution = contribution[msg.sender] - spentContribution[msg.sender][tokens[i]];
             require(unpaidUserContribution <= tokenUnpaidContribution);
+            if (unpaidUserContribution == 0 || tokenUnpaidContribution == 0) continue;
 
             uint256 balance = IERC20Minimal(tokens[i]).balanceOf(address(this));
             uint256 dividends = balance * unpaidUserContribution / tokenUnpaidContribution;
@@ -162,6 +164,13 @@ contract Revenue {
 
             emit Claimed(msg.sender, tokens[i], dividends);
         }
+    }
+
+    function withdrawDeposit(address _token) public {
+        uint256 _amount = erc223deposit[msg.sender][_token];
+        require(_amount != 0, "Nothing deposited");
+        erc223deposit[msg.sender][_token] = 0;
+        TransferHelper.safeTransfer(_token, msg.sender, _amount);
     }
 
     function tokenReceived(address user, uint256 value, bytes memory data) public returns (bytes4) {
@@ -186,13 +195,19 @@ contract Revenue {
     }
 
     function sendToken(address token, uint256 amount) internal {
+        if (amount == 0) return;
         uint256 balance = IERC20Minimal(token).balanceOf(address(this));
         if (balance >= amount) {
             TransferHelper.safeTransfer(token, msg.sender, amount);
         } else {
-            TransferHelper.safeTransfer(token, msg.sender, balance);
             uint256 remaining = amount - balance;
             address second = get223[token] != address(0) ? get223[token] : get20[token];
+            require(second != address(0), "No counterpart token to cover the shortfall");
+            require(
+                IERC20Minimal(second).balanceOf(address(this)) >= remaining,
+                "Insufficient balance across both token versions"
+            );
+            if (balance != 0) TransferHelper.safeTransfer(token, msg.sender, balance);
             TransferHelper.safeTransfer(second, msg.sender, remaining);
         }
     }
