@@ -395,6 +395,9 @@ contract Dex223QuoteLib {
             {
                 // take ERC20 version of token
                 address _token20 = (_token == token0.erc223) ? token0.erc20 : token1.erc20;
+                uint256 _token20CodeSize;
+                assembly { _token20CodeSize := extcodesize(_token20) }
+                require(_token20CodeSize > 0, "QLIB: NO_TOKEN20");
                 // Approve the converter if the current allowance is insufficient.
                 if(IERC20Minimal(_token20).allowance(address(this), address(converter)) < _amount)
                 {
