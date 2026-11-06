@@ -484,7 +484,7 @@ contract Dex223Pool is IUniswapV3Pool, NoDelegateCall, PeripheryValidation {
         uint128 amount1Requested,
         bool token0_223,
         bool token1_223
-    ) external override lock  returns (uint128 amount0, uint128 amount1) {
+    ) external override lock adjustableSender returns (uint128 amount0, uint128 amount1) {
         (bool success, bytes memory retdata) = pool_lib.delegatecall(abi.encodeWithSignature("collect(address,int24,int24,uint128,uint128,bool,bool)", recipient, tickLower, tickUpper, amount0Requested, amount1Requested, token0_223, token1_223));
         if (!success) _bubbleRevert(retdata);
         return abi.decode(retdata, (uint128, uint128));
@@ -496,7 +496,7 @@ contract Dex223Pool is IUniswapV3Pool, NoDelegateCall, PeripheryValidation {
         int24 tickLower,
         int24 tickUpper,
         uint128 amount
-    ) external override lock  returns (uint256 amount0, uint256 amount1) {
+    ) external override lock adjustableSender returns (uint256 amount0, uint256 amount1) {
         (bool success, bytes memory retdata) = pool_lib.delegatecall(abi.encodeWithSignature("burn(int24,int24,uint128)", tickLower, tickUpper, amount));
         if (!success) _bubbleRevert(retdata);
         return abi.decode(retdata, (uint256, uint256));

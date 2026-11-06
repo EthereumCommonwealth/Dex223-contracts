@@ -309,11 +309,12 @@ IERC223Recipient
                                                               // `msg.sender` is the address of the contract here because this function
                                                               // is called within `tokenReceived`
                                                               // `call_sender` is the sender of the token.
-        expectedCallbackPool = swapData.pool;
-        require(IERC223(token_sender).transfer(swapData.pool, amountIn, _data));
         expectedCallbackPool = NO_CALLBACK_POOL;
+        require(IERC223(token_sender).transfer(swapData.pool, amountIn, _data));
 
-        return uint256(IERC20(_tokenOut).balanceOf(recipient) - balance1before);
+        uint256 balance1after = IERC20(_tokenOut).balanceOf(recipient);
+        require(balance1after >= balance1before, 'Underflow');
+        return balance1after - balance1before;
     }
 
     function executeSwapWithoutDeposit(
@@ -346,13 +347,13 @@ IERC223Recipient
         address tokenIn,
         address tokenOut
     ) private view returns (address) {
+        (address _token0_erc20, address _token0_erc223) = IDex223Pool(pool).token0();
+        (address _token1_erc20, address _token1_erc223) = IDex223Pool(pool).token1();
+        bool isToken0In = (_token0_erc20 == tokenIn || _token0_erc223 == tokenIn);
         if (prefer223Out) {
-            (address _token0_erc20, address _token0_erc223) = IDex223Pool(pool).token0();
-            (, address _token1_erc223) = IDex223Pool(pool).token1();
-
-            return (_token0_erc20 == tokenIn) ? _token1_erc223 : _token0_erc223;
+            return isToken0In ? _token1_erc223 : _token0_erc223;
         } else {
-            return tokenOut;
+            return isToken0In ? _token1_erc20 : _token0_erc20;
         }
     }
 
