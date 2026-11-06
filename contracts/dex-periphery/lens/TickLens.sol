@@ -23,13 +23,16 @@ contract TickLens is ITickLens {
         for (uint256 i = 0; i < 256; i++) {
             if (bitmap & (1 << i) > 0) numberOfPopulatedTicks++;
         }
+        if (numberOfPopulatedTicks == 0) return new PopulatedTick[](0);
 
         // fetch populated tick data
         int24 tickSpacing = IUniswapV3Pool(pool).tickSpacing();
         populatedTicks = new PopulatedTick[](numberOfPopulatedTicks);
         for (uint256 i = 0; i < 256; i++) {
             if (bitmap & (1 << i) > 0) {
-                int24 populatedTick = ((int24(tickBitmapIndex) << 8) + int24(i)) * tickSpacing;
+                int256 tick256 = ((int256(tickBitmapIndex) << 8) + int256(i)) * int256(tickSpacing);
+                require(tick256 >= -887272 && tick256 <= 887272, 'TL: tick out of bounds');
+                int24 populatedTick = int24(tick256);
                 (uint128 liquidityGross, int128 liquidityNet, , , , , , ) = IUniswapV3Pool(pool).ticks(populatedTick);
                 populatedTicks[--numberOfPopulatedTicks] = PopulatedTick({
                     tick: populatedTick,

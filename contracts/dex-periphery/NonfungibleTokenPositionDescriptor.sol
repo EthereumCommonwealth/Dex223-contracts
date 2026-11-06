@@ -79,8 +79,8 @@ contract NonfungibleTokenPositionDescriptor is INonfungibleTokenPositionDescript
                     baseTokenSymbol: baseTokenAddress == WETH9
                         ? nativeCurrencyLabel()
                         : SafeERC20Namer.tokenSymbol(baseTokenAddress),
-                    quoteTokenDecimals: IERC20Metadata(quoteTokenAddress).decimals(),
-                    baseTokenDecimals: IERC20Metadata(baseTokenAddress).decimals(),
+                    quoteTokenDecimals: _tokenDecimals(quoteTokenAddress),
+                    baseTokenDecimals: _tokenDecimals(baseTokenAddress),
                     flipRatio: _flipRatio,
                     tickLower: tickLower,
                     tickUpper: tickUpper,
@@ -98,6 +98,16 @@ contract NonfungibleTokenPositionDescriptor is INonfungibleTokenPositionDescript
         uint256 chainId
     ) public view returns (bool) {
         return tokenRatioPriority(token0, chainId) > tokenRatioPriority(token1, chainId);
+    }
+
+    function _tokenDecimals(address token) private view returns (uint8) {
+        (bool success, bytes memory data) =
+            token.staticcall(abi.encodeWithSelector(IERC20Metadata.decimals.selector));
+        if (success && data.length >= 32) {
+            uint256 dec = abi.decode(data, (uint256));
+            if (dec <= type(uint8).max) return uint8(dec);
+        }
+        return 18;
     }
 
     function tokenRatioPriority(address token, uint256 chainId) public view returns (int256) {

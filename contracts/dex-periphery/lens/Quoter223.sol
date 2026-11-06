@@ -124,6 +124,17 @@ contract ERC223Quoter is IQuoter, IUniswapV3SwapCallback, PeripheryImmutableStat
     function parseRevertReason(bytes memory reason) private pure returns (uint256) {
         if (reason.length != 32) {
             if (reason.length < 68) revert('Unexpected error');
+            uint256 selector;
+            uint256 offset;
+            uint256 strLen;
+            assembly {
+                selector := shr(224, mload(add(reason, 0x20)))
+                offset := mload(add(reason, 0x24))
+                strLen := mload(add(reason, 0x44))
+            }
+            if (selector != 0x08c379a0 || offset != 0x20 || reason.length < 68 + strLen) {
+                revert('Unexpected error');
+            }
             assembly {
                 reason := add(reason, 0x04)
             }
@@ -153,7 +164,9 @@ contract ERC223Quoter is IQuoter, IUniswapV3SwapCallback, PeripheryImmutableStat
             false, // bool prefer223Out
             abi.encodePacked(tokenIn, fee, tokenOut)
         )
-        {} catch (bytes memory reason) {
+        {
+            revert('Unexpected error');
+        } catch (bytes memory reason) {
             return parseRevertReason(reason);
         }
     }
@@ -200,7 +213,10 @@ contract ERC223Quoter is IQuoter, IUniswapV3SwapCallback, PeripheryImmutableStat
             false, // bool prefer223Out
             abi.encodePacked(tokenOut, fee, tokenIn)
         )
-        {} catch (bytes memory reason) {
+        {
+            if (sqrtPriceLimitX96 == 0) delete amountOutCached;
+            revert('Unexpected error');
+        } catch (bytes memory reason) {
             if (sqrtPriceLimitX96 == 0) delete amountOutCached; // clear cache
             return parseRevertReason(reason);
         }

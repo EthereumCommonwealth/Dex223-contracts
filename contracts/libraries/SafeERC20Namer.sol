@@ -65,7 +65,15 @@ library SafeERC20Namer {
             bytes32 decoded = abi.decode(data, (bytes32));
             return bytes32ToString(decoded);
         } else if (data.length > 64) {
-            return abi.decode(data, (string));
+            uint256 offset;
+            uint256 strLen;
+            assembly {
+                offset := mload(add(data, 32))
+                strLen := mload(add(data, 64))
+            }
+            if (offset == 32 && strLen <= data.length - 64) {
+                return abi.decode(data, (string));
+            }
         }
         return '';
     }

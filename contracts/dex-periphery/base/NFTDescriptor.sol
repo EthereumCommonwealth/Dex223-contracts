@@ -86,7 +86,7 @@ library NFTDescriptor {
         bytes memory symbolBytes = bytes(symbol);
         uint256 quotesCount = 0;
         for (uint256 i = 0; i < symbolBytes.length; i++) {
-            if (symbolBytes[i] == '"') {
+            if (symbolBytes[i] == '"' || symbolBytes[i] == '\\') {
                 quotesCount++;
             }
         }
@@ -94,7 +94,7 @@ library NFTDescriptor {
             bytes memory escapedBytes = new bytes(symbolBytes.length + (quotesCount));
             uint256 index;
             for (uint256 i = 0; i < symbolBytes.length; i++) {
-                if (symbolBytes[i] == '"') {
+                if (symbolBytes[i] == '"' || symbolBytes[i] == '\\') {
                     escapedBytes[index++] = '\\';
                 }
                 escapedBytes[index++] = symbolBytes[i];
