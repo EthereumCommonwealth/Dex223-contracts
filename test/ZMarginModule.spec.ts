@@ -1588,5 +1588,24 @@ describe('MarginModule', () => {
       expect(recovered, 'the 100 base held plus the proceeds of the 200 collat').to.be.gt(expandTo18Decimals(250))
       expect(recovered + await c.mm.orderShortfall(0)).to.be.closeTo(debt, ONE / 100n)
     })
+
+    it('positionClose on a large expired position sells only the needed deficit instead of reverting on a full-balance dump', async () => {
+      // 100 base loan + 200 collat on a 1000/1000 pool with 10% interest per 30 days and a 30-day loan duration.
+      const c = await loadFixture(fx)
+      await c.seedPool()
+      await c.mm.createOrder({ ...c.orderParams, interestRate: 1000n, leverage: 5n, duration: BigInt(30 * DAY) })
+      await c.mm.setOrderStatus(0, true)
+      await c.base.approve(c.mm.target, ethers.MaxUint256)
+      await c.collat.approve(c.mm.target, ethers.MaxUint256)
+      await c.mm.orderDepositToken(0, expandTo18Decimals(100))
+      await c.mm.connect(c.other).takeLoan(0, expandTo18Decimals(100), 0, expandTo18Decimals(200))
+
+      await time.increase(30 * DAY + 1)
+      // Debt is ~110 base; holdings are 100 base + 200 collat (~300 base), so the position is solvent but expired.
+      expect(await c.mm.subjectToLiquidation(0)).to.eq(false)
+      // Order owner closes the expired position; only ~11 collat is sold to cover the ~10 base interest deficit.
+      await expect(c.mm.positionClose(0, false)).to.emit(c.mm, 'PositionClosed')
+      expect((await c.mm.positions(0)).open).to.eq(false)
+    })
   })
 })

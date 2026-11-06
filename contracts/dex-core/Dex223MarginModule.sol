@@ -826,6 +826,9 @@ contract MarginModule is IOrderParams
             address pool = factory.getPool(_asset1, _asset2, _feeTier);
             require(pool != address(0));
             require(!_isErc223SideOf(pool, _asset1));
+            if (factory.getPool(_asset1, positions[_positionId].assets[0], _feeTier) == pool) {
+                _asset2 = positions[_positionId].assets[0];
+            }
             (, address tokenOut20) = _poolErc20Pair(pool, _asset1);
 
             IERC20Minimal(_asset1).approve(address(router), _amount);
@@ -843,6 +846,7 @@ contract MarginModule is IOrderParams
         }
         require(amountOut > 0);
         uint256 amountInUsed = balInBefore - IERC20Minimal(_asset1).balanceOf(address(this));
+        if (amountInUsed < _amount) IERC20Minimal(_asset1).approve(address(router), 0);
 
         // add new (received) asset to Position
         addAsset(_positionId, _asset2, amountOut);
@@ -895,6 +899,9 @@ contract MarginModule is IOrderParams
         address pool = factory.getPool(_asset1, _asset2, _feeTier);
         require(pool != address(0));
         require(_isErc223SideOf(pool, _asset1));
+        if (factory.getPool(_asset1, positions[_positionId].assets[0], _feeTier) == pool) {
+            _asset2 = positions[_positionId].assets[0];
+        }
 
         uint256 balInBefore = IERC20Minimal(_asset1).balanceOf(address(this));
         uint256 amountOut = _execute223Swap(pool, _asset1, _asset2, _feeTier, _amount);
@@ -1181,7 +1188,15 @@ contract MarginModule is IOrderParams
             i--;
             uint256 balance = position.balances[i];
             if (balance == 0) continue;
-            _swapToBaseAsset(positionId, position.assets[i], balance);
+            address asset = position.assets[i];
+            if (!sellAll) {
+                uint256 needed = debt - position.balances[0];
+                uint256 floorOut = _getEquivalentInBaseAsset(asset, balance, position.assets[0], position.orderId) * FORCED_SWAP_MIN_OUT_BPS / 10000;
+                if (floorOut > needed) {
+                    balance = (balance * needed) / floorOut + 1;
+                }
+            }
+            _swapToBaseAsset(positionId, asset, balance);
         }
         shortfall = _paybackBaseAsset(position);
 
