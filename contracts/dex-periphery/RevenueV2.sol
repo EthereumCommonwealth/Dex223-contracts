@@ -250,6 +250,20 @@ contract RevenueV2 {
         require(amount != 0, 'Nothing staked');
         // Lowering total_staked without accruing first only re-spreads the not-yet-accrued slice over the
         // remaining stakers; liabilities still never exceed what was streamed, so solvency holds.
+        // Advance the caller's reward checkpoints to the current reward_per_token so already-accrued
+        // rewards since their last checkpoint are genuinely forfeited as documented (and cannot be
+        // retroactively claimed later) and so a subsequent re-stake starts from the current accumulator.
+        uint256 n = reward_tokens.length;
+        for (uint256 i = 0; i < n; i++) {
+            address token = reward_tokens[i];
+            uint256 rpt = reward_data[token].reward_per_token;
+            uint256 paid = user_reward_per_token_paid[msg.sender][token];
+            if (rpt > paid) {
+                uint256 forfeited = amount.mulDiv(rpt - paid, PRECISION);
+                reward_data[token].queued += forfeited * STREAM_SCALE;
+                user_reward_per_token_paid[msg.sender][token] = rpt;
+            }
+        }
         staked[msg.sender] = 0;
         total_staked -= amount;
         uint256 part20 = staked_by_version[msg.sender][staking_token_erc20];
