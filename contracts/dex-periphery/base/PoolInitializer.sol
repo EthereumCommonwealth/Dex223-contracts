@@ -7,6 +7,11 @@ import '../../interfaces/IUniswapV3Pool.sol';
 import '../interfaces/IPoolInitializer.sol';
 import './PeripheryImmutableState.sol';
 
+interface IDex223PoolTokens {
+    function token0() external view returns (address, address);
+    function token1() external view returns (address, address);
+}
+
 /// @title Creates and initializes V3 Pools
 /// @notice Provides input-validated pool creation and initialization for DEX-223.
 /// @dev    All token addresses and the initial price are validated before any
@@ -57,6 +62,12 @@ abstract contract PoolInitializer is IPoolInitializer, PeripheryImmutableState {
             );
             IUniswapV3Pool(pool).initialize(sqrtPriceX96);
         } else {
+            (address t0_20, address t0_223) = IDex223PoolTokens(pool).token0();
+            (address t1_20, address t1_223) = IDex223PoolTokens(pool).token1();
+            require(
+                t0_20 == token0_20 && t1_20 == token1_20 && t0_223 == token0_223 && t1_223 == token1_223,
+                'PI: TOKEN_MISMATCH'
+            );
             (uint160 sqrtPriceX96Existing, , , , , , ) = IUniswapV3Pool(pool).slot0();
             if (sqrtPriceX96Existing == 0) {
                 IUniswapV3Pool(pool).initialize(sqrtPriceX96);

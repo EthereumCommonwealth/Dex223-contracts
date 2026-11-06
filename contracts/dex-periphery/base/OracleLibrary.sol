@@ -133,6 +133,7 @@ library OracleLibrary {
         require(delta > 0, 'DELTA');
 
         int56 meanTick = (tickCumulative - prevTickCumulative) / int56(int32(delta));
+        if ((tickCumulative - prevTickCumulative) < 0 && ((tickCumulative - prevTickCumulative) % int56(int32(delta)) != 0)) meanTick--;
         require(meanTick >= int56(TickMath.MIN_TICK) && meanTick <= int56(TickMath.MAX_TICK), 'TICK');
         tick = int24(meanTick);
 
