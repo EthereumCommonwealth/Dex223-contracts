@@ -95,8 +95,8 @@ contract Dex223TokenValidator {
         // Note that if there is a fallback function in the token contract
         // then it MAY handle the `standard()` call.
         require(!success              // The call failed i.e. token doesn't implement `standard()` func.
-                //|| abi.decode(data,(uint32)) != uint32(223) // The token implements `standard()` and it responds that it is not ERC-223.
-                || data.length == 0,  // The call was handled by the fallback function of the token.
+                || data.length < 32   // The call was handled by a fallback returning empty or short data.
+                || abi.decode(data,(uint32)) != uint32(223), // The token implements `standard()` and responds that it is not ERC-223.
                 "FACTORY: ERC20_IS_ERC223");
 
         // `isWrapper` only recognises wrappers that already exist on chain. When an ERC-223 origin exists but
@@ -143,7 +143,7 @@ contract Dex223TokenValidator {
                 (bool success, bytes memory data) = _token223.staticcall(abi.encodeWithSelector(0x5a3b7e42)); // call `standard() returns uint32`
 
                 // Check if the token responds that its ERC-223.
-                require(success && abi.decode(data,(uint32)) == uint32(223)); 
+                require(success && data.length >= 32 && abi.decode(data,(uint32)) == uint32(223)); 
 
                 // Check if converter identifies it as a ERC-223 wrapper.
 //                require(converter.isWrapper(_token223)); 
@@ -203,7 +203,7 @@ contract Dex223TokenValidator {
 
             // The ERC-223 token MUST implement `standard()` funct.
             // If it doesn't - then its not a valid ERC-223 token.
-            require(success && abi.decode(data,(uint32)) == uint32(223));
+            require(success && data.length >= 32 && abi.decode(data,(uint32)) == uint32(223));
 
             return; // All checks passed for scenario 2.
         }

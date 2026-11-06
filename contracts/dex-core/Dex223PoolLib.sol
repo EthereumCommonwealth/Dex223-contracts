@@ -178,34 +178,38 @@ contract Dex223PoolLib {
         return uint32(block.timestamp); // truncation is desired
     }
 
-    /// @dev Get the pool's balance of token0
-    /// @dev This function is gas optimized to avoid a redundant extcodesize check in addition to the returndatasize
-    /// check
-    function balance0() private view returns (uint256) {
-        (bool success20, bytes memory data20) =
-                                token0.erc20.staticcall(abi.encodeWithSelector(IERC20Minimal.balanceOf.selector, address(this)));
-        (bool success223, bytes memory data223) =
-                                token0.erc223.staticcall(abi.encodeWithSelector(IERC20Minimal.balanceOf.selector, address(this)));
+    function _poolTokenBalance(address token20, address token223) private view returns (uint256) {
+        uint256 size20;
+        uint256 size223;
+        assembly {
+            size20 := extcodesize(token20)
+            size223 := extcodesize(token223)
+        }
+        require(size20 > 0 || size223 > 0);
         uint256 _balance;
-        if(success20 && data20.length >= 32)  _balance += abi.decode(data20, (uint256));
-        if(success223 && data223.length >= 32) _balance += abi.decode(data223, (uint256));
-        require((success20 && data20.length >= 32) || (success223 && data223.length >= 32));
+        if (size20 > 0) {
+            (bool success20, bytes memory data20) =
+                token20.staticcall(abi.encodeWithSelector(IERC20Minimal.balanceOf.selector, address(this)));
+            require(success20 && data20.length >= 32);
+            _balance = abi.decode(data20, (uint256));
+        }
+        if (size223 > 0) {
+            (bool success223, bytes memory data223) =
+                token223.staticcall(abi.encodeWithSelector(IERC20Minimal.balanceOf.selector, address(this)));
+            require(success223 && data223.length >= 32);
+            _balance = _balance.add(abi.decode(data223, (uint256)));
+        }
         return _balance;
     }
 
+    /// @dev Get the pool's balance of token0
+    function balance0() private view returns (uint256) {
+        return _poolTokenBalance(token0.erc20, token0.erc223);
+    }
+
     /// @dev Get the pool's balance of token1
-    /// @dev This function is gas optimized to avoid a redundant extcodesize check in addition to the returndatasize
-    /// check
     function balance1() private view returns (uint256) {
-        (bool success20, bytes memory data20) =
-                                token1.erc20.staticcall(abi.encodeWithSelector(IERC20Minimal.balanceOf.selector, address(this)));
-        (bool success223, bytes memory data223) =
-                                token1.erc223.staticcall(abi.encodeWithSelector(IERC20Minimal.balanceOf.selector, address(this)));
-        uint256 _balance;
-        if(success20 && data20.length >= 32)  _balance += abi.decode(data20, (uint256));
-        if(success223 && data223.length >= 32) _balance += abi.decode(data223, (uint256));
-        require((success20 && data20.length >= 32) || (success223 && data223.length >= 32));
-        return _balance;
+        return _poolTokenBalance(token1.erc20, token1.erc223);
     }
 
     /// @dev Gets and updates a position with the given liquidity delta
@@ -454,7 +458,7 @@ contract Dex223PoolLib {
                 // take ERC20 version of token
                 address _token20 = (_token == token0.erc223) ? token0.erc20 : token1.erc20;
                 // Approve the converter if the current allowance is insufficient.
-                if(IERC20Minimal(_token20).allowance(address(this), address(converter)) < _amount)
+                if(IERC20Minimal(_token20).allowance(address(this), address(converter)) < _deficit)
                 {
                     TransferHelper.safeApprove(_token20, address(converter), 0);
                     TransferHelper.safeApprove(_token20, address(converter), uint256(-1));
