@@ -8,6 +8,7 @@ import '../interfaces/IERC20Minimal.sol';
 import './interfaces/callback/IUniswapV3SwapCallback.sol';
 import '../interfaces/ITokenConverter.sol';
 import './interfaces/IUniswapV3Pool.sol';
+import './NoDelegateCall.sol';
 
 import '../libraries/SqrtPriceMath.sol';
 import '../libraries/Position.sol';
@@ -21,7 +22,7 @@ import '../libraries/Oracle.sol';
 import '../libraries/TransferHelper.sol';
 import '../libraries/SwapMath.sol';
 
-contract Dex223PoolLib {
+contract Dex223PoolLib is NoDelegateCall {
     using LowGasSafeMath for uint256;
     using LowGasSafeMath for int256;
     using SafeCast for uint256;
@@ -369,7 +370,7 @@ contract Dex223PoolLib {
         int24 tickUpper,
         uint128 amount,
         bytes calldata data
-    ) external returns (uint256 amount0, uint256 amount1) {
+    ) external onlyDelegateCall returns (uint256 amount0, uint256 amount1) {
         require(amount > 0);
         (, int256 amount0Int, int256 amount1Int) =
                         _modifyPosition(
@@ -507,7 +508,7 @@ contract Dex223PoolLib {
         uint128 amount1Requested,
         bool token0_223,
         bool token1_223
-    ) external returns (uint128 amount0, uint128 amount1) {
+    ) external onlyDelegateCall returns (uint128 amount0, uint128 amount1) {
         // we don't need to checkTicks here, because invalid positions will never have non-zero tokensOwed{0,1}
         Position.Info storage position = positions.get(msg.sender, tickLower, tickUpper);
 
@@ -538,7 +539,7 @@ contract Dex223PoolLib {
         uint128 amount1Requested,
         bool token0_223,
         bool token1_223
-    ) external returns (uint128 amount0, uint128 amount1) {
+    ) external onlyDelegateCall returns (uint128 amount0, uint128 amount1) {
         amount0 = amount0Requested > protocolFees.token0 ? protocolFees.token0 : amount0Requested;
         amount1 = amount1Requested > protocolFees.token1 ? protocolFees.token1 : amount1Requested;
 
@@ -566,7 +567,7 @@ contract Dex223PoolLib {
         int24 tickLower,
         int24 tickUpper,
         uint128 amount
-    ) external returns (uint256 amount0, uint256 amount1) {
+    ) external onlyDelegateCall returns (uint256 amount0, uint256 amount1) {
         (Position.Info storage position, int256 amount0Int, int256 amount1Int) =
                         _modifyPosition(
                 ModifyPositionParams({
@@ -581,10 +582,10 @@ contract Dex223PoolLib {
         amount1 = uint256(-amount1Int);
 
         if (amount0 > 0 || amount1 > 0) {
-            (position.tokensOwed0, position.tokensOwed1) = (
-                position.tokensOwed0 + uint128(amount0),
-                position.tokensOwed1 + uint128(amount1)
-            );
+            uint128 owed0 = position.tokensOwed0 + amount0.toUint128();
+            uint128 owed1 = position.tokensOwed1 + amount1.toUint128();
+            require(owed0 >= position.tokensOwed0 && owed1 >= position.tokensOwed1);
+            (position.tokensOwed0, position.tokensOwed1) = (owed0, owed1);
         }
 
         emit Burn(msg.sender, tickLower, tickUpper, amount, amount0, amount1);
@@ -652,7 +653,7 @@ contract Dex223PoolLib {
         uint160 sqrtPriceLimitX96,
         bool prefer223Out,
         bytes memory data
-    ) external /*noDelegateCall*/
+    ) external onlyDelegateCall
      returns (int256 amount0, int256 amount1) {
 
         require(amountSpecified != 0, 'AS');

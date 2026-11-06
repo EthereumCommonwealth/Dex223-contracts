@@ -31,7 +31,8 @@ contract UniswapInterfaceMulticall {
             (address target, uint256 gasLimit, bytes memory callData) =
                 (calls[i].target, calls[i].gasLimit, calls[i].callData);
             uint256 gasLeftBefore = gasleft();
-            (bool success, bytes memory ret) = target.call{gas: gasLimit}(callData);
+            uint256 callGas = gasLimit == 0 ? gasLeftBefore : gasLimit;
+            (bool success, bytes memory ret) = target.call{gas: callGas}(callData);
             uint256 gasUsed = gasLeftBefore - gasleft();
             returnData[i] = Result(success, gasUsed, ret);
         }

@@ -63,8 +63,9 @@ contract DataHelper
         // V3: Enforce Uniswap V3 token ordering (token0 < token1).
         require(token0 < token1, "DataHelper: token0 must be less than token1");
 
-        // V4: Tick range must be valid (lower < upper).
+        // V4: Tick range must be valid (lower < upper) and within TickMath bounds.
         require(tickLower < tickUpper, "DataHelper: tickLower must be less than tickUpper");
+        require(tickLower >= -887272 && tickUpper <= 887272, "DataHelper: tick out of bounds");
 
         // V5: Minimum amounts must not exceed desired amounts.
         require(amount0Min <= amount0Desired, "DataHelper: amount0Min exceeds amount0Desired");
