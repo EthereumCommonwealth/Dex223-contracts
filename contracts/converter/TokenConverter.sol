@@ -490,7 +490,10 @@ contract TokenStandardConverter is IERC223Recipient
     function createERC223Wrapper(address _token) public returns (address)
     {
         require(address(erc223Wrappers[_token]) == address(0), "ERROR: Wrapper exists");
+        require(address(erc20Wrappers[_token]) == address(0), "ERROR: Opposite wrapper exists");
         require(!isWrapper(_token), "Error: Creating wrapper for a wrapper token");
+        (bool success, bytes memory data) = _token.call(abi.encodeWithSelector(0x5a3b7e42));
+        require(!success || data.length < 32 || abi.decode(data, (uint32)) != uint32(223), "Error: Token is already ERC-223");
         
         ERC223WrapperToken _newERC223Wrapper     = new ERC223WrapperToken{salt: keccak256(abi.encode(_token))}();
         _newERC223Wrapper.set(_token);
@@ -504,7 +507,10 @@ contract TokenStandardConverter is IERC223Recipient
     function createERC20Wrapper(address _token) public returns (address)
     {
         require(address(erc20Wrappers[_token]) == address(0), "ERROR: Wrapper already exists.");
+        require(address(erc223Wrappers[_token]) == address(0), "ERROR: Opposite wrapper exists");
         require(!isWrapper(_token), "Error: Creating wrapper for a wrapper token");
+        (bool success, bytes memory data) = _token.staticcall(abi.encodeWithSelector(0x5a3b7e42));
+        require(success && data.length >= 32 && abi.decode(data, (uint32)) == uint32(223), "Error: Token is not ERC-223");
 
         ERC20WrapperToken _newERC20Wrapper       = new ERC20WrapperToken{salt: keccak256(abi.encode(_token))}();
         _newERC20Wrapper.set(_token);

@@ -319,6 +319,7 @@ contract Dex223AutoListing {
 
     function checkListing(address _token_erc20, address _token_erc223) internal
     {
+        require(_token_erc20 != _token_erc223, "Identical token addresses");
 
         // There are two possible scenarios here:
         // 1. We are listing a new token on Dex223.
@@ -354,8 +355,8 @@ contract Dex223AutoListing {
             require(
                 (!isListed(_token_erc20)  || listed_tokens[_token_erc20]  == _id) &&
                 (!isListed(_token_erc223) || listed_tokens[_token_erc223] == _id) &&
-                (_token_erc20  == address(0) || _listed.erc20  == address(0) || _listed.erc20  == _token_erc20) &&
-                (_token_erc223 == address(0) || _listed.erc223 == address(0) || _listed.erc223 == _token_erc223),
+                (_token_erc20  == address(0) || ((_listed.erc20  == address(0) || _listed.erc20  == _token_erc20)  && _listed.erc223 != _token_erc20)) &&
+                (_token_erc223 == address(0) || ((_listed.erc223 == address(0) || _listed.erc223 == _token_erc223) && _listed.erc20  != _token_erc223)),
                 "Listing pair mismatch"
             );
             if (_token_erc20 != address(0)) {
@@ -646,6 +647,7 @@ contract Dex223CoreAutoListing {
         uint256 _token20CodeSize;
         assembly { _token20CodeSize := extcodesize(token20) }
         require(_token20CodeSize > 0 && !converter.isWrapper(token20), "Not an ERC-20 origin");
+        require(!_isFullyListed(token20, token223), "Already listed");
 
         checkListing(token20, token223);
 
@@ -665,12 +667,12 @@ contract Dex223CoreAutoListing {
             require(msg.value == 0, "No payment required");
         }
 
-        emit TokenListed(token20, token223);
         last_update = block.timestamp;
     }
 
     function checkListing(address _token_erc20, address _token_erc223) internal
     {
+        require(_token_erc20 != _token_erc223, "Identical token addresses");
 
         // There are two possible scenarios here:
         // 1. We are listing a new token on Dex223.
@@ -706,8 +708,8 @@ contract Dex223CoreAutoListing {
             require(
                 (!isListed(_token_erc20)  || listed_tokens[_token_erc20]  == _id) &&
                 (!isListed(_token_erc223) || listed_tokens[_token_erc223] == _id) &&
-                (_token_erc20  == address(0) || _listed.erc20  == address(0) || _listed.erc20  == _token_erc20) &&
-                (_token_erc223 == address(0) || _listed.erc223 == address(0) || _listed.erc223 == _token_erc223),
+                (_token_erc20  == address(0) || ((_listed.erc20  == address(0) || _listed.erc20  == _token_erc20)  && _listed.erc223 != _token_erc20)) &&
+                (_token_erc223 == address(0) || ((_listed.erc223 == address(0) || _listed.erc223 == _token_erc223) && _listed.erc20  != _token_erc223)),
                 "Listing pair mismatch"
             );
             if (_token_erc20 != address(0)) {
@@ -1016,6 +1018,7 @@ contract Dex223OwnableListing {
 
     function checkListing(address _token_erc20, address _token_erc223) internal
     {
+        require(_token_erc20 != _token_erc223, "Identical token addresses");
 
         // There are two possible scenarios here:
         // 1. We are listing a new token on Dex223.
@@ -1051,8 +1054,8 @@ contract Dex223OwnableListing {
             require(
                 (!isListed(_token_erc20)  || listed_tokens[_token_erc20]  == _id) &&
                 (!isListed(_token_erc223) || listed_tokens[_token_erc223] == _id) &&
-                (_token_erc20  == address(0) || _listed.erc20  == address(0) || _listed.erc20  == _token_erc20) &&
-                (_token_erc223 == address(0) || _listed.erc223 == address(0) || _listed.erc223 == _token_erc223),
+                (_token_erc20  == address(0) || ((_listed.erc20  == address(0) || _listed.erc20  == _token_erc20)  && _listed.erc223 != _token_erc20)) &&
+                (_token_erc223 == address(0) || ((_listed.erc223 == address(0) || _listed.erc223 == _token_erc223) && _listed.erc20  != _token_erc223)),
                 "Listing pair mismatch"
             );
             if (_token_erc20 != address(0)) {
