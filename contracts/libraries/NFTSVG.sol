@@ -351,11 +351,14 @@ library NFTSVG {
 
     function tickToString(int24 tick) private pure returns (string memory) {
         string memory sign = '';
+        uint256 absTick;
         if (tick < 0) {
-            tick = tick * -1;
+            absTick = uint256(-int256(tick));
             sign = '-';
+        } else {
+            absTick = uint256(int256(tick));
         }
-        return string(abi.encodePacked(sign, uint256(tick).toString()));
+        return string(abi.encodePacked(sign, absTick.toString()));
     }
 
     function rangeLocation(int24 tickLower, int24 tickUpper) internal pure returns (string memory, string memory) {
@@ -400,7 +403,8 @@ library NFTSVG {
     }
 
     function isRare(uint256 tokenId, address poolAddress) internal pure returns (bool) {
+        if (tokenId == 0) return false;
         bytes32 h = keccak256(abi.encodePacked(tokenId, poolAddress));
-        return uint256(h) < type(uint256).max / (1 + BitMath.mostSignificantBit(tokenId) * 2);
+        return uint256(h) < type(uint256).max / (1 + uint256(BitMath.mostSignificantBit(tokenId)) * 2);
     }
 }
