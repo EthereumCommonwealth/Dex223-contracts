@@ -45,7 +45,9 @@ contract V3Migrator is IV3Migrator, PeripheryImmutableState, PoolInitializer, Mu
         uint256 amount1V2ToMigrate = amount1V2.mul(params.percentageToMigrate) / 100;
 
         // approve the position manager up to the maximum token amounts
+        TransferHelper.safeApprove(params.token0, nonfungiblePositionManager, 0);
         TransferHelper.safeApprove(params.token0, nonfungiblePositionManager, amount0V2ToMigrate);
+        TransferHelper.safeApprove(params.token1, nonfungiblePositionManager, 0);
         TransferHelper.safeApprove(params.token1, nonfungiblePositionManager, amount1V2ToMigrate);
 
         // mint v3 position
@@ -66,12 +68,12 @@ contract V3Migrator is IV3Migrator, PeripheryImmutableState, PoolInitializer, Mu
                 })
             );
 
-        // if necessary, clear allowance and refund dust
-        if (amount0V3 < amount0V2) {
-            if (amount0V3 < amount0V2ToMigrate) {
-                TransferHelper.safeApprove(params.token0, nonfungiblePositionManager, 0);
-            }
+        // always clear allowance after mint so non-zero leftover allowance (or _erc223Deposits-funded mint) never bricks USDT-like tokens
+        TransferHelper.safeApprove(params.token0, nonfungiblePositionManager, 0);
+        TransferHelper.safeApprove(params.token1, nonfungiblePositionManager, 0);
 
+        // if necessary, refund dust
+        if (amount0V3 < amount0V2) {
             uint256 refund0 = amount0V2 - amount0V3;
             if (params.refundAsETH && params.token0 == WETH9) {
                 IWETH9(WETH9).withdraw(refund0);
@@ -81,10 +83,6 @@ contract V3Migrator is IV3Migrator, PeripheryImmutableState, PoolInitializer, Mu
             }
         }
         if (amount1V3 < amount1V2) {
-            if (amount1V3 < amount1V2ToMigrate) {
-                TransferHelper.safeApprove(params.token1, nonfungiblePositionManager, 0);
-            }
-
             uint256 refund1 = amount1V2 - amount1V3;
             if (params.refundAsETH && params.token1 == WETH9) {
                 IWETH9(WETH9).withdraw(refund1);
