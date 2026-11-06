@@ -95,7 +95,7 @@ describe('Oracle (TWAP)', () => {
       })
     }
 
-    return { oracle, factory, a, b, other, seed, seedAt, seedRange, mintRange, mintFullRange, plainMeanTick, swap, swapTo, TS }
+    return { oracle, factory, a, b, wa, wb, other, seed, seedAt, seedRange, mintRange, mintFullRange, plainMeanTick, swap, swapTo, TS }
   }
 
   it('rejects a zero window', async () => {
@@ -324,6 +324,10 @@ describe('Oracle (TWAP)', () => {
       // A floor between the dust and the honest liquidity leaves the dust slice out.
       await oracle.setMinLiquidity(a.target, b.target, honest / 2n)
       expect(await oracle.getAmountOut(b.target, a.target, one)).to.be.closeTo(before, before / 1000n)
+      // Enforces the same canonical ERC-20 pair floor when queried with ERC-223 token addresses.
+      expect(await oracle.getAmountOut(b.target, wa.target, one)).to.be.closeTo(before, before / 1000n)
+      expect(await oracle.getAmountOut(wb.target, a.target, one)).to.be.closeTo(before, before / 1000n)
+      expect(await oracle.getAmountOut(wb.target, wa.target, one)).to.be.closeTo(before, before / 1000n)
     })
 
     it('one slice of concentrated liquidity at a false price counts no more than on a plain TWAP', async () => {
