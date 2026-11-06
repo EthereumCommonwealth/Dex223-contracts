@@ -226,6 +226,7 @@ contract Dex223AutoListing {
         require(_newOwner != address(0), "New owner is zero address");
         emit OwnershipTransferred(owner, _newOwner);
         owner = _newOwner;
+        registry.updateContractInfo(_newOwner, url, "");
     }
 
     function updateMe(string memory _newURL) public onlyOwner
@@ -543,6 +544,7 @@ contract Dex223CoreAutoListing {
         require(_newOwner != address(0), "New owner is zero address");
         emit OwnershipTransferred(owner, _newOwner);
         owner = _newOwner;
+        registry.updateContractInfo(_newOwner, url, "");
     }
 
     function updateMe(string memory _newURL) public onlyOwner
@@ -893,13 +895,14 @@ contract Dex223OwnableListing {
         require(_newOwner != address(0), "New owner is zero address");
         emit OwnershipTransferred(owner, _newOwner);
         owner = _newOwner;
+        registry.updateContractInfo(_newOwner, url, bytes(metadata));
     }
 
     function updateMe(string memory _newURL, string memory _metadata) public onlyOwner
     {
         url = _newURL;
         metadata = _metadata;
-        registry.updateContractInfo(owner, _newURL, "");
+        registry.updateContractInfo(owner, _newURL, bytes(_metadata));
     }
 
     function getRegistry() public view returns (address)
@@ -929,16 +932,8 @@ contract Dex223OwnableListing {
 
     function listTokenByOwner(address _token20, address _token223) public onlyOwner
     {
+        require(_token20 != address(0) || _token223 != address(0), "Token not defined");
         checkListing(_token20, _token223);
-
-        if(_token20 != address(0))
-        {
-            registry.recordListing(_token20, address(0));
-        }
-        if(_token223 != address(0))
-        {
-            registry.recordListing(address(0), _token223);
-        }
         last_update = block.timestamp;
     }
 

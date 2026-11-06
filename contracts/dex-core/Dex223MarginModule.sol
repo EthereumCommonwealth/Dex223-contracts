@@ -758,11 +758,6 @@ contract MarginModule is IOrderParams
 
         emit PositionOpened(_positionId, msg.sender, _amount, order.baseAsset, order.collateralAssets[_collateralIdx], _collateralAmount);
         emit InitialLeverage(_positionId, ((collateralEquivalentInBaseAsset + _amount) * 100 / collateralEquivalentInBaseAsset));
-        emit NewAsset(_positionId, order.baseAsset);
-        if (order.collateralAssets[_collateralIdx] != order.baseAsset)
-        {
-            emit NewAsset(_positionId, order.collateralAssets[_collateralIdx]);
-        }
     }
 
     // @audit-fix V1: nonReentrant guard on margin swaps
@@ -912,6 +907,7 @@ contract MarginModule is IOrderParams
     /// function within the EVM stack limit. Resolves the pool's ERC-20 addresses for both sides
     /// and swaps `_amount` of `_asset1` (ERC-223) through `pool`.
     function _execute223Swap(address pool, address _asset1, address _asset2, uint24 _feeTier, uint256 _amount) internal returns (uint256) {
+        require(_amount <= uint256(type(int256).max));
         (address a1_20, address a2_20) = _poolErc20Pair(pool, _asset1);
         bool zeroForOne = (a1_20 < a2_20);
         bytes memory _data = abi.encodeWithSignature(
@@ -921,7 +917,7 @@ contract MarginModule is IOrderParams
             int256(_amount),
             zeroForOne ? TickMath.MIN_SQRT_RATIO + 1 : TickMath.MAX_SQRT_RATIO - 1,
             _isErc223SideOf(pool, _asset2),
-            SwapCallbackData({path: abi.encodePacked(a1_20, _feeTier, a2_20), payer: address(this)})
+            abi.encode(SwapCallbackData({path: abi.encodePacked(a1_20, _feeTier, a2_20), payer: address(this)}))
         );
         uint256 balanceBefore = IERC20Minimal(_asset2).balanceOf(address(this));
         require(IERC223(_asset1).transfer(pool, _amount, _data));
@@ -1151,6 +1147,8 @@ contract MarginModule is IOrderParams
             orderShortfall[positions[positionId].orderId] += shortfall;
             emit LiquidationShortfall(positionId, positions[positionId].orderId, shortfall);
         }
+        (uint256 rewardAmount, , ) = getOrderExpirationData(positions[positionId].orderId);
+        emit PositionLiquidated(positionId, msg.sender, rewardAmount);
     }
 
     /// @dev Shared tail of positionClose() and _liquidate(): sell the position's non-base holdings
