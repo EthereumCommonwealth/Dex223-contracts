@@ -265,9 +265,9 @@ contract ERC721 is Context, ERC165, IERC721, IERC721Metadata, IERC721Enumerable 
      *
      * Emits a {Transfer} event.
      */
-    function _safeTransfer(address from, address to, uint256 tokenId, bytes memory /* _data */) internal virtual {
+    function _safeTransfer(address from, address to, uint256 tokenId, bytes memory _data) internal virtual {
         _transfer(from, to, tokenId);
-//        require(_checkOnERC721Received(from, to, tokenId, _data), "ERC721: transfer to non ERC721Receiver implementer");
+        require(_checkOnERC721Received(from, to, tokenId, _data), "ERC721: transfer to non ERC721Receiver implementer");
     }
 
     /**
@@ -432,22 +432,22 @@ contract ERC721 is Context, ERC165, IERC721, IERC721Metadata, IERC721Enumerable 
      * @param _data bytes optional data to send along with the call
      * @return bool whether the call correctly returned the expected magic value
      */
-//    function _checkOnERC721Received(address from, address to, uint256 tokenId, bytes memory _data)
-//        private returns (bool)
-//    {
-//        if (!to.isContract()) {
-//            return true;
-//        }
-//        bytes memory returndata = to.functionCall(abi.encodeWithSelector(
-//            IERC721Receiver(to).onERC721Received.selector,
-//            _msgSender(),
-//            from,
-//            tokenId,
-//            _data
-//        ), "ERC721: transfer to non ERC721Receiver implementer");
-//        bytes4 retval = abi.decode(returndata, (bytes4));
-//        return (retval == _ERC721_RECEIVED);
-//    }
+    function _checkOnERC721Received(address from, address to, uint256 tokenId, bytes memory _data)
+        private returns (bool)
+    {
+        if (!to.isContract()) {
+            return true;
+        }
+        bytes memory returndata = to.functionCall(abi.encodeWithSelector(
+            IERC721Receiver(to).onERC721Received.selector,
+            _msgSender(),
+            from,
+            tokenId,
+            _data
+        ), "ERC721: transfer to non ERC721Receiver implementer");
+        bytes4 retval = abi.decode(returndata, (bytes4));
+        return (retval == _ERC721_RECEIVED);
+    }
 
     /**
      * @dev Approve `to` to operate on `tokenId`

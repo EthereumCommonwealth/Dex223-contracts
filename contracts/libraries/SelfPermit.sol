@@ -21,7 +21,9 @@ abstract contract SelfPermit is ISelfPermit {
         bytes32 r,
         bytes32 s
     ) public payable override {
-        IERC20Permit(token).permit(msg.sender, address(this), value, deadline, v, r, s);
+        try IERC20Permit(token).permit(msg.sender, address(this), value, deadline, v, r, s) {} catch {
+            require(IERC20(token).allowance(msg.sender, address(this)) >= value, 'SP');
+        }
     }
 
     /// @inheritdoc ISelfPermit
@@ -45,7 +47,9 @@ abstract contract SelfPermit is ISelfPermit {
         bytes32 r,
         bytes32 s
     ) public payable override {
-        IERC20PermitAllowed(token).permit(msg.sender, address(this), nonce, expiry, true, v, r, s);
+        try IERC20PermitAllowed(token).permit(msg.sender, address(this), nonce, expiry, true, v, r, s) {} catch {
+            require(IERC20(token).allowance(msg.sender, address(this)) == type(uint256).max, 'SPA');
+        }
     }
 
     /// @inheritdoc ISelfPermit
