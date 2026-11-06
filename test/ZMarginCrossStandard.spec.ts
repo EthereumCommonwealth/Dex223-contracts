@@ -211,4 +211,38 @@ describe('MarginModule: ERC-20 / ERC-223 swap accounting and the position counte
     await mm.positionClose(299, false)
     expect((await mm.order_status(0)).positions).to.eq(299n)
   })
+
+  it('closes and liquidates positions when baseAsset or initial collateral is not duplicated in static whitelist.tokens', async () => {
+    const { mm, oracle, base, base223, collat, collat223, liquidator, now, seedPoolWith } = await loadFixture(fx)
+
+    await seedPoolWith(base, collat, base223, collat223)
+    // Static tradeable whitelist contains only base223; base (order.baseAsset) and collat (initial collateral)
+    // are valid per _validateAsset without being duplicated in whitelist.tokens.
+    const list = [base223.target.toString()]
+    await mm.addTokenlist(list, false)
+    const whitelistId = await mm.predictTokenListsID(list, false)
+
+    await mm.createOrder({
+      whitelistId, interestRate: 10000n, duration: BigInt(365 * DAY), minLoan: 1n,
+      liquidationRewardAmount: 0n, liquidationRewardAsset: collat223.target.toString(), asset: base.target.toString(),
+      deadline: BigInt(now + 365 * DAY), currencyLimit: 5n, leverage: 5n, oracle: await oracle.getAddress(),
+      collateral: [collat.target.toString()],
+    })
+    await mm.setOrderStatus(0, true)
+
+    await base.approve(mm.target, ethers.MaxUint256)
+    await collat.approve(mm.target, ethers.MaxUint256)
+    // Even if caller has 1 wei of ERC-223 dust in erc223deposit, ERC-20 transferFrom still succeeds.
+    await base223['transfer(address,uint256)'](mm.target, 1n)
+    await mm.orderDepositToken(0, expandTo18Decimals(20))
+
+    await mm.takeLoan(0, expandTo18Decimals(1), 0, expandTo18Decimals(1))
+
+    await time.increase(90 * DAY)
+    expect(await mm.subjectToLiquidation(0)).to.eq(true)
+    await mm.connect(liquidator).liquidate(0, liquidator.address)
+    await time.increase(60)
+    await expect(mm.connect(liquidator).liquidate(0, liquidator.address)).to.not.be.reverted
+    expect((await mm.positions(0)).open).to.eq(false)
+  })
 })

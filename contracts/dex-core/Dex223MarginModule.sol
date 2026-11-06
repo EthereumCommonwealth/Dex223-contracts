@@ -1238,14 +1238,17 @@ contract MarginModule is IOrderParams
     function _validateAsset(uint256 positionId, address asset, uint256 idInWhitelist) internal view {
         Position storage position = positions[positionId];
         Order storage order = orders[position.orderId];
+        if (order.baseAsset == asset || positionInitialCollateral[positionId] == asset) {
+            return;
+        }
         Tokenlist storage whitelist = tokenlists[order.whitelist];
 
         if (whitelist.isContract == true) {
             // Optimization: contract address stored as first element instead of separate var
             address _contract = whitelist.tokens[0];
-            require(IDex223Autolisting(_contract).isListed(asset) || order.baseAsset == asset || positionInitialCollateral[positionId] == asset);
+            require(IDex223Autolisting(_contract).isListed(asset));
         } else {
-            require(whitelist.tokens[idInWhitelist] == asset || order.baseAsset == asset || positionInitialCollateral[positionId] == asset);
+            require(idInWhitelist < whitelist.tokens.length && whitelist.tokens[idInWhitelist] == asset);
         }
     }
 
@@ -1287,10 +1290,10 @@ contract MarginModule is IOrderParams
 
     function _receiveAsset(address asset, uint256 amount) internal {
         require(asset != address(0));
+        if (amount == 0) return;
         
         // erc223
-        if (erc223deposit[msg.sender][asset] > 0) {
-            require(erc223deposit[msg.sender][asset] >= amount);
+        if (erc223deposit[msg.sender][asset] >= amount) {
             erc223deposit[msg.sender][asset] -= amount;
 
         // erc20
@@ -1347,10 +1350,15 @@ contract MarginModule is IOrderParams
         // Floor the output at FORCED_SWAP_MIN_OUT_BPS of the oracle's TWAP quote for this amount.
         uint256 minOut = oracle.getAmountOut(order.baseAsset, asset, amount) * FORCED_SWAP_MIN_OUT_BPS / 10000;
 
+        uint256 assetId = getAssetId(positionId, asset);
+        uint256 whitelistId = (asset == order.baseAsset || asset == positionInitialCollateral[positionId])
+            ? 0
+            : getIdFromTokenlist(order.whitelist, asset);
+
         if (_isErc223SideOf(pool, asset)) {
-            _marginSwap223Internal(positionId, getAssetId(positionId, asset), getIdFromTokenlist(order.whitelist, asset), getIdFromTokenlist(order.whitelist, order.baseAsset), amount, order.baseAsset, fee, minOut);
+            _marginSwap223Internal(positionId, assetId, whitelistId, 0, amount, order.baseAsset, fee, minOut);
         } else {
-            _marginSwapInternal(positionId, getAssetId(positionId, asset), getIdFromTokenlist(order.whitelist, asset), getIdFromTokenlist(order.whitelist, order.baseAsset), amount, order.baseAsset, fee, minOut, 0);
+            _marginSwapInternal(positionId, assetId, whitelistId, 0, amount, order.baseAsset, fee, minOut, 0);
         }
 
         // Return new base asset balance
