@@ -465,6 +465,7 @@ contract MarginModule is IOrderParams
     {
         Order storage order = orders[_orderId];
         require(order_status[_orderId].positions == 0, "Order has active positions");
+        require(_leverage > 1 && _deadline > block.timestamp);
         _requirePriceOracle(_oracle);
 
         order.whitelist     = _whitelist;
@@ -786,8 +787,17 @@ contract MarginModule is IOrderParams
         // amountOutMinimum: that let them sell the position's assets into a pool they had skewed and
         // keep the difference. Liquidation now always sells through _swapToBaseAsset and its floor.
         _requirePositionOwner(_positionId);
+        _requireTradablePosition(_positionId);
         _marginSwapInternal(_positionId, _assetId1, _whitelistId1, _whitelistId2, _amount, _asset2, _feeTier, _minAmountOut, _priceLimitX96);
         _requireSolventAfterSwap(_positionId);
+    }
+
+    function _requireTradablePosition(uint256 _positionId) internal view {
+        Position storage position = positions[_positionId];
+        require(
+            block.timestamp < position.deadline &&
+                (position.frozenTime == 0 || block.timestamp - position.frozenTime > MAX_FREEZE_DURATION)
+        );
     }
 
     /// @dev An owner's swap must not leave the position liquidatable. Otherwise the owner could sell
@@ -868,6 +878,7 @@ contract MarginModule is IOrderParams
         uint24 _feeTier) public nonReentrant {
         // Only allow the owner of the position to perform trading operations with it.
         _requirePositionOwner(_positionId);
+        _requireTradablePosition(_positionId);
 
         _marginSwap223Internal(_positionId, _assetId1, _whitelistId1, _whitelistId2, _amount, _asset2, _feeTier, 0);
         _requireSolventAfterSwap(_positionId);
@@ -992,11 +1003,8 @@ contract MarginModule is IOrderParams
     function calculateDebtAmount(Position storage position) internal view returns (uint256) {
         uint256 elapsedSecs = block.timestamp - position.createdAt;
 
-        // Reorder: divide by precision early to reduce intermediate overflow risk
-        // interest_per_period = initialBalance * interest / INTEREST_RATE_PRECISION
-        // requiredAmount = interest_per_period * elapsedSecs / 30 days + initialBalance
         uint256 interestComponent = position.initialBalance * position.interest;
-        uint256 requiredAmount = (interestComponent / INTEREST_RATE_PRECISION) * elapsedSecs / 30 days;
+        uint256 requiredAmount = (interestComponent * elapsedSecs) / (INTEREST_RATE_PRECISION * 30 days);
         requiredAmount += position.initialBalance;
 
         return requiredAmount;
@@ -1016,6 +1024,7 @@ contract MarginModule is IOrderParams
         if (position.frozenTime > 0 && block.timestamp - position.frozenTime <= MAX_FREEZE_DURATION)
         {
             require(block.timestamp > position.frozenTime, "Freeze and liquidate: same block");
+            require(msg.sender == position.liquidator, "Not liquidator");
             _liquidate(positionId, receiver);
             emit Liquidation(positionId, position.orderId, msg.sender, receiver);
         }
