@@ -30,6 +30,7 @@ library Path {
     /// @param path The encoded swap path
     /// @return The number of pools in the path
     function numPools(bytes memory path) internal pure returns (uint256) {
+        require(path.length >= POP_OFFSET, 'Path: INVALID_LENGTH');
         // Ignore the first token address. From then on every fee and token offset indicates a pool.
         return ((path.length - ADDR_SIZE) / NEXT_OFFSET);
     }
@@ -64,6 +65,7 @@ library Path {
     /// @param path The swap path
     /// @return The remaining token + fee elements in the path
     function skipToken(bytes memory path) internal pure returns (bytes memory) {
+        require(path.length >= NEXT_OFFSET, 'Path: INVALID_LENGTH');
         return path.slice(NEXT_OFFSET, path.length - NEXT_OFFSET);
     }
 }
