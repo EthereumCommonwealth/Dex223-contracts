@@ -93,4 +93,48 @@ describe('SafeSendRouter', () => {
     await (await router.connect(payer).wrapAndSend(await usdt.getAddress(), merchant.address, amount, '0x')).wait()
     expect(await token223.balanceOf(merchant.address)).to.eq(amount * 2n)
   })
+
+  it('forwards empty _data ("0x") as 0 bytes to contract recipients without 4-zero-byte injection', async () => {
+    const { payer, converter, token20, router, receiver } = await loadFixture(fixture)
+    const amount = ethers.parseEther('10')
+
+    await (await token20.connect(payer).approve(await router.getAddress(), amount)).wait()
+
+    const tx = router.connect(payer).wrapAndSend(await token20.getAddress(), await receiver.getAddress(), amount, '0x')
+    const token223Addr = await converter.predictWrapperAddress(await token20.getAddress(), true)
+    await expect(tx)
+      .to.emit(router, 'WrappedAndSent')
+      .withArgs(await token20.getAddress(), token223Addr, payer.address, await receiver.getAddress(), amount, '0x')
+    await expect(tx)
+      .to.emit(receiver, 'PaymentReceived')
+      .withArgs(token223Addr, await router.getAddress(), amount, ethers.ZeroHash, '0x')
+  })
+
+  it('unwraps and sends an ERC-20 wrapper of an ERC-223 origin token (e.g. D223)', async () => {
+    const { payer, converter, router, receiver } = await loadFixture(fixture)
+    const D223 = await ethers.getContractFactory('D223Token')
+    const d223 = await D223.deploy()
+    await d223.waitForDeployment()
+
+    const wrapAmount = ethers.parseEther('100')
+    await (await (d223 as any)['transfer(address,uint256,bytes)'](await converter.getAddress(), wrapAmount, '0x')).wait()
+    const w20Addr = await converter.getERC20WrapperFor(await d223.getAddress())
+    const w20 = await ethers.getContractAt('TestERC20', w20Addr)
+    await (await w20.transfer(payer.address, wrapAmount)).wait()
+
+    const sendAmount = ethers.parseEther('25')
+    const invoiceId = ethers.id('inv-d223')
+    await (await w20.connect(payer).approve(await router.getAddress(), sendAmount)).wait()
+
+    const tx = router.connect(payer).wrapAndSend(w20Addr, await receiver.getAddress(), sendAmount, invoiceId)
+    await expect(tx)
+      .to.emit(router, 'WrappedAndSent')
+      .withArgs(w20Addr, await d223.getAddress(), payer.address, await receiver.getAddress(), sendAmount, invoiceId)
+    await expect(tx)
+      .to.emit(receiver, 'PaymentReceived')
+      .withArgs(await d223.getAddress(), await router.getAddress(), sendAmount, invoiceId, invoiceId)
+
+    expect(await receiver.credited(await d223.getAddress())).to.eq(sendAmount)
+    expect(await d223.balanceOf(await receiver.getAddress())).to.eq(sendAmount)
+  })
 })

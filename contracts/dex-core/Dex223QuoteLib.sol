@@ -663,6 +663,11 @@ contract Dex223QuoteLib {
             ? (amountSpecified - state.amountSpecifiedRemaining, state.amountCalculated)
             : (state.amountCalculated, amountSpecified - state.amountSpecifiedRemaining);
 
+        require(amount0 > 0 || amount1 > 0, 'QLIB: ZERO_SWAP');
+        if (!exactInput) {
+            require(state.amountSpecifiedRemaining == 0, 'QLIB: INSUFFICIENT_LIQUIDITY');
+        }
+
         // do the transfers and collect payment
         // @Dexaran: Adjusting the token delivery method for ERC-20 and ERC-223 tokens
         //           in case of ERC-223 this `swap()` func is called within `tokenReceived()` invocation
