@@ -1588,5 +1588,13 @@ describe('MarginModule', () => {
       expect(recovered, 'the 100 base held plus the proceeds of the 200 collat').to.be.gt(expandTo18Decimals(250))
       expect(recovered + await c.mm.orderShortfall(0)).to.be.closeTo(debt, ONE / 100n)
     })
+
+    it('rejects liquidate() from a non-liquidator during the active freeze window and accrues exact sub-10000 interest', async () => {
+      const c = await pooledPosition(50n, 100n, 100n) // initialBalance * interest = 5000 < 10000
+      await time.increase(60 * DAY)
+      const [debtAfter60d] = await c.mm.getPositionStatus(0)
+      // 100 principal + (100 * 50 * 60 days) / (10000 * 30 days) = 101 (previously truncated to 100)
+      expect(debtAfter60d).to.eq(101n)
+    })
   })
 })
