@@ -118,6 +118,9 @@ library PositionValue {
         view
         returns (uint256 amount0, uint256 amount1)
     {
+        if (feeParams.liquidity == 0) {
+            return (feeParams.tokensOwed0, feeParams.tokensOwed1);
+        }
         (uint256 poolFeeGrowthInside0LastX128, uint256 poolFeeGrowthInside1LastX128) =
             _getFeeGrowthInside(
                 IUniswapV3Pool(

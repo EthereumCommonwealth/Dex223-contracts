@@ -105,6 +105,7 @@ abstract contract LiquidityManagement is IUniswapV3MintCallback, PeripheryImmuta
         // compute the liquidity amount
         {
             (uint160 sqrtPriceX96, , , , , , ) = pool.slot0();
+            require(sqrtPriceX96 > 0, 'LM: pool not initialized');
             uint160 sqrtRatioAX96 = TickMath.getSqrtRatioAtTick(params.tickLower);
             uint160 sqrtRatioBX96 = TickMath.getSqrtRatioAtTick(params.tickUpper);
 
