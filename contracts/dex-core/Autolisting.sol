@@ -214,6 +214,7 @@ contract Dex223AutoListing {
     // NOTE add storing paymentTokens & prices (map)
     address[] private paymentTokens;
     mapping(address => uint) private paymentPrices;
+    bool private paidListingConfigured;
 
     struct TokenPrice
     {
@@ -380,7 +381,10 @@ contract Dex223AutoListing {
         // It may require payments or some liquidity criteria.
 
         // Free-listing contract does not require anything so it will automatically pass.
-        if (paymentTokens.length == 0) return 0; // no prices set == free listing
+        if (paymentTokens.length == 0) {
+            require(!paidListingConfigured, "Payment token not accepted");
+            return 0; // no prices set == free listing
+        }
 
         // get price for passed token address
         uint price = paymentPrices[paymentToken];
@@ -406,6 +410,7 @@ contract Dex223AutoListing {
         // If the token is being set to a non-zero price for the first time, add it to paymentTokens
         if (price > 0 && paymentPrices[paymentToken] == 0) {
             paymentTokens.push(paymentToken);
+            paidListingConfigured = true;
         }
 
         // If the token price is being set to zero, remove it from the list
@@ -531,6 +536,7 @@ contract Dex223CoreAutoListing {
     // NOTE add storing paymentTokens & prices (map)
     address[] private paymentTokens;
     mapping(address => uint) private paymentPrices;
+    bool private paidListingConfigured;
 
     struct TokenPrice
     {
@@ -727,7 +733,10 @@ contract Dex223CoreAutoListing {
 
     function checkListingCriteria(address paymentToken) internal view returns (uint)
     {
-        if (paymentTokens.length == 0) return 0; // no prices set == free listing
+        if (paymentTokens.length == 0) {
+            require(!paidListingConfigured, "Payment token not accepted");
+            return 0; // no prices set == free listing
+        }
 
         // get price for passed token address
         uint price = paymentPrices[paymentToken];
@@ -753,6 +762,7 @@ contract Dex223CoreAutoListing {
         // If the token is being set to a non-zero price for the first time, add it to paymentTokens
         if (price > 0 && paymentPrices[paymentToken] == 0) {
             paymentTokens.push(paymentToken);
+            paidListingConfigured = true;
         }
 
         // If the token price is being set to zero, remove it from the list
@@ -875,6 +885,7 @@ contract Dex223OwnableListing {
     // NOTE add storing paymentTokens & prices (map)
     address[] private paymentTokens;
     mapping(address => uint) private paymentPrices;
+    bool private paidListingConfigured;
 
     modifier onlyOwner
     {
@@ -1077,7 +1088,10 @@ contract Dex223OwnableListing {
         // It may require payments or some liquidity criteria.
 
         // Free-listing contract does not require anything so it will automatically pass.
-        if (paymentTokens.length == 0) return 0; // no prices set == free listing
+        if (paymentTokens.length == 0) {
+            require(!paidListingConfigured, "Payment token not accepted");
+            return 0; // no prices set == free listing
+        }
 
         // get price for passed token address
         uint price = paymentPrices[paymentToken];
@@ -1103,6 +1117,7 @@ contract Dex223OwnableListing {
         // If the token is being set to a non-zero price for the first time, add it to paymentTokens
         if (price > 0 && paymentPrices[paymentToken] == 0) {
             paymentTokens.push(paymentToken);
+            paidListingConfigured = true;
         }
 
         // If the token price is being set to zero, remove it from the list
