@@ -30,6 +30,16 @@ library LiquidityAmounts {
         require(sqrtRatioAX96 > 0, 'LA: sqrtRatio zero');
         require(sqrtRatioAX96 != sqrtRatioBX96, 'LA: price range zero');
         uint256 intermediate = FullMath.mulDiv(sqrtRatioAX96, sqrtRatioBX96, FixedPoint96.Q96);
+        if (intermediate == 0) {
+            return
+                toUint128(
+                    FullMath.mulDiv(
+                        amount0,
+                        uint256(sqrtRatioAX96) * uint256(sqrtRatioBX96),
+                        uint256(sqrtRatioBX96 - sqrtRatioAX96) << FixedPoint96.RESOLUTION
+                    )
+                );
+        }
         return toUint128(FullMath.mulDiv(amount0, intermediate, sqrtRatioBX96 - sqrtRatioAX96));
     }
 

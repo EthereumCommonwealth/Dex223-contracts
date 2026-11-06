@@ -18,6 +18,8 @@ library PoolTicksCounter {
         int24 tickBefore,
         int24 tickAfter
     ) internal view returns (uint32 initializedTicksCrossed) {
+        if (tickBefore == tickAfter) return 0;
+
         int16 wordPosLower;
         int16 wordPosHigher;
         uint8 bitPosLower;
@@ -28,6 +30,7 @@ library PoolTicksCounter {
         {
             // [FIX V-06] Cache tickSpacing to avoid redundant external STATICCALL calls
             int24 spacing = self.tickSpacing();
+            require(spacing > 0, 'PTC: spacing');
 
             // [FIX V-02] Use a helper that floors the division for negative values,
             // then compute wordPos and bitPos safely. In Solidity <0.8, signed modulo
@@ -50,12 +53,11 @@ library PoolTicksCounter {
                 ((tickAfter % spacing) == 0) &&
                 (tickBefore > tickAfter);
 
-            // In the case where tickBefore is initialized, we only want to count it if we are
-            // swapping upwards. Use the same logic as above to decide whether we should count
-            // tickBefore or not.
+            // In the case where tickBefore's floor-compressed tick is initialized, when swapping
+            // upwards (tickBefore < tickAfter) that tick lies at or below tickBefore and is never
+            // crossed during the upward swap, regardless of whether tickBefore % spacing == 0.
             tickBeforeInitialized =
                 _isTickInitialized(self, wordPos, bitPos) &&
-                ((tickBefore % spacing) == 0) &&
                 (tickBefore < tickAfter);
 
             if (wordPos < wordPosAfter || (wordPos == wordPosAfter && bitPos <= bitPosAfter)) {
