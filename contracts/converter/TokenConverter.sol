@@ -93,7 +93,7 @@ interface IERC223WrapperToken {
     function name()     external view returns (string memory);
     function symbol()   external view returns (string memory);
     function decimals() external view returns (uint8);
-    function standard() external view returns (string memory);
+    function standard() external pure returns (uint32);
     function origin()   external  view returns (address);
 
     function totalSupply()                                            external view returns (uint256);
@@ -105,14 +105,13 @@ interface IERC223WrapperToken {
     function transferFrom(address from, address to, uint256 value)    external returns (bool);
 
     function mint(address _recipient, uint256 _quantity) external;
-    function burn(address _recipient, uint256 _quantity) external;
+    function burn(uint256 _quantity) external;
 }
 
 interface IERC20WrapperToken {
     function name()     external view returns (string memory);
     function symbol()   external view returns (string memory);
     function decimals() external view returns (uint8);
-    function standard() external view returns (string memory);
     function origin()   external  view returns (address);
 
     function totalSupply()                                         external view returns (uint256);
@@ -145,6 +144,44 @@ contract ERC20Rescue
     {
         require(msg.sender == extractor, "ERC20Rescue: caller is not the extractor");
         safeTransfer(_token, extractor, _amount);
+    }
+
+    function _readString(address _token, bytes4 _selector) internal view returns (string memory) {
+        (bool success, bytes memory data) = _token.staticcall(abi.encodeWithSelector(_selector));
+        if (!success || data.length == 0) return "";
+        if (data.length == 32) {
+            bytes32 raw = abi.decode(data, (bytes32));
+            uint256 len = 0;
+            while (len < 32 && raw[len] != 0) {
+                len++;
+            }
+            bytes memory out = new bytes(len);
+            for (uint256 i = 0; i < len; i++) {
+                out[i] = raw[i];
+            }
+            return string(out);
+        }
+        if (data.length >= 64) {
+            uint256 offset;
+            uint256 strLen;
+            assembly {
+                offset := mload(add(data, 32))
+                strLen := mload(add(data, 64))
+            }
+            if (offset == 32 && data.length >= 64 + strLen) {
+                return abi.decode(data, (string));
+            }
+        }
+        return "";
+    }
+
+    function _readDecimals(address _token) internal view returns (uint8) {
+        (bool success, bytes memory data) = _token.staticcall(abi.encodeWithSelector(IERC20Metadata.decimals.selector));
+        if (success && data.length >= 32) {
+            uint256 dec = abi.decode(data, (uint256));
+            if (dec <= type(uint8).max) return uint8(dec);
+        }
+        return 18;
     }
 }
 
@@ -240,9 +277,9 @@ contract ERC223WrapperToken is IERC223, ERC165, ERC20Rescue
         return true;
     }
 
-    function name() public view override returns (string memory)   { return IERC20Metadata(wrapper_for).name(); }
-    function symbol() public view override returns (string memory) { return string.concat(IERC20Metadata(wrapper_for).symbol(), "223"); }
-    function decimals() public view override returns (uint8)       { return IERC20Metadata(wrapper_for).decimals(); }
+    function name() public view override returns (string memory)   { return _readString(wrapper_for, IERC20Metadata.name.selector); }
+    function symbol() public view override returns (string memory) { return string.concat(_readString(wrapper_for, IERC20Metadata.symbol.selector), "223"); }
+    function decimals() public view override returns (uint8)       { return _readDecimals(wrapper_for); }
     function standard() public pure returns (uint32)               { return 223; }
     function origin() public view returns (address)                { return wrapper_for; }
 
@@ -325,9 +362,9 @@ contract ERC20WrapperToken is IERC20, ERC165, ERC20Rescue
 
     function balanceOf(address _owner) public view override returns (uint256) { return balances[_owner]; }
 
-    function name()        public view  returns (string memory) { return IERC20Metadata(wrapper_for).name(); }
-    function symbol()      public view  returns (string memory) { return string.concat(IERC223(wrapper_for).symbol(), "20"); }
-    function decimals()    public view  returns (uint8)         { return IERC20Metadata(wrapper_for).decimals(); }
+    function name()        public view  returns (string memory) { return _readString(wrapper_for, IERC20Metadata.name.selector); }
+    function symbol()      public view  returns (string memory) { return string.concat(_readString(wrapper_for, IERC20Metadata.symbol.selector), "20"); }
+    function decimals()    public view  returns (uint8)         { return _readDecimals(wrapper_for); }
     function totalSupply() public view override returns (uint256)       { return _totalSupply; }
     function origin()      public view returns (address)                { return wrapper_for; }
 
@@ -546,10 +583,25 @@ contract TokenStandardConverter is IERC223Recipient
         return true;
     }
 
+    function unwrapERC223WrapperToERC20(address _ERC223Wrapper, uint256 _amount) public returns (bool)
+    {
+        address _origin = erc20Origins[_ERC223Wrapper];
+        require(_origin != address(0), "Error: provided token is not a ERC-223 wrapper.");
+        require(IERC20(_ERC223Wrapper).balanceOf(msg.sender) >= _amount, "Error: Insufficient balance.");
+
+        safeTransferFrom(_ERC223Wrapper, msg.sender, address(this), _amount);
+        erc20Supply[_origin] -= _amount;
+        ERC223WrapperToken(_ERC223Wrapper).burn(_amount);
+        safeTransfer(_origin, msg.sender, _amount);
+
+        return true;
+    }
+
     function convertERC20(address _token, uint256 _amount) public returns (bool)
     {
-        if(isWrapper(_token)) return unwrapERC20toERC223(_token, _amount);
-        else return wrapERC20toERC223(_token, _amount);
+        if(erc223Origins[_token] != address(0)) return unwrapERC20toERC223(_token, _amount);
+        if(erc20Origins[_token] != address(0)) return unwrapERC223WrapperToERC20(_token, _amount);
+        return wrapERC20toERC223(_token, _amount);
     }
 
     function isWrapper(address _token) public view returns (bool)
