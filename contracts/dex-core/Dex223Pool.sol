@@ -469,7 +469,7 @@ contract Dex223Pool is IUniswapV3Pool, NoDelegateCall, PeripheryValidation {
         int24 tickUpper,
         uint128 amount,
         bytes calldata data
-    ) external override lock /*adjustableSender*/ returns (uint256 amount0, uint256 amount1) {
+    ) external override lock adjustableSender returns (uint256 amount0, uint256 amount1) {
         (bool success, bytes memory retdata) = pool_lib.delegatecall(abi.encodeWithSignature("mint(address,int24,int24,uint128,bytes)", recipient, tickLower, tickUpper, amount, data));
         if (!success) _bubbleRevert(retdata);
         return abi.decode(retdata, (uint256, uint256));
@@ -589,7 +589,9 @@ contract Dex223Pool is IUniswapV3Pool, NoDelegateCall, PeripheryValidation {
         uint256 balanceWETH9 = IWETH9(WETH9).balanceOf(address(this));
         require(balanceWETH9 >= amountOut, 'Insufficient WETH9');
 
+        uint256 ethBefore = address(this).balance;
         IWETH9(WETH9).withdraw(amountOut);
+        require(address(this).balance.sub(ethBefore) >= amountOut, 'ETH');
         TransferHelper.safeTransferETH(recipient, amountOut);
     }
 
@@ -612,9 +614,12 @@ contract Dex223Pool is IUniswapV3Pool, NoDelegateCall, PeripheryValidation {
         bool unwrapETH
     ) external virtual lock adjustableSender checkDeadline(deadline) returns (uint256 amountOut) {
         require(amountSpecified > 0, 'AS');
+        uint160 limitX96 = sqrtPriceLimitX96 == 0
+            ? (zeroForOne ? TickMath.MIN_SQRT_RATIO + 1 : TickMath.MAX_SQRT_RATIO - 1)
+            : sqrtPriceLimitX96;
         (bool success, bytes memory retdata) = pool_lib.delegatecall(
             abi.encodeWithSignature("swap(address,bool,int256,uint160,bool,bytes)",
-                unwrapETH ? address(this) : recipient, zeroForOne, amountSpecified, sqrtPriceLimitX96,
+                unwrapETH ? address(this) : recipient, zeroForOne, amountSpecified, limitX96,
                 unwrapETH ? false : prefer223, data));
 
         int256 amount0;
