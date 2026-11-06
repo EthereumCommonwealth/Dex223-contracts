@@ -562,14 +562,22 @@ contract MarginModule is IOrderParams
     }
 
     // TODO: Anyone can deposit funds to a position, not only the owner of the position.
-    function positionDeposit(uint256 positionId, address asset, uint256 idInWhitelist,  uint256 amount) public nonReentrant {
+    function positionDeposit(uint256 positionId, address asset, uint256 idInWhitelist,  uint256 amount) public payable nonReentrant {
         _requirePositionOwner(positionId);
         require(amount > 0, "Deposit must exceed zero");
 
         _validateAsset(positionId, asset, idInWhitelist);
-        _receiveAsset(asset, amount);
+        if (asset == address(0)) {
+            require(msg.value == amount);
+        } else {
+            require(msg.value == 0);
+            _receiveAsset(asset, amount);
+        }
 
         addAsset(positionId, asset, amount);
+        if (asset != positions[positionId].assets[0]) {
+            require(_getEquivalentInBaseAsset(asset, amount, positions[positionId].assets[0], positions[positionId].orderId) > 0);
+        }
         emit PositionDeposit(positionId, asset, amount);
     }
 
@@ -923,7 +931,9 @@ contract MarginModule is IOrderParams
             _isErc223SideOf(pool, _asset2),
             SwapCallbackData({path: abi.encodePacked(a1_20, _feeTier, a2_20), payer: address(this)})
         );
-        uint256 balanceBefore = IERC20Minimal(_asset2).balanceOf(address(this));
+        uint256 _codeSize;
+        assembly { _codeSize := extcodesize(_asset2) }
+        uint256 balanceBefore = _codeSize > 0 ? IERC20Minimal(_asset2).balanceOf(address(this)) : 0;
         require(IERC223(_asset1).transfer(pool, _amount, _data));
         return IERC20Minimal(_asset2).balanceOf(address(this)) - balanceBefore;
     }
