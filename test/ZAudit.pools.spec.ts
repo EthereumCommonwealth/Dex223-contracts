@@ -209,5 +209,17 @@ describe('fund safety: pools, factory, router, converter (2026-10 audit)', () =>
       // Positive control: a positive amount gets past the guard and into the library.
       expect(await delegated(1000n)).to.eq(true)
     })
+
+    it('exact-output quoteSwap reverts when requested output exceeds available liquidity instead of returning partial input', async () => {
+      const { pool, wallet } = await realPool()
+      // Pool only holds 1,000 token0 and 1,000 token1; asking for 5,000 output cannot be filled.
+      const impossibleOutput = -expandTo18Decimals(5000)
+      await expect(
+        pool.quoteSwap.staticCall(wallet.address, true, impossibleOutput, MIN_SQRT_RATIO + 1n, false, '0x')
+      ).to.be.revertedWith('QLIB: INSUFFICIENT_LIQUIDITY')
+      await expect(
+        pool.quoteSwap.staticCall(wallet.address, false, impossibleOutput, MAX_SQRT_RATIO - 1n, false, '0x')
+      ).to.be.revertedWith('QLIB: INSUFFICIENT_LIQUIDITY')
+    })
   })
 })
