@@ -5,6 +5,7 @@ pragma abicoder v2;
 import '../interfaces/IUniswapV3Pool.sol';
 import '../libraries/FixedPoint128.sol';
 import '../libraries/FullMath.sol';
+import '../libraries/SafeCast.sol';
 import '../libraries/PositionKey.sol';
 import '../libraries/Address.sol';
 import '../libraries/Multicall.sol';
@@ -64,6 +65,12 @@ PeripheryValidation,
 SelfPermit,
 IERC223Recipient
 {
+    using SafeCast for uint256;
+
+    function _addUint128(uint128 a, uint128 b) private pure returns (uint128 c) {
+        require((c = a + b) >= a);
+    }
+
     // details about the uniswap position
     struct Position {
         // the nonce for permits
@@ -291,19 +298,21 @@ IERC223Recipient
         // this is now updated to the current transaction
         (, uint256 feeGrowthInside0LastX128, uint256 feeGrowthInside1LastX128, , ) = pool.positions(positionKey);
 
-        position.tokensOwed0 += uint128(
+        position.tokensOwed0 = _addUint128(
+            position.tokensOwed0,
             FullMath.mulDiv(
                 feeGrowthInside0LastX128 - position.feeGrowthInside0LastX128,
                 position.liquidity,
                 FixedPoint128.Q128
-            )
+            ).toUint128()
         );
-        position.tokensOwed1 += uint128(
+        position.tokensOwed1 = _addUint128(
+            position.tokensOwed1,
             FullMath.mulDiv(
                 feeGrowthInside1LastX128 - position.feeGrowthInside1LastX128,
                 position.liquidity,
                 FixedPoint128.Q128
-            )
+            ).toUint128()
         );
 
         position.feeGrowthInside0LastX128 = feeGrowthInside0LastX128;
@@ -338,24 +347,28 @@ IERC223Recipient
         // this is now updated to the current transaction
         (, uint256 feeGrowthInside0LastX128, uint256 feeGrowthInside1LastX128, , ) = pool.positions(positionKey);
 
-        position.tokensOwed0 +=
-            uint128(amount0) +
-            uint128(
+        position.tokensOwed0 = _addUint128(
+            position.tokensOwed0,
+            _addUint128(
+                amount0.toUint128(),
                 FullMath.mulDiv(
                     feeGrowthInside0LastX128 - position.feeGrowthInside0LastX128,
                     positionLiquidity,
                     FixedPoint128.Q128
-                )
-            );
-        position.tokensOwed1 +=
-            uint128(amount1) +
-            uint128(
+                ).toUint128()
+            )
+        );
+        position.tokensOwed1 = _addUint128(
+            position.tokensOwed1,
+            _addUint128(
+                amount1.toUint128(),
                 FullMath.mulDiv(
                     feeGrowthInside1LastX128 - position.feeGrowthInside1LastX128,
                     positionLiquidity,
                     FixedPoint128.Q128
-                )
-            );
+                ).toUint128()
+            )
+        );
 
         position.feeGrowthInside0LastX128 = feeGrowthInside0LastX128;
         position.feeGrowthInside1LastX128 = feeGrowthInside1LastX128;
@@ -378,6 +391,7 @@ IERC223Recipient
         //address recipient = params.recipient == address(0) ? address(this) : params.recipient;
 
         uint8 tokensOut = params.tokensOutCode;
+        require(tokensOut <= 3);
 
         Position storage position = _positions[params.tokenId];
 
@@ -395,19 +409,21 @@ IERC223Recipient
             (, uint256 feeGrowthInside0LastX128, uint256 feeGrowthInside1LastX128, , ) =
                                     IDex223PoolActions(params.pool).positions(PositionKey.compute(address(this), position.tickLower, position.tickUpper));
 
-            tokensOwed0 += uint128(
+            tokensOwed0 = _addUint128(
+                tokensOwed0,
                 FullMath.mulDiv(
                     feeGrowthInside0LastX128 - position.feeGrowthInside0LastX128,
                     position.liquidity,
                     FixedPoint128.Q128
-                )
+                ).toUint128()
             );
-            tokensOwed1 += uint128(
+            tokensOwed1 = _addUint128(
+                tokensOwed1,
                 FullMath.mulDiv(
                     feeGrowthInside1LastX128 - position.feeGrowthInside1LastX128,
                     position.liquidity,
                     FixedPoint128.Q128
-                )
+                ).toUint128()
             );
 
             position.feeGrowthInside0LastX128 = feeGrowthInside0LastX128;
@@ -442,7 +458,7 @@ IERC223Recipient
         // instead of the actual amount so we can burn the token
         (position.tokensOwed0, position.tokensOwed1) = (tokensOwed0 - amount0Collect, tokensOwed1 - amount1Collect);
 
-        emit Collect(params.tokenId, params.recipient == address(0) ? address(this) : params.recipient, amount0Collect, amount1Collect);
+        emit Collect(params.tokenId, params.recipient == address(0) ? address(this) : params.recipient, amount0, amount1);
     }
 
     /// @inheritdoc INonfungiblePositionManager
@@ -468,5 +484,11 @@ IERC223Recipient
     function _approve(address to, uint256 tokenId) internal override(ERC721) {
         _positions[tokenId].operator = to;
         emit Approval(ownerOf(tokenId), to, tokenId);
+    }
+
+    function _beforeTokenTransfer(address from, address to, uint256 tokenId) internal override(ERC721) {
+        if (from != address(0) && to != address(0)) {
+            _positions[tokenId].nonce++;
+        }
     }
 }

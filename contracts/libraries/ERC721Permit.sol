@@ -74,7 +74,12 @@ abstract contract ERC721Permit is BlockTimestamp, ERC721, IERC721Permit {
         require(spender != owner);//, 'ERC721Permit: approval to current owner');
 
         if (Address.isContract(owner)) {
-            require(IERC1271(owner).isValidSignature(digest, abi.encodePacked(r, s, v)) == 0x1626ba7e);//, 'Unauthorized');
+            (bool success, bytes memory data) =
+                owner.staticcall(abi.encodeWithSelector(IERC1271.isValidSignature.selector, digest, abi.encodePacked(r, s, v)));
+            if (!(success && data.length >= 32 && abi.decode(data, (bytes4)) == 0x1626ba7e)) {
+                address recoveredAddress = ecrecover(digest, v, r, s);
+                require(recoveredAddress != address(0) && recoveredAddress == owner);//, 'Unauthorized');
+            }
         } else {
             address recoveredAddress = ecrecover(digest, v, r, s);
             require(recoveredAddress != address(0));//, 'Invalid signature');
