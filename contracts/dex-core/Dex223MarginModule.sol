@@ -398,6 +398,8 @@ contract MarginModule is IOrderParams
     ) public returns (uint256 orderId){
 
         require(params.leverage > 1);
+        require(params.currencyLimit >= 2);
+        require(params.duration > 0);
         require(params.deadline > block.timestamp);
         _requirePriceOracle(params.oracle);
 
@@ -465,6 +467,7 @@ contract MarginModule is IOrderParams
     {
         Order storage order = orders[_orderId];
         require(order_status[_orderId].positions == 0, "Order has active positions");
+        require(_currencyLimit >= 2 && _duration > 0);
         _requirePriceOracle(_oracle);
 
         order.whitelist     = _whitelist;
@@ -828,7 +831,10 @@ contract MarginModule is IOrderParams
             require(!_isErc223SideOf(pool, _asset1));
             (, address tokenOut20) = _poolErc20Pair(pool, _asset1);
 
-            IERC20Minimal(_asset1).approve(address(router), _amount);
+            if (IERC20Minimal(_asset1).allowance(address(this), address(router)) != 0) {
+                _tokenCall(_asset1, abi.encodeWithSelector(IERC20Minimal.approve.selector, address(router), uint256(0)));
+            }
+            _tokenCall(_asset1, abi.encodeWithSelector(IERC20Minimal.approve.selector, address(router), _amount));
             amountOut = ISwapRouter(router).exactInputSingle(ISwapRouter.ExactInputSingleParams({
                 tokenIn: _asset1,
                 tokenOut: tokenOut20,
@@ -844,9 +850,9 @@ contract MarginModule is IOrderParams
         require(amountOut > 0);
         uint256 amountInUsed = balInBefore - IERC20Minimal(_asset1).balanceOf(address(this));
 
-        // add new (received) asset to Position
-        addAsset(_positionId, _asset2, amountOut);
+        // reduce spent asset first so a full-balance swap at currencyLimit frees its slot before addAsset
         reduceAsset(_positionId, _asset1, amountInUsed);
+        addAsset(_positionId, _asset2, amountOut);
 
         emit MarginSwap(_positionId, _asset1, _asset2, amountInUsed, amountOut);
     }
@@ -902,9 +908,9 @@ contract MarginModule is IOrderParams
         require(amountOut >= _minAmountOut, "Too little received");
         uint256 amountInUsed = balInBefore - IERC20Minimal(_asset1).balanceOf(address(this));
 
-        // add new (received) asset to Position
-        addAsset(_positionId, _asset2, amountOut);
+        // reduce spent asset first so a full-balance swap at currencyLimit frees its slot before addAsset
         reduceAsset(_positionId, _asset1, amountInUsed);
+        addAsset(_positionId, _asset2, amountOut);
         emit MarginSwap(_positionId, _asset1, _asset2, amountInUsed, amountOut);
     }
 
@@ -1083,15 +1089,20 @@ contract MarginModule is IOrderParams
         require(position.open, "Position is not open");
 
         // Only position owner can close, or order owner after deadline
+        bool isExpired = position.deadline <= block.timestamp;
         if (msg.sender != position.owner) {
-            bool isExpired = position.deadline <= block.timestamp;
             require(isExpired && msg.sender == order.owner, "Not authorized to close");
         }
 
         // A freeze on its own no longer blocks closing: the only thing a freeze protects is a
         // liquidation that is still due, and that is what the check below guards. A position that
         // recovered after being frozen repays the lender in full here instead of staying locked.
-        require(subjectToLiquidation(positionId) == false, "Subject to liquidation");
+        // After expiration, the order owner may also close an unfrozen position in the maintenance
+        // margin buffer provided _settle repays the full debt (shortfall == 0).
+        bool activelyFrozen = position.frozenTime > 0 && block.timestamp - position.frozenTime <= MAX_FREEZE_DURATION;
+        if (!(isExpired && msg.sender == order.owner && !activelyFrozen)) {
+            require(subjectToLiquidation(positionId) == false, "Subject to liquidation");
+        }
 
         // Sell other holdings only until the base asset covers the debt, then the debt must be
         // repaid in full. The liquidation fee goes back to the closer.
@@ -1257,11 +1268,18 @@ contract MarginModule is IOrderParams
     // position, including ones whose balance is already zero - so the guard reverted normal closes
     // and liquidations. It surfaced as "reverted without a reason string" rather than the message,
     // because this contract is compiled with debug.revertStrings: "strip" to fit under EIP-170.
+    function _tokenCall(address token, bytes memory data) private {
+        uint256 size;
+        assembly { size := extcodesize(token) }
+        require(size > 0);
+        (bool success, bytes memory ret) = token.call(data);
+        require(success && (ret.length == 0 || abi.decode(ret, (bool))));
+    }
+
     function _sendAsset(address asset, uint256 amount, address receiver) internal {
         require(asset != address(0)); // _transferOut routes address(0) to _sendEth
 
-        bool success = IERC20Minimal(asset).transfer(receiver, amount);
-        require(success, "ERC20 transfer failed");
+        _tokenCall(asset, abi.encodeWithSelector(IERC20Minimal.transfer.selector, receiver, amount));
     }
 
     function _sendEth(uint256 amount, address receiver) internal {
@@ -1296,7 +1314,7 @@ contract MarginModule is IOrderParams
         // erc20
         } else {
             uint256 balance = IERC20Minimal(asset).balanceOf(address(this));
-            IERC20Minimal(asset).transferFrom(msg.sender, address(this), amount);
+            _tokenCall(asset, abi.encodeWithSelector(IERC20Minimal.transferFrom.selector, msg.sender, address(this), amount));
             require(IERC20Minimal(asset).balanceOf(address(this)) >= balance + amount);
         }
     }
@@ -1322,7 +1340,7 @@ contract MarginModule is IOrderParams
         require(amount > 0, "No ERC223 deposit");
 
         erc223deposit[msg.sender][asset] = 0;
-        require(IERC223(asset).transfer(msg.sender, amount));
+        _tokenCall(asset, abi.encodeWithSelector(IERC20Minimal.transfer.selector, msg.sender, amount));
     }
     
 
