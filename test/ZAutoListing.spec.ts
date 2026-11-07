@@ -154,5 +154,27 @@ describe('AutoListing', () => {
             expect(await ownable.getToken(id)).to.deep.eq([w20, origin])
             expect(await ownable.isListed(wrapperOfWrapper)).to.eq(false)
         })
+
+        it('one address is never both versions of a token, directly or by filling the missing half', async () => {
+            const ownable = await (await ethers.getContractFactory('Dex223OwnableListing'))
+                .deploy(factory.target, registry.target, 'ownable', 'https://ownable')
+            const t = token0.target.toString()
+
+            await expect(ownable.listTokenByOwner(t, t)).to.be.revertedWith('Identical token addresses')
+            expect(await ownable.isListed(t)).to.eq(false)
+
+            // Listed with only its ERC-20 half; the same address cannot then fill the ERC-223 half.
+            await ownable.listTokenByOwner(t, ethers.ZeroAddress)
+            const id = await ownable.listed_tokens(t)
+            await expect(ownable.listTokenByOwner(ethers.ZeroAddress, t)).to.be.revertedWith('Listing pair mismatch')
+            expect(await ownable.getToken(id)).to.deep.eq([t, ethers.ZeroAddress])
+
+            // The same holds the other way round, and a real counterpart still completes the pair.
+            const u = token1.target.toString()
+            await ownable.listTokenByOwner(ethers.ZeroAddress, u)
+            await expect(ownable.listTokenByOwner(u, ethers.ZeroAddress)).to.be.revertedWith('Listing pair mismatch')
+            await ownable.listTokenByOwner(t, token3)
+            expect(await ownable.getToken(id)).to.deep.eq([t, token3])
+        })
     })
 })

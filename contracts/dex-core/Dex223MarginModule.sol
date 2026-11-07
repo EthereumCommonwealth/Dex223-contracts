@@ -598,9 +598,13 @@ contract MarginModule is IOrderParams
         _receiveAsset(asset, amount);
 
         addAsset(positionId, asset, amount);
-        // A top-up back above the debt ends the underwater spell, so a later dip starts a fresh
-        // LENDER_WINDOW (unfreeze() cannot clear it while the value is still inside the buffer).
-        if (positionUnderwaterSince[positionId] != 0) {
+        // Every holding is valued through the oracle (_positionValue), so an asset it cannot price
+        // would make the position impossible to value, close or liquidate. Valuing the position
+        // after a non-base deposit refuses such an asset with the oracle's own revert (bounty #95,
+        // from PR #190 by cyczzhao-lab); a base-asset top-up needs no price. The same valuation
+        // ends an underwater spell once a top-up brings the value back above the debt, so a later
+        // dip starts a fresh LENDER_WINDOW (unfreeze() cannot clear it inside the buffer).
+        if (positionUnderwaterSince[positionId] != 0 || asset != positions[positionId].assets[0]) {
             (uint256 debt, uint256 value) = _positionValue(positionId);
             if (value >= debt) positionUnderwaterSince[positionId] = 0;
         }
