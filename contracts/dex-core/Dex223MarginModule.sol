@@ -710,12 +710,12 @@ contract MarginModule is IOrderParams
         positionInitialCollateral[_positionId] = order.collateralAssets[_collateralIdx];
         positions[_positionId] = _newPosition;
 
-        order.balance -= _amount;
-        addAsset(_positionId, order.baseAsset, _amount);
-        addAsset(_positionId, order.collateralAssets[_collateralIdx], _collateralAmount);
-
-        // Scoped so receivedEth / rewardAmount / rewardAsset are released before the emits below;
-        // without this the extra `_positionId` local pushes the function over the EVM stack limit.
+        // Pull the liquidation reward BEFORE crediting the loan or collateral into the position.
+        // If `rewardAsset` is ERC-223 and the borrower pre-deposited it via `tokenReceived`, pulling
+        // it before `addAsset` prevents `_receiveAsset(collateral)` from consuming the single pre-deposit
+        // when `rewardAsset == collateralAsset`, and if `rewardAsset == baseAsset` it avoids forcing the
+        // borrower to supply an extra `rewardAmount` on top of the borrowed `baseAsset` that remains in
+        // the position.
         {
             uint256 receivedEth = msg.value;
 
@@ -724,7 +724,7 @@ contract MarginModule is IOrderParams
             if (order.collateralAssets[_collateralIdx] == address(0)) {
                 require(receivedEth >= _collateralAmount, "ETH reception error");
                 receivedEth -= _collateralAmount;
-            // or ERC-20
+            // or ERC-20 / ERC-223
             } else {
                 _receiveAsset(order.collateralAssets[_collateralIdx], _collateralAmount);
             }
@@ -732,18 +732,24 @@ contract MarginModule is IOrderParams
             // Deposit the liquidation reward
             // In case the reward asset is Ether
             (uint256 rewardAmount, address rewardAsset, ) = getOrderExpirationData(_orderId);
-            if (rewardAsset == address(0)) {
-                require(receivedEth >= rewardAmount, "ETH reward reception error");
-                receivedEth -= rewardAmount;
-            // or ERC-20
-            } else {
-                _receiveAsset(rewardAsset, rewardAmount);
+            if (rewardAmount > 0 && rewardAsset != order.baseAsset) {
+                if (rewardAsset == address(0)) {
+                    require(receivedEth >= rewardAmount, "ETH reward reception error");
+                    receivedEth -= rewardAmount;
+                // or ERC-20 / ERC-223
+                } else {
+                    _receiveAsset(rewardAsset, rewardAmount);
+                }
             }
 
             // Whatever was not consumed as collateral or reward would otherwise stay in the
             // contract with no one able to claim it.
             require(receivedEth == 0, "Excess ETH");
         }
+
+        order.balance -= _amount;
+        addAsset(_positionId, order.baseAsset, _amount);
+        addAsset(_positionId, order.collateralAssets[_collateralIdx], _collateralAmount);
 
         // Make sure position is not subject to liquidation right after it was created.
         // Revert otherwise.
@@ -1205,6 +1211,16 @@ contract MarginModule is IOrderParams
         uint256 requiredAmount = calculateDebtAmount(position);
 
         Order storage order = orders[position.orderId];
+        (uint256 rewardAmount, address rewardAsset, ) = getOrderExpirationData(position.orderId);
+        if (rewardAmount > 0 && rewardAsset == order.baseAsset) {
+            if (baseBalance >= rewardAmount) {
+                baseBalance -= rewardAmount;
+                position.balances[0] = baseBalance;
+            } else {
+                position.balances[0] = 0;
+                baseBalance = 0;
+            }
+        }
 
         // checking whether the base asset balance is sufficient to repay the loan
         if (baseBalance >= requiredAmount) {
@@ -1282,7 +1298,9 @@ contract MarginModule is IOrderParams
     /// position and updated the order counters: the payout hands control to `receiver`.
     function _payReward(uint256 orderId, address receiver) internal {
         (uint256 rewardAmount, address rewardAsset, ) = getOrderExpirationData(orderId);
-        _transferOut(rewardAsset, rewardAmount, receiver);
+        if (rewardAmount > 0) {
+            _transferOut(rewardAsset, rewardAmount, receiver);
+        }
     }
 
     function _receiveAsset(address asset, uint256 amount) internal {

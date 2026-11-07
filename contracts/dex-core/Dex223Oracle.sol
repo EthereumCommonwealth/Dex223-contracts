@@ -274,6 +274,8 @@ contract Oracle {
         // `sell` may be either version of its token, and an ERC-223 address can sort the other way
         // round, so the direction comes from the pool, not from comparing the two addresses.
         bool sellIsToken0 = _isToken0(_pool, sell);
+        bool buyIsToken0 = _isToken0(_pool, buy);
+        require(sellIsToken0 != buyIsToken0, "Oracle: identical pool side");
 
         // Square the sqrt price exactly when it fits, otherwise drop 64 bits first (still exact to
         // far more digits than any token amount carries).
