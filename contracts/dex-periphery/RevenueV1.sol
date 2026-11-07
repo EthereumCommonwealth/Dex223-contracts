@@ -122,6 +122,7 @@ contract Revenue {
 
     function stake(address _token, uint256 _amount) public nonReentrant {
         require(_token == staking_token_erc20 || _token == staking_token_erc223, "Trying to stake a wrong token");
+        require(_amount != 0, "Zero amount");
         _update(msg.sender);
         staked[msg.sender] += _amount;
         total_staked += _amount;
@@ -137,6 +138,9 @@ contract Revenue {
         //_update(msg.sender);
         staked[msg.sender] -= amount;
         total_staked -= amount;
+        if (staked[msg.sender] == 0) {
+            staking_timestamp[msg.sender] = block.timestamp;
+        }
         sendToken(_token, amount);
 
         emit Withdrawn(msg.sender, amount);
@@ -191,9 +195,10 @@ contract Revenue {
         uint256 _time_delta;
         require(staking_timestamp[msg.sender] + claim_delay <= block.timestamp, "Claim locked.");
         for (uint256 i = 0; i < tokens.length; i++) {
-            if(last_claim[msg.sender][tokens[i]] == 0)
+            if(last_claim[msg.sender][tokens[i]] < staking_timestamp[msg.sender])
             {
-                // If the user never claimed a specific token, then consider its inception is the last staking date.
+                // If the user never claimed a specific token (or re-staked after a full withdrawal),
+                // consider its inception as the current staking date.
                 last_claim[msg.sender][tokens[i]] = staking_timestamp[msg.sender];
             }
             uint256 _self_balance = IERC20Minimal(tokens[i]).balanceOf(address(this));
@@ -313,6 +318,11 @@ contract Revenue {
 
     function set_default_fees(uint8 _token0, uint8 _token1) public onlyOwner
     {
+        require(
+            (_token0 == 0 || (_token0 >= 4 && _token0 <= 10)) &&
+                (_token1 == 0 || (_token1 >= 4 && _token1 <= 10)),
+            "Invalid fee protocol"
+        );
         default_fee_token0 = _token0;
         default_fee_token1 = _token1;
     }
@@ -326,9 +336,10 @@ contract Revenue {
     }
 
     // Emergency token extraction protocol.
-    function emergency_call(address _to, uint256 _value, bytes calldata _data) public onlyOwner onlyDebugMode
+    function emergency_call(address _to, uint256 _value, bytes calldata _data) public onlyOwner onlyDebugMode nonReentrant
     {
         (bool success, bytes memory returnData) = _to.call{value: _value}(_data);
+        require(success, "Emergency call failed");
     }
     
 }

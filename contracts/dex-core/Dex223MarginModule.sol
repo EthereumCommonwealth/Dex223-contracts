@@ -366,6 +366,7 @@ contract MarginModule is IOrderParams
     }
 
     function addTokenlist(address[] calldata tokens, bool isContract) public returns(bytes32) {
+        require(tokens.length > 0);
         //tokenlists.push(list);
         bytes32 _hash = keccak256(abi.encode(isContract, tokens));
         if(tokenlists[_hash].exists) { return _hash; }  // No need to waste gas if the same exact list already exists.
@@ -399,6 +400,7 @@ contract MarginModule is IOrderParams
 
         require(params.leverage > 1);
         require(params.deadline > block.timestamp);
+        require(tokenlists[params.whitelistId].exists);
         _requirePriceOracle(params.oracle);
 
         OrderExpiration memory expirationData = OrderExpiration(
@@ -465,6 +467,7 @@ contract MarginModule is IOrderParams
     {
         Order storage order = orders[_orderId];
         require(order_status[_orderId].positions == 0, "Order has active positions");
+        require(tokenlists[_whitelist].exists);
         _requirePriceOracle(_oracle);
 
         order.whitelist     = _whitelist;
@@ -1282,7 +1285,9 @@ contract MarginModule is IOrderParams
     /// position and updated the order counters: the payout hands control to `receiver`.
     function _payReward(uint256 orderId, address receiver) internal {
         (uint256 rewardAmount, address rewardAsset, ) = getOrderExpirationData(orderId);
-        _transferOut(rewardAsset, rewardAmount, receiver);
+        if (rewardAmount > 0) {
+            _transferOut(rewardAsset, rewardAmount, receiver);
+        }
     }
 
     function _receiveAsset(address asset, uint256 amount) internal {

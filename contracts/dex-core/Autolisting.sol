@@ -636,7 +636,7 @@ contract Dex223CoreAutoListing {
 
     function listSingle(address token20, address token223, address paymentToken) public payable nonReentrant
     {
-        uint price = checkListingCriteria(paymentToken);
+        uint price = msg.sender == owner ? 0 : checkListingCriteria(paymentToken);
 
         // Checking if we are listing a token which has a pool at Dex223.
         require(converter.predictWrapperAddress(token20, true) == token223, "Provided token standards are incorrect.");
@@ -649,7 +649,7 @@ contract Dex223CoreAutoListing {
 
         checkListing(token20, token223);
 
-        if (price > 0 && msg.sender != owner) {
+        if (price > 0) {
             if (paymentToken == address(0)) {
                 require(msg.value >= price, "Payment is not enough");
                 uint refund = msg.value - price;
@@ -924,11 +924,12 @@ contract Dex223OwnableListing {
 
     function isListed(address _token) public view returns (bool)
     {
-        return (listed_tokens[_token] != 0);
+        return (listed_tokens[_token] != 0 && banned_tokens[_token] == 0);
     }
 
     function listTokenByOwner(address _token20, address _token223) public onlyOwner
     {
+        require(banned_tokens[_token20] == 0 && banned_tokens[_token223] == 0, "Token is banned");
         checkListing(_token20, _token223);
 
         if(_token20 != address(0))
@@ -944,14 +945,20 @@ contract Dex223OwnableListing {
 
     function banToken(address _token20, address _token223) public onlyOwner
     {
+        require(_token20 != address(0) || _token223 != address(0), "Zero token");
+        num_banned_tokens++;
         registry.tokenBanned(_token20, _token223);
 
         if(_token20 != address(0))
         {
+            banned_tokens[_token20] = num_banned_tokens;
+            delete listed_tokens[_token20];
             emit TokenBanned(_token20);
         }
         if(_token223 != address(0))
         {
+            banned_tokens[_token223] = num_banned_tokens;
+            delete listed_tokens[_token223];
             emit TokenBanned(_token223);
         }
     }
