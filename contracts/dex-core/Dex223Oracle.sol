@@ -109,6 +109,14 @@ contract Oracle {
     function setMinLiquidity(address tokenA, address tokenB, uint128 _minLiquidity) external onlyOwner {
         require(tokenA != tokenB && tokenA != address(0) && tokenB != address(0), "Oracle: bad pair");
         (address token0, address token1) = tokenA < tokenB ? (tokenA, tokenB) : (tokenB, tokenA);
+        for (uint256 i = 0; i < NUM_FEE_TIERS; i++) {
+            address pool = factory.getPool(token0, token1, _feeTier(i));
+            if (pool != address(0)) {
+                (token0, ) = IDex223PoolTokens(pool).token0();
+                (token1, ) = IDex223PoolTokens(pool).token1();
+                break;
+            }
+        }
         minLiquidity[token0][token1] = _minLiquidity;
         emit MinLiquidityUpdated(token0, token1, _minLiquidity);
     }
@@ -305,7 +313,7 @@ contract Oracle {
         secondsAgos[1] = 0;
         (, uint160[] memory secondsPerLiquidityCumulativeX128s) = IUniswapV3Pool(poolAddress).observe(secondsAgos);
         uint160 delta = secondsPerLiquidityCumulativeX128s[1] - secondsPerLiquidityCumulativeX128s[0];
-        if (delta == 0) return 0;
+        if (delta == 0) return type(uint128).max;
         uint192 secondsAgoX160 = uint192(twapWindow) * type(uint160).max;
         return uint128(secondsAgoX160 / (uint192(delta) << 32));
     }
@@ -331,7 +339,6 @@ contract Oracle {
         require(tokenB != address(0), "Oracle: zero address tokenB");
 
         (address token0, address token1) = tokenA < tokenB ? (tokenA, tokenB) : (tokenB, tokenA);
-        uint128 floor = minLiquidity[token0][token1];
 
         for (uint256 i = 0; i < NUM_FEE_TIERS; i++) {
             address pool = factory.getPool(token0, token1, _feeTier(i));
@@ -339,11 +346,13 @@ contract Oracle {
             // gained liquidity but has no history would otherwise win the selection and then
             // revert every valuation with "OLD", which would block liquidations.
             if (pool != address(0) && poolCanServeWindow(pool)) {
+                (address t0, ) = IDex223PoolTokens(pool).token0();
+                (address t1, ) = IDex223PoolTokens(pool).token1();
                 // Ranked by liquidity averaged over the kept slices of the window (getTwap), not by
                 // liquidity() right now. Spot liquidity can be added and removed within one
                 // transaction, which let anyone steer the valuation to a thin pool whose TWAP they
                 // had skewed. A pool none of whose slices count is not a candidate.
-                (bool ok, int24 poolTick, uint128 poolLiquidity) = _twap(pool, floor);
+                (bool ok, int24 poolTick, uint128 poolLiquidity) = _twap(pool, minLiquidity[t0][t1]);
                 if (ok && poolLiquidity >= liquidity) {
                     liquidity = poolLiquidity;
                     poolAddress = pool;
