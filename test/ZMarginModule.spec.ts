@@ -1147,7 +1147,7 @@ describe('MarginModule', () => {
       const c = await positionWith223Collateral()
       const id = await c.mm.getAssetId(0, c.collat223.target)
       const baseBefore = (await c.mm.getPositionBalances(0))[0]
-      await c.mm.marginSwap223(0, id, 2, 0, c.amount, c.base.target, FeeAmount.MEDIUM)
+      await c.mm.marginSwap223(0, id, 2, 0, c.amount, c.base.target, FeeAmount.MEDIUM, 0)
       const balances = await c.mm.getPositionBalances(0)
       expect(balances[0]).to.be.gt(baseBefore)
       expect(balances[0] - baseBefore, 'roughly 1:1 minus the 0.3% fee').to.be.closeTo(c.amount, c.amount / 100n)
@@ -1158,8 +1158,19 @@ describe('MarginModule', () => {
     it('marginSwap223 is owner-only', async () => {
       const c = await positionWith223Collateral()
       const id = await c.mm.getAssetId(0, c.collat223.target)
-      await expect(c.mm.connect(c.other).marginSwap223(0, id, 2, 0, c.amount, c.base.target, FeeAmount.MEDIUM))
+      await expect(c.mm.connect(c.other).marginSwap223(0, id, 2, 0, c.amount, c.base.target, FeeAmount.MEDIUM, 0))
         .to.be.revertedWith('MM07')
+    })
+
+    it("marginSwap223 enforces the owner's minimum output", async () => {
+      const c = await positionWith223Collateral()
+      const id = await c.mm.getAssetId(0, c.collat223.target)
+      // About 0.997 base comes back for 1 collat223 (0.3% fee); asking for the full amount must fail.
+      await expect(c.mm.marginSwap223(0, id, 2, 0, c.amount, c.base.target, FeeAmount.MEDIUM, c.amount))
+        .to.be.revertedWith('MM21')
+      const baseBefore = (await c.mm.getPositionBalances(0))[0]
+      await c.mm.marginSwap223(0, id, 2, 0, c.amount, c.base.target, FeeAmount.MEDIUM, (c.amount * 99n) / 100n)
+      expect((await c.mm.getPositionBalances(0))[0] - baseBefore).to.be.gte((c.amount * 99n) / 100n)
     })
 
     it('the ERC-223 asset is priced through the oracle like any other holding', async () => {
