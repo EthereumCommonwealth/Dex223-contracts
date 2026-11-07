@@ -457,7 +457,7 @@ contract MarginModule is IOrderParams
     function orderSetLenderProtection(uint256 _orderId, uint256 _maintenanceMarginBps, address _keeper)
         public onlyOrderOwner(_orderId)
     {
-        if (_maintenanceMarginBps != orderMaintenanceMarginBps[_orderId]) {
+        if ((_maintenanceMarginBps == 0 ? MAINTENANCE_MARGIN_BPS : _maintenanceMarginBps) != _maintenanceMarginBps(_orderId)) {
             require(order_status[_orderId].positions == 0, "MM36");
             // 0 (the default) or 10-50 percent: subtracting the floor wraps 1-999 above the range.
             require(_maintenanceMarginBps == 0
@@ -1048,9 +1048,12 @@ contract MarginModule is IOrderParams
     /// the debt) and after the window, anyone may.
     function _requireMayRealizeLoss(uint256 positionId) internal view {
         uint256 since = positionUnderwaterSince[positionId];
-        if (since != 0 && block.timestamp < since + LENDER_WINDOW) {
+        if (since != 0) {
             uint256 orderId = positions[positionId].orderId;
-            require(msg.sender == orders[orderId].owner || msg.sender == orderLiquidationKeeper[orderId], "MM38");
+            address sender = msg.sender;
+            if (sender != orders[orderId].owner && sender != orderLiquidationKeeper[orderId]) {
+                require(block.timestamp > since && block.timestamp - since >= LENDER_WINDOW, "MM38");
+            }
         }
     }
 
@@ -1242,6 +1245,7 @@ contract MarginModule is IOrderParams
         // and then recovered, and the indexer and bot read these fields.
         position.frozenTime = 0;
         position.liquidator = address(0);
+        positionUnderwaterSince[positionId] = 0;
         // Safe decrement: the counter must never underflow.
         if (order_status[position.orderId].positions > 0) {
             order_status[position.orderId].positions--;

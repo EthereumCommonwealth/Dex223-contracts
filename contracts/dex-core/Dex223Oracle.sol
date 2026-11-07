@@ -300,14 +300,13 @@ contract Oracle {
     ///         seconds, thin slices included. Mirrors OracleLibrary.consult. Informational: pool
     ///         selection ranks by getTwap's liquidity, which counts the kept slices only.
     function harmonicMeanLiquidity(address poolAddress) public view returns (uint128) {
+        require(poolAddress != address(0), "Oracle: zero pool");
         uint32[] memory secondsAgos = new uint32[](2);
         secondsAgos[0] = twapWindow;
         secondsAgos[1] = 0;
         (, uint160[] memory secondsPerLiquidityCumulativeX128s) = IUniswapV3Pool(poolAddress).observe(secondsAgos);
         uint160 delta = secondsPerLiquidityCumulativeX128s[1] - secondsPerLiquidityCumulativeX128s[0];
-        if (delta == 0) return 0;
-        uint192 secondsAgoX160 = uint192(twapWindow) * type(uint160).max;
-        return uint128(secondsAgoX160 / (uint192(delta) << 32));
+        return _harmonic(twapWindow, delta);
     }
 
     function findPoolWithHighestLiquidity(
