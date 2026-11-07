@@ -386,11 +386,6 @@ contract Dex223AutoListing {
         uint price = paymentPrices[paymentToken];
         require(price > 0, "Payment token not accepted");
 
-        // check payment in native coin
-        if (paymentToken == address(0)) {
-            require(msg.value > 0, "Must send ETH");
-        }
-
         return price;
     }
 
@@ -732,11 +727,6 @@ contract Dex223CoreAutoListing {
         // get price for passed token address
         uint price = paymentPrices[paymentToken];
         require(price > 0, "Payment token not accepted");
-
-        // check payment in native coin
-        if (paymentToken == address(0)) {
-            require(msg.value > 0, "Must send ETH");
-        }
 
         return price;
     }
@@ -1082,11 +1072,6 @@ contract Dex223OwnableListing {
         // get price for passed token address
         uint price = paymentPrices[paymentToken];
         require(price > 0, "Payment token not accepted");
-
-        // check payment in native coin
-        if (paymentToken == address(0)) {
-            require(msg.value > 0, "Must send ETH");
-        }
 
         return price;
     }

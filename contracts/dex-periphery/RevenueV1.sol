@@ -116,11 +116,15 @@ contract Revenue {
     constructor (address _staking_token20, address _staking_token223) {
         require(_staking_token20 != address(0));
         require(_staking_token223 != address(0));
+        require(_staking_token20 != _staking_token223, "Staking token versions must differ");
         staking_token_erc20 = _staking_token20;
         staking_token_erc223 = _staking_token223;
+        get223[_staking_token20] = _staking_token223;
+        get20[_staking_token223] = _staking_token20;
     }
 
     function stake(address _token, uint256 _amount) public nonReentrant {
+        require(_amount > 0, "Zero amount");
         require(_token == staking_token_erc20 || _token == staking_token_erc223, "Trying to stake a wrong token");
         _update(msg.sender);
         staked[msg.sender] += _amount;
@@ -132,6 +136,7 @@ contract Revenue {
     }
 
     function withdraw(address _token, uint256 amount) public nonReentrant {
+        require(amount > 0, "Zero amount");
         require(staking_timestamp[msg.sender] + claim_delay <= block.timestamp, "Tokens are frozen for a specified duration after the last staking");
         require(_token == staking_token_erc20 || _token == staking_token_erc223, "Trying to stake a wrong token");
         //_update(msg.sender);
@@ -191,13 +196,23 @@ contract Revenue {
         uint256 _time_delta;
         require(staking_timestamp[msg.sender] + claim_delay <= block.timestamp, "Claim locked.");
         for (uint256 i = 0; i < tokens.length; i++) {
-            if(last_claim[msg.sender][tokens[i]] == 0)
+            address token = tokens[i];
+            address counterpart = get223[token] != address(0) ? get223[token] : get20[token];
+            uint256 lastClaimTs = last_claim[msg.sender][token];
+            if (counterpart != address(0) && last_claim[msg.sender][counterpart] > lastClaimTs) {
+                lastClaimTs = last_claim[msg.sender][counterpart];
+            }
+            if(lastClaimTs == 0)
             {
                 // If the user never claimed a specific token, then consider its inception is the last staking date.
-                last_claim[msg.sender][tokens[i]] = staking_timestamp[msg.sender];
+                lastClaimTs = staking_timestamp[msg.sender];
             }
-            uint256 _self_balance = IERC20Minimal(tokens[i]).balanceOf(address(this));
-            if(tokens[i] == staking_token_erc20 || tokens[i] == staking_token_erc223)
+            last_claim[msg.sender][token] = lastClaimTs;
+            if (counterpart != address(0)) {
+                last_claim[msg.sender][counterpart] = lastClaimTs;
+            }
+            uint256 _self_balance = IERC20Minimal(token).balanceOf(address(this));
+            if(token == staking_token_erc20 || token == staking_token_erc223)
             {
                 //break;
                 _self_balance = 0;
@@ -205,7 +220,7 @@ contract Revenue {
                 // Leaving this operational in case some checks are missing on the UI side so
                 // that not to interrupt the workflow of claiming the rest of the tokens.
             }
-            _time_delta   = block.timestamp - last_claim[msg.sender][tokens[i]];
+            _time_delta   = block.timestamp - lastClaimTs;
             uint256 _periods = _time_delta / assigned_avg_staking_duration;
             uint256 _denominator = total_staked + staked[msg.sender] * _periods;
             uint256 dividends = _denominator == 0
@@ -216,8 +231,11 @@ contract Revenue {
             // unconditionally discarded the time accrued since the previous claim - a
             // staker claiming on a shorter cycle than the window would never earn again.
             if (dividends != 0) {
-                last_claim[msg.sender][tokens[i]] = block.timestamp;
-                sendToken(tokens[i], dividends);
+                last_claim[msg.sender][token] = block.timestamp;
+                if (counterpart != address(0)) {
+                    last_claim[msg.sender][counterpart] = block.timestamp;
+                }
+                sendToken(token, dividends);
             }
         }
 
@@ -328,7 +346,9 @@ contract Revenue {
     // Emergency token extraction protocol.
     function emergency_call(address _to, uint256 _value, bytes calldata _data) public onlyOwner onlyDebugMode
     {
-        (bool success, bytes memory returnData) = _to.call{value: _value}(_data);
+        require(_to != address(0), "Zero target");
+        (bool success, ) = _to.call{value: _value}(_data);
+        require(success, "Emergency call failed");
     }
     
 }
