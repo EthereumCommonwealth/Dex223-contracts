@@ -23,6 +23,14 @@ contract PaymentReceiver is IERC223Recipient {
     /// @dev empty whitelist means any ERC-223 token is accepted
     mapping(address => bool) public acceptedToken;
     bool public whitelistEnabled;
+    bool private _locked;
+
+    modifier nonReentrant() {
+        require(!_locked, 'REENTRANCY');
+        _locked = true;
+        _;
+        _locked = false;
+    }
 
     event OwnershipTransferStarted(address indexed previousOwner, address indexed newOwner);
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
@@ -97,10 +105,15 @@ contract PaymentReceiver is IERC223Recipient {
         if (whitelistEnabled) {
             require(acceptedToken[token], 'TOKEN_NOT_ACCEPTED');
         }
+        uint256 codeSize;
+        assembly {
+            codeSize := extcodesize(token)
+        }
+        require(codeSize > 0, 'NOT_CONTRACT');
         require(_value > 0, 'ZERO_VALUE');
-
         uint256 newCredit = credited[token] + _value;
         require(newCredit >= credited[token], 'OVERFLOW');
+        require(IERC223(token).balanceOf(address(this)) >= newCredit, 'UNBACKED_CREDIT');
         credited[token] = newCredit;
 
         bytes32 invoiceId;
@@ -116,7 +129,7 @@ contract PaymentReceiver is IERC223Recipient {
 
     /// @notice Pull credited tokens to the payout address. Tokens whose `transfer` returns
     ///         nothing are accepted, as in `rescue`, so credited funds can always leave.
-    function withdraw(address token, uint256 amount) external onlyOwner {
+    function withdraw(address token, uint256 amount) external onlyOwner nonReentrant {
         require(amount > 0, 'ZERO_AMOUNT');
         uint256 bal = credited[token];
         require(bal >= amount, 'INSUFFICIENT');
@@ -133,7 +146,7 @@ contract PaymentReceiver is IERC223Recipient {
         address token,
         address to,
         uint256 amount
-    ) external onlyOwner {
+    ) external onlyOwner nonReentrant {
         require(to != address(0), 'ZERO_TO');
         require(amount > 0, 'ZERO_AMOUNT');
         uint256 balance = IERC223(token).balanceOf(address(this));
@@ -147,7 +160,7 @@ contract PaymentReceiver is IERC223Recipient {
     }
 
     /// @notice Withdraw the full credited balance of a token.
-    function withdrawAll(address token) external onlyOwner {
+    function withdrawAll(address token) external onlyOwner nonReentrant {
         uint256 amount = credited[token];
         require(amount > 0, 'ZERO_AMOUNT');
         credited[token] = 0;

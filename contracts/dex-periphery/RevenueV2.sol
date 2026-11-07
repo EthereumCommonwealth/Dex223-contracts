@@ -242,14 +242,25 @@ contract RevenueV2 {
     /// @notice Withdraw the whole position, in the versions it was staked in, without touching any reward
     ///         accounting, for use if reward bookkeeping ever reverts (it cannot under the configured bounds,
     ///         but principal must never depend on it). Rewards already settled to the caller stay claimable;
-    ///         anything accrued since the caller's last stake, withdraw or claim is forfeited and stays in the
-    ///         contract. Same lock as withdraw().
+    ///         anything accrued since the caller's last stake, withdraw or claim is forfeited and re-queued
+    ///         for remaining stakers. Same lock as withdraw().
     function emergency_withdraw() external nonReentrant {
         require(block.timestamp >= unlock_time[msg.sender], 'Tokens are frozen for a specified duration after the last staking');
         uint256 amount = staked[msg.sender];
         require(amount != 0, 'Nothing staked');
-        // Lowering total_staked without accruing first only re-spreads the not-yet-accrued slice over the
-        // remaining stakers; liabilities still never exceed what was streamed, so solvency holds.
+        uint256 n = reward_tokens.length;
+        for (uint256 i = 0; i < n; i++) {
+            address token = reward_tokens[i];
+            uint256 rpt = reward_data[token].reward_per_token;
+            uint256 paid = user_reward_per_token_paid[msg.sender][token];
+            if (rpt > paid) {
+                uint256 forfeited = amount.mulDiv(rpt - paid, PRECISION);
+                if (forfeited != 0) {
+                    reward_data[token].queued += forfeited * STREAM_SCALE;
+                }
+                user_reward_per_token_paid[msg.sender][token] = rpt;
+            }
+        }
         staked[msg.sender] = 0;
         total_staked -= amount;
         uint256 part20 = staked_by_version[msg.sender][staking_token_erc20];
@@ -415,6 +426,7 @@ contract RevenueV2 {
     }
 
     function transfer_ownership(address new_owner) external onlyOwner {
+        require(new_owner != address(0), 'Zero owner');
         pending_owner = new_owner;
         emit OwnershipTransferStarted(owner, new_owner);
     }

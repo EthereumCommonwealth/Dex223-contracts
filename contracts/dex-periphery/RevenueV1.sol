@@ -123,9 +123,9 @@ contract Revenue {
     function stake(address _token, uint256 _amount) public nonReentrant {
         require(_token == staking_token_erc20 || _token == staking_token_erc223, "Trying to stake a wrong token");
         _update(msg.sender);
+        receiveToken(_token, _amount);
         staked[msg.sender] += _amount;
         total_staked += _amount;
-        receiveToken(_token, _amount);
         staking_timestamp[msg.sender] = block.timestamp;
 
         emit Staked(msg.sender, _amount);
@@ -236,8 +236,10 @@ contract Revenue {
     }
 
     function tokenReceived(address user, uint256 value, bytes memory data) public returns (bytes4) {
-        address token = msg.sender;
-        erc223deposit[user][token] += value;
+        if (!reentrancy_lock) {
+            address token = msg.sender;
+            erc223deposit[user][token] += value;
+        }
 
         return 0x8943ec02;
     }
@@ -319,9 +321,17 @@ contract Revenue {
 
     function enable_fees_in_pools(address[] calldata pools) public 
     {
+        require(factory != address(0), "Factory is not configured");
         for(uint256 i = 0; i < pools.length; i++)
         {
-            Dex223PoolMinimal(pools[i]).setFeeProtocol(default_fee_token0, default_fee_token1);
+            address p = pools[i];
+            (address t0_20, ) = Dex223PoolMinimal(p).token0();
+            (address t1_20, ) = Dex223PoolMinimal(p).token1();
+            require(
+                IDex223Factory(factory).getPool(t0_20, t1_20, Dex223PoolMinimal(p).fee()) == p,
+                "Pool is not registered in the factory"
+            );
+            Dex223PoolMinimal(p).setFeeProtocol(default_fee_token0, default_fee_token1);
         }
     }
 
