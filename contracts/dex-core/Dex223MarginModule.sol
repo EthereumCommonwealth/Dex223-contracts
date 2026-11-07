@@ -904,11 +904,14 @@ contract MarginModule is IOrderParams
         uint256 _whitelistId2,
         uint256 _amount,
         address _asset2,
-        uint24 _feeTier) public nonReentrant {
+        uint24 _feeTier,
+        uint256 _minAmountOut) public nonReentrant {
         // Only allow the owner of the position to perform trading operations with it.
         _requirePositionOwner(_positionId);
 
-        _marginSwap223Internal(_positionId, _assetId1, _whitelistId1, _whitelistId2, _amount, _asset2, _feeTier, 0);
+        // The owner's minimum, as in marginSwap. Without it the only check was solvency after the
+        // swap, which a sandwich could satisfy while taking the position's margin above it.
+        _marginSwap223Internal(_positionId, _assetId1, _whitelistId1, _whitelistId2, _amount, _asset2, _feeTier, _minAmountOut);
         _requireSolventAfterSwap(_positionId);
     }
 
