@@ -376,6 +376,52 @@ describe('RevenueV2', () => {
       near(ten, one) // V1: 50% vs 61%
     })
 
+    // bounty #45: revenue that has arrived but is not yet synced gives a newcomer no edge. A stream pays
+    // whoever is staked while it runs, so staking just before the sync and just after it earn the same;
+    // syncing inside stake() would not change either payout.
+    it('staking just before a sync earns the same as staking just after it', async () => {
+      const payouts = async (stakeFirst: boolean) => {
+        const { signers, revenue, stake, reward, bal } = await base()
+        const [, honest, newcomer] = signers
+        await stake(honest, 1_000_000n * E18)
+        await time.increase(30 * DAY)
+        await reward.mint(revenue.target, 300_000n * E18) // arrived, not yet synced
+        expect(await revenue.unsynced(reward.target)).to.eq(300_000n * E18)
+        if (stakeFirst) {
+          await stake(newcomer, 1_000_000n * E18)
+          await revenue.sync([reward.target])
+        } else {
+          await revenue.sync([reward.target])
+          await stake(newcomer, 1_000_000n * E18)
+        }
+        await time.increase(WEEK + 1)
+        await revenue.connect(newcomer).claim([reward.target])
+        await revenue.connect(honest).claim([reward.target])
+        return [await bal(newcomer), await bal(honest)]
+      }
+      const [newcomerBefore, honestBefore] = await payouts(true)
+      const [newcomerAfter, honestAfter] = await payouts(false)
+      // The only difference is the few seconds between the sync and the stake's blocks (mint, approve, stake).
+      const fewSeconds = (4n * 300_000n * E18) / BigInt(WEEK)
+      near(newcomerBefore, newcomerAfter, fewSeconds)
+      near(honestBefore, honestAfter, fewSeconds)
+      near(newcomerBefore + honestBefore, 300_000n * E18)
+    })
+
+    it('a stake with revenue waiting unsynced makes no call to the reward token', async () => {
+      const { signers, d20, revenue, stake, reward } = await loadFixture(fixture)
+      const [, alice, bob] = signers
+      await stake(alice, 10n * E18)
+      await reward.mint(revenue.target, 700n * E18)
+      await reward.setBroken(true) // every call to the token reverts
+      await d20.mint(bob.address, 10n * E18)
+      await d20.connect(bob).approve(revenue.target, 10n * E18)
+      // A sync here would try the token's balanceOf and report it unreadable.
+      await expect(revenue.connect(bob).stake(d20.target, 10n * E18)).to.not.emit(revenue, 'RewardTokenUnreadable')
+      expect(await revenue.staked(bob.address)).to.eq(10n * E18)
+      expect((await revenue.reward_data(reward.target)).accounted).to.eq(0n) // nothing was taken in
+    })
+
     it('a newcomer only shares the part of a stream that runs while they are staked', async () => {
       const { signers, revenue, stake, feesArrive, bal, reward } = await loadFixture(fixture)
       const [, alice, mallory] = signers

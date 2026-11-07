@@ -19,10 +19,15 @@ import '../interfaces/IERC20Minimal.sol';
 /// Accounting here is the standard reward-per-share model (Synthetix StakingRewards, Curve MultiRewards),
 /// one accumulator per reward token:
 ///   * Revenue is detected as `balanceOf(this) - accounted` - fees arrive by plain transfer, with no hook.
-///   * Detected revenue is queued and streamed linearly over `reward_duration`, so a large fee drop cannot
-///     be captured by staking just before it lands. Revenue arriving mid-stream waits, unless it is at least
-///     what the running stream has left, in which case both are re-spread over a fresh full duration. Dust
-///     can therefore neither stretch a running stream nor hold real revenue behind a stream of dust.
+///   * Detected revenue is queued and streamed linearly over `reward_duration`. A stream pays whoever is
+///     staked while it runs, pro rata to stake and time, so a large fee drop cannot be captured by a short
+///     stake: a share of it costs holding that share of the stake for the whole stream. When the revenue
+///     arrived does not change this: staking just before a sync earns the same as staking just after it,
+///     and fees still in the pools are uncollected revenue of the same kind. stake() therefore does not
+///     sync, which keeps it free of reward-token calls (see below).
+///   * Revenue arriving mid-stream waits, unless it is at least what the running stream has left, in which
+///     case both are re-spread over a fresh full duration. Dust can therefore neither stretch a running
+///     stream nor hold real revenue behind a stream of dust.
 ///   * A staker earns `stake * (reward_per_token_now - reward_per_token_at_last_checkpoint)`. Every change
 ///     to a stake first checkpoints every reward token, so earnings always reflect the stake actually held
 ///     over each interval. Payout order, account splitting and claim timing make no difference.
