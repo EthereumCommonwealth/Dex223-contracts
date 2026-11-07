@@ -60,7 +60,9 @@ contract Dex223PoolDeployer is IDex223PoolDeployer {
         require(factory != address(0), "DEPLOYER: ZERO_FACTORY");
         require(token0_erc20 != address(0), "DEPLOYER: ZERO_TOKEN0");
         require(token1_erc20 != address(0), "DEPLOYER: ZERO_TOKEN1");
-        require(token0_erc20 != token1_erc20, "DEPLOYER: IDENTICAL_TOKENS");
+        require(token0_erc20 < token1_erc20, "DEPLOYER: TOKEN_ORDER");
+        require(fee < 1000000, "DEPLOYER: INVALID_FEE");
+        require(tickSpacing > 0 && tickSpacing < 16384, "DEPLOYER: INVALID_TICK_SPACING");
 
         parameters = Parameters({factory: factory, token0_erc20: token0_erc20, token1_erc20: token1_erc20,  fee: fee, tickSpacing: tickSpacing});
         pool = address(new Dex223Pool{salt: keccak256(abi.encode(token0_erc20, token1_erc20, fee))}());

@@ -27,8 +27,20 @@ contract NonfungibleTokenPositionDescriptor is INonfungibleTokenPositionDescript
     bytes32 public immutable nativeCurrencyLabelBytes;
 
     constructor(address _WETH9, bytes32 _nativeCurrencyLabelBytes) {
+        require(_WETH9 != address(0), 'Descriptor: ZERO_WETH9');
         WETH9 = _WETH9;
         nativeCurrencyLabelBytes = _nativeCurrencyLabelBytes;
+    }
+
+    function _safeDecimals(address token) private view returns (uint8) {
+        if (token == WETH9) return 18;
+        (bool success, bytes memory data) =
+            token.staticcall(abi.encodeWithSelector(IERC20Metadata.decimals.selector));
+        if (success && data.length == 32) {
+            uint256 dec = abi.decode(data, (uint256));
+            if (dec <= type(uint8).max) return uint8(dec);
+        }
+        return 18;
     }
 
     /// @notice Returns the native currency label as a string
@@ -79,8 +91,8 @@ contract NonfungibleTokenPositionDescriptor is INonfungibleTokenPositionDescript
                     baseTokenSymbol: baseTokenAddress == WETH9
                         ? nativeCurrencyLabel()
                         : SafeERC20Namer.tokenSymbol(baseTokenAddress),
-                    quoteTokenDecimals: IERC20Metadata(quoteTokenAddress).decimals(),
-                    baseTokenDecimals: IERC20Metadata(baseTokenAddress).decimals(),
+                    quoteTokenDecimals: _safeDecimals(quoteTokenAddress),
+                    baseTokenDecimals: _safeDecimals(baseTokenAddress),
                     flipRatio: _flipRatio,
                     tickLower: tickLower,
                     tickUpper: tickUpper,
