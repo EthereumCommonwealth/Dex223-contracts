@@ -125,6 +125,8 @@ IERC223Recipient
          * tkn.data  - is the "metadata" of token transfer
          * tkn.token_contract is most likely equal to msg.sender because the token contract typically invokes this function
         */
+        require(Address.isContract(msg.sender), "NP: NOT_CONTRACT");
+        require(_value > 0, "NP: ZERO_VALUE");
         tkn.token_contract = msg.sender;
         tkn.sender         = _from;
         tkn.value          = _value;
