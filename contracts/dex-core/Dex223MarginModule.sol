@@ -126,9 +126,13 @@ contract MarginModule is IOrderParams
     // owner.
     bool private _entered;
 
-    modifier nonReentrant() {
+    function _nonReentrantBefore() private {
         require(!_entered, "MM01");
         _entered = true;
+    }
+
+    modifier nonReentrant() {
+        _nonReentrantBefore();
         _;
         _entered = false;
     }
@@ -594,6 +598,16 @@ contract MarginModule is IOrderParams
         _receiveAsset(asset, amount);
 
         addAsset(positionId, asset, amount);
+        // Every holding is valued through the oracle (_positionValue), so an asset it cannot price
+        // would make the position impossible to value, close or liquidate. Valuing the position
+        // after a non-base deposit refuses such an asset with the oracle's own revert (bounty #95,
+        // from PR #190 by cyczzhao-lab); a base-asset top-up needs no price. The same valuation
+        // ends an underwater spell once a top-up brings the value back above the debt, so a later
+        // dip starts a fresh LENDER_WINDOW (unfreeze() cannot clear it inside the buffer).
+        if (positionUnderwaterSince[positionId] != 0 || asset != positions[positionId].assets[0]) {
+            (uint256 debt, uint256 value) = _positionValue(positionId);
+            if (value >= debt) positionUnderwaterSince[positionId] = 0;
+        }
         emit PositionDeposit(positionId, asset, amount);
     }
 
@@ -817,8 +831,9 @@ contract MarginModule is IOrderParams
     /// @dev An owner's swap must not leave the position liquidatable. Otherwise the owner could sell
     /// the borrowed funds into a pool they control at any price and walk away with the loan, leaving
     /// the lender with only the collateral.
-    function _requireSolventAfterSwap(uint256 _positionId) internal view {
+    function _requireSolventAfterSwap(uint256 _positionId) internal {
         require(!subjectToLiquidation(_positionId), "MM20");
+        positionUnderwaterSince[_positionId] = 0;
     }
 
     function _marginSwapInternal(
@@ -889,11 +904,14 @@ contract MarginModule is IOrderParams
         uint256 _whitelistId2,
         uint256 _amount,
         address _asset2,
-        uint24 _feeTier) public nonReentrant {
+        uint24 _feeTier,
+        uint256 _minAmountOut) public nonReentrant {
         // Only allow the owner of the position to perform trading operations with it.
         _requirePositionOwner(_positionId);
 
-        _marginSwap223Internal(_positionId, _assetId1, _whitelistId1, _whitelistId2, _amount, _asset2, _feeTier, 0);
+        // The owner's minimum, as in marginSwap. Without it the only check was solvency after the
+        // swap, which a sandwich could satisfy while taking the position's margin above it.
+        _marginSwap223Internal(_positionId, _assetId1, _whitelistId1, _whitelistId2, _amount, _asset2, _feeTier, _minAmountOut);
         _requireSolventAfterSwap(_positionId);
     }
 
@@ -1043,14 +1061,18 @@ contract MarginModule is IOrderParams
         else if (positionUnderwaterSince[positionId] == 0) positionUnderwaterSince[positionId] = block.timestamp;
     }
 
+    function _isLossLiquidator(uint256 orderId, address who) private view returns (bool) {
+        return who == orders[orderId].owner || who == orderLiquidationKeeper[orderId];
+    }
+
     /// @dev Selling a position worth less than its debt realizes a loss for the lender. During
     /// LENDER_WINDOW only the lender or its keeper may do it; inside the buffer (value still above
     /// the debt) and after the window, anyone may.
-    function _requireMayRealizeLoss(uint256 positionId) internal view {
+    function _requireMayRealizeLoss(uint256 positionId) internal view returns (bool inWindow) {
         uint256 since = positionUnderwaterSince[positionId];
-        if (since != 0 && block.timestamp < since + LENDER_WINDOW) {
-            uint256 orderId = positions[positionId].orderId;
-            require(msg.sender == orders[orderId].owner || msg.sender == orderLiquidationKeeper[orderId], "MM38");
+        inWindow = since != 0 && block.timestamp < since + LENDER_WINDOW;
+        if (inWindow) {
+            require(_isLossLiquidator(positions[positionId].orderId, msg.sender), "MM38");
         }
     }
 
@@ -1088,18 +1110,27 @@ contract MarginModule is IOrderParams
     /// live (within MAX_FREEZE_DURATION, at least one block old), exactly like the final sale: a
     /// lapsed freeze must be renewed with liquidate() first, which restores the block between the
     /// trigger and the sale, and the freezer's hour of exclusivity keeps steps from being used by
-    /// others to talk the TWAP down or to pull value out of a position they do not liquidate.
+    /// others to talk the TWAP down or to pull value out of a position they do not liquidate. The
+    /// one exception is LENDER_WINDOW: while the position is under water only the lender or its
+    /// keeper may sell, and either may take over a freeze someone else placed.
     function liquidateStep(uint256 positionId, address asset, uint256 amount) public nonReentrant {
         Position storage position = positions[positionId];
 
         require(
             position.open && position.frozenTime > 0 && block.timestamp > position.frozenTime
-                && block.timestamp - position.frozenTime <= MAX_FREEZE_DURATION
-                && msg.sender == position.liquidator,
+                && block.timestamp - position.frozenTime <= MAX_FREEZE_DURATION,
             "MM26"
         );
         _requireLiquidatable(positionId);
-        _requireMayRealizeLoss(positionId);
+        // Under water during LENDER_WINDOW only the lender or its keeper may sell (MM38 above). If
+        // someone else holds the freeze (a bot, the borrower, or a liquidator who began stepping
+        // while the position was still above its debt), the lender or keeper takes it over;
+        // otherwise steps stay with the freezer.
+        if (_requireMayRealizeLoss(positionId) && !_isLossLiquidator(position.orderId, position.liquidator)) {
+            position.liquidator = msg.sender;
+        } else {
+            require(msg.sender == position.liquidator, "MM26");
+        }
         uint256 id = getAssetId(positionId, asset);
         // index 0 is the base asset, which is never sold. The swap itself rejects an amount above
         // the position's balance and a zero amount.

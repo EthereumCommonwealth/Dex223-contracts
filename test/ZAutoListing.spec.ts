@@ -137,6 +137,37 @@ describe('AutoListing', () => {
             expect(await core.tokens(await core.listed_tokens(token0.target))).to.deep.eq([token0.target.toString(), token3])
         })
 
+        it('core listSingle refuses an ERC-223 origin passed as token20 so it cannot brick pool listing', async () => {
+            const core = await (await ethers.getContractFactory('Dex223CoreAutoListing'))
+                .deploy(factory.target, registry.target, converter.target, 'core', 'https://core')
+            const { origin, w20 } = await erc223Origin()
+            const bogus223OfOrigin = await converter.predictWrapperAddress(origin, true)
+
+            await expect(core.listSingle(origin, bogus223OfOrigin, ethers.ZeroAddress)).to.be.revertedWith('Not an ERC-20 origin')
+
+            // Creating and listing the canonical pool for (w20, origin) succeeds.
+            await factory.createPool(w20, token0.target.toString(), origin, token3, feeAmount)
+            const canonicalPool = await factory.getPool(w20, token0.target, feeAmount)
+            await expect(core.list(canonicalPool, feeAmount, ethers.ZeroAddress)).to.emit(core, 'PairListed')
+        })
+
+        it('ETH-priced listings allow zero-cost pool re-listing and owner listSingle without msg.value contradiction', async () => {
+            const core = await (await ethers.getContractFactory('Dex223CoreAutoListing'))
+                .deploy(factory.target, registry.target, converter.target, 'core', 'https://core')
+            await core.setPaymentPrice(ethers.ZeroAddress, 1000n)
+
+            // Owner is exempt from payment in listSingle and can call it with 0 ETH.
+            await expect(core.listSingle(token0.target, token3, ethers.ZeroAddress)).to.emit(core, 'TokenListed')
+            // Non-owner paying too little ETH still reverts with 'Payment is not enough'.
+            await expect(core.connect(other).listSingle(token1.target, token4, ethers.ZeroAddress, { value: 500n }))
+                .to.be.revertedWith('Payment is not enough')
+            await expect(core.listSingle(token1.target, token4, ethers.ZeroAddress)).to.emit(core, 'TokenListed')
+
+            // Both tokens of pool0 are now already listed (toTransfer == 0); listing pool0 with 0 ETH succeeds.
+            await expect(core.connect(other).list(pool0, feeAmount, ethers.ZeroAddress))
+                .to.emit(core, 'PairListed')
+        })
+
         it('an update never re-pairs a listed token, and a zero half leaves it as it is', async () => {
             // checkListing is shared by all three listings. The owner's listTokenByOwner passes any pair to it,
             // so the guard is tested here independently of how a contradicting pair might arrive (on the free
@@ -153,6 +184,28 @@ describe('AutoListing', () => {
             await ownable.listTokenByOwner(w20, ethers.ZeroAddress)
             expect(await ownable.getToken(id)).to.deep.eq([w20, origin])
             expect(await ownable.isListed(wrapperOfWrapper)).to.eq(false)
+        })
+
+        it('one address is never both versions of a token, directly or by filling the missing half', async () => {
+            const ownable = await (await ethers.getContractFactory('Dex223OwnableListing'))
+                .deploy(factory.target, registry.target, 'ownable', 'https://ownable')
+            const t = token0.target.toString()
+
+            await expect(ownable.listTokenByOwner(t, t)).to.be.revertedWith('Identical token addresses')
+            expect(await ownable.isListed(t)).to.eq(false)
+
+            // Listed with only its ERC-20 half; the same address cannot then fill the ERC-223 half.
+            await ownable.listTokenByOwner(t, ethers.ZeroAddress)
+            const id = await ownable.listed_tokens(t)
+            await expect(ownable.listTokenByOwner(ethers.ZeroAddress, t)).to.be.revertedWith('Listing pair mismatch')
+            expect(await ownable.getToken(id)).to.deep.eq([t, ethers.ZeroAddress])
+
+            // The same holds the other way round, and a real counterpart still completes the pair.
+            const u = token1.target.toString()
+            await ownable.listTokenByOwner(ethers.ZeroAddress, u)
+            await expect(ownable.listTokenByOwner(u, ethers.ZeroAddress)).to.be.revertedWith('Listing pair mismatch')
+            await ownable.listTokenByOwner(t, token3)
+            expect(await ownable.getToken(id)).to.deep.eq([t, token3])
         })
     })
 })

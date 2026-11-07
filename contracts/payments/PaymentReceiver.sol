@@ -8,10 +8,11 @@ import '../libraries/TransferHelper.sol';
 /// @title PaymentReceiver
 /// @notice Merchant inbox for Safe Send / Pay. Accepts ERC-223 transfers with optional
 ///         invoice metadata in `_data`, credits balances, and lets the merchant withdraw.
-/// @dev Spoofing note: only the token contract should call `tokenReceived`. Callers that
-///      invent a deposit without a real transfer do not move balances in the token, so a
-///      later `withdraw` would fail. Merchants should still treat `PaymentReceived` as a
-///      signal and confirm token balances before shipping goods.
+/// @dev Spoofing note: only the token contract should call `tokenReceived`. A credit must be
+///      backed by this contract's balance of the token, so a caller that invents a deposit
+///      without a real transfer is refused. A malicious token can still report any balance for
+///      itself: merchants should treat `PaymentReceived` as a signal for tokens they accept and
+///      confirm balances before shipping goods.
 contract PaymentReceiver is IERC223Recipient {
     address public owner;
     address public pendingOwner;
@@ -101,6 +102,10 @@ contract PaymentReceiver is IERC223Recipient {
 
         uint256 newCredit = credited[token] + _value;
         require(newCredit >= credited[token], 'OVERFLOW');
+        // An ERC-223 token moves the balance before calling tokenReceived, so a real payment is
+        // always backed. A contract that calls tokenReceived without moving anything (or a token
+        // that delivers less than `_value`) is refused, so credited never exceeds what is held.
+        require(IERC223(token).balanceOf(address(this)) >= newCredit, 'UNBACKED_CREDIT');
         credited[token] = newCredit;
 
         bytes32 invoiceId;

@@ -1086,6 +1086,31 @@ describe('MarginModule', () => {
       await expect(c.mm.positionDeposit(0, c.third.target, 0, expandTo18Decimals(1))).to.be.reverted
       await expect(c.mm.positionDeposit(0, c.third.target, 1, expandTo18Decimals(1))).to.be.reverted
     })
+
+    it('positionDeposit refuses a whitelisted asset the oracle cannot price, and still takes base top-ups', async () => {
+      const c = await loadFixture(fx)
+      await c.seedPool() // base/collat only: no pool prices third against the base asset
+      const list = [c.base.target.toString(), c.collat.target.toString(), c.third.target.toString()]
+      await c.mm.addTokenlist(list, false)
+      await c.mm.createOrder({ ...c.orderParams, whitelistId: await predictTokenListsID(list, false) })
+      await c.mm.setOrderStatus(0, true)
+      await c.base.approve(c.mm.target, ethers.MaxUint256)
+      await c.collat.approve(c.mm.target, ethers.MaxUint256)
+      await c.third.approve(c.mm.target, ethers.MaxUint256)
+      await c.mm.orderDepositToken(0, expandTo18Decimals(100))
+      await c.mm.takeLoan(0, expandTo18Decimals(1), 0, expandTo18Decimals(1))
+
+      // An unpriceable holding would leave the position impossible to value, close or liquidate.
+      await expect(c.mm.positionDeposit(0, c.third.target, 2, expandTo18Decimals(1))).to.be.revertedWith('Oracle: no pool found')
+      expect((await c.mm.getPositionAssets(0)).length).to.eq(2)
+      // The base asset needs no price, and priced assets are still accepted.
+      await c.mm.positionDeposit(0, c.base.target, 0, expandTo18Decimals(1))
+      await c.mm.positionDeposit(0, c.collat.target, 1, expandTo18Decimals(1))
+      // Once a pool can price it, the same deposit goes through.
+      await c.seedThirdPool()
+      await c.mm.positionDeposit(0, c.third.target, 2, expandTo18Decimals(1))
+      expect((await c.mm.getPositionAssets(0)).length).to.eq(3)
+    })
   })
 
   describe('ERC-223 assets in a position', () => {
@@ -1122,7 +1147,7 @@ describe('MarginModule', () => {
       const c = await positionWith223Collateral()
       const id = await c.mm.getAssetId(0, c.collat223.target)
       const baseBefore = (await c.mm.getPositionBalances(0))[0]
-      await c.mm.marginSwap223(0, id, 2, 0, c.amount, c.base.target, FeeAmount.MEDIUM)
+      await c.mm.marginSwap223(0, id, 2, 0, c.amount, c.base.target, FeeAmount.MEDIUM, 0)
       const balances = await c.mm.getPositionBalances(0)
       expect(balances[0]).to.be.gt(baseBefore)
       expect(balances[0] - baseBefore, 'roughly 1:1 minus the 0.3% fee').to.be.closeTo(c.amount, c.amount / 100n)
@@ -1133,8 +1158,19 @@ describe('MarginModule', () => {
     it('marginSwap223 is owner-only', async () => {
       const c = await positionWith223Collateral()
       const id = await c.mm.getAssetId(0, c.collat223.target)
-      await expect(c.mm.connect(c.other).marginSwap223(0, id, 2, 0, c.amount, c.base.target, FeeAmount.MEDIUM))
+      await expect(c.mm.connect(c.other).marginSwap223(0, id, 2, 0, c.amount, c.base.target, FeeAmount.MEDIUM, 0))
         .to.be.revertedWith('MM07')
+    })
+
+    it("marginSwap223 enforces the owner's minimum output", async () => {
+      const c = await positionWith223Collateral()
+      const id = await c.mm.getAssetId(0, c.collat223.target)
+      // About 0.997 base comes back for 1 collat223 (0.3% fee); asking for the full amount must fail.
+      await expect(c.mm.marginSwap223(0, id, 2, 0, c.amount, c.base.target, FeeAmount.MEDIUM, c.amount))
+        .to.be.revertedWith('MM21')
+      const baseBefore = (await c.mm.getPositionBalances(0))[0]
+      await c.mm.marginSwap223(0, id, 2, 0, c.amount, c.base.target, FeeAmount.MEDIUM, (c.amount * 99n) / 100n)
+      expect((await c.mm.getPositionBalances(0))[0] - baseBefore).to.be.gte((c.amount * 99n) / 100n)
     })
 
     it('the ERC-223 asset is priced through the oracle like any other holding', async () => {
@@ -1600,6 +1636,62 @@ describe('MarginModule', () => {
       expect(recovered, 'the 100 base held plus the proceeds of the 200 collat').to.be.gt(expandTo18Decimals(250))
       expect(recovered + await c.mm.orderShortfall(0)).to.be.closeTo(debt, ONE / 100n)
     })
+
+    it('under water, the lender or keeper may step a liquidation even when a third party placed the freeze', async () => {
+      const c = await pooledPosition(10000n, expandTo18Decimals(100), expandTo18Decimals(200))
+      await time.increase(60 * DAY)                                 // debt 300, value < 300 (under water)
+      await c.mm.connect(c.other).liquidate(0, c.other.address)     // third party places freeze
+      expect(await c.mm.positionUnderwaterSince(0)).to.be.greaterThan(0n)
+      await time.increase(60)
+
+      await expect(c.mm.connect(c.other).liquidateStep(0, c.collat.target, expandTo18Decimals(20))).to.be.revertedWith('MM38')
+      // The lender takes over the live freeze to step the sale during LENDER_WINDOW.
+      await c.mm.liquidateStep(0, c.collat.target, expandTo18Decimals(20))
+      expect((await c.mm.positions(0)).liquidator).to.eq(c.wallet.address)
+    })
+
+    it('a third party that began stepping in the buffer hands over to the lender once the position is under water', async () => {
+      const c = await pooledPosition(10000n, expandTo18Decimals(100), expandTo18Decimals(200))
+      await time.increase(55 * DAY)                                 // debt ~283.33, value ~300, threshold ~311.67
+      const [debt0, val0] = await c.mm.getPositionStatus(0)
+      expect(val0).to.be.gt(debt0)
+      expect(await c.mm.subjectToLiquidation(0)).to.eq(true)
+
+      await c.mm.connect(c.other).liquidate(0, c.other.address)     // freeze inside the buffer
+      expect(await c.mm.positionUnderwaterSince(0)).to.eq(0n)
+      await time.increase(60)
+
+      // Inside the buffer the freezer steps alone; the lender may not.
+      await expect(c.mm.liquidateStep(0, c.collat.target, expandTo18Decimals(20))).to.be.revertedWith('MM26')
+      // Step until the sale's costs push the value below the debt.
+      let steps = 0
+      for (;;) {
+        const [d, v] = await c.mm.getPositionStatus(0)
+        if (v < d) break
+        expect(++steps).to.be.lte(10)
+        if (steps > 1 && (steps - 1) % 2 === 0) {
+          await c.mm.connect(c.other).liquidate(0, c.other.address) // renew the lapsed freeze
+          await time.increase(60)
+        }
+        await c.mm.connect(c.other).liquidateStep(0, c.collat.target, expandTo18Decimals(20))
+        await time.increase(c.TWAP_WINDOW)
+      }
+
+      // Under water: the loss belongs to the lender. The third party can neither step nor finish on
+      // its own freeze any more; the lender takes the live freeze over and steps on.
+      if ((await c.mm.positions(0)).frozenTime + 3600n < BigInt(await time.latest()) + 60n) {
+        await c.mm.connect(c.other).liquidate(0, c.other.address)   // renew a lapsed freeze
+        await time.increase(60)
+      }
+      expect((await c.mm.positions(0)).liquidator).to.eq(c.other.address)
+      await expect(c.mm.connect(c.other).liquidateStep(0, c.collat.target, expandTo18Decimals(20))).to.be.revertedWith('MM38')
+      await expect(c.mm.connect(c.other).liquidate(0, c.other.address)).to.be.revertedWith('MM38')
+      await c.mm.liquidateStep(0, c.collat.target, expandTo18Decimals(20))
+      expect((await c.mm.positions(0)).liquidator).to.eq(c.wallet.address)
+      expect(await c.mm.positionUnderwaterSince(0)).to.be.greaterThan(0n)
+      // The lender now holds the freeze: the third party cannot take it back.
+      await expect(c.mm.connect(c.other).liquidateStep(0, c.collat.target, expandTo18Decimals(1))).to.be.revertedWith('MM38')
+    })
   })
   describe('lender protection', () => {
     // Same malicious-token setup as liquidatable(): base, collateral and reward are one token, so
@@ -1710,6 +1802,26 @@ describe('MarginModule', () => {
       await mm.positionDeposit(0, await evil.getAddress(), 0, expandTo18Decimals(10))
       await mm.unfreeze(0)
       expect(await mm.positionUnderwaterSince(0)).to.eq(0n)
+    })
+
+    it('topping up a position above its debt clears the underwater timestamp even without unfreeze()', async () => {
+      const { mm, evil, other } = await evilOrders([0n])
+      await time.increase(90 * DAY)                                 // debt 4, value 2
+      await mm.connect(other).liquidate(0, other.address)
+      const firstSince = await mm.positionUnderwaterSince(0)
+      expect(firstSince).to.be.greaterThan(0n)
+
+      // Top up by 2.1 units: value (4.1) > debt (4.0), but still < threshold (4.4), so unfreeze() reverts.
+      await mm.positionDeposit(0, await evil.getAddress(), 0, ( expandTo18Decimals(21) ) / 10n)
+      await expect(mm.unfreeze(0)).to.be.revertedWith('MM27')
+      expect(await mm.positionUnderwaterSince(0)).to.eq(0n)
+
+      // 15 days later (> 24h after firstSince), debt is 4.5 > value 4.1: a fresh LENDER_WINDOW must start.
+      await time.increase(15 * DAY)
+      await mm.connect(other).liquidate(0, other.address)
+      expect(await mm.positionUnderwaterSince(0)).to.be.greaterThan(firstSince)
+      await time.increase(60)
+      await expect(mm.connect(other).liquidate(0, other.address)).to.be.revertedWith('MM38')
     })
   })
 

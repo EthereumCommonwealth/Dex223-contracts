@@ -115,15 +115,25 @@ describe('PaymentReceiver (Safe Send)', () => {
     expect(await receiver.credited(await token.getAddress())).to.eq(amount)
   })
 
-  it('treats a balance below the credited amount as no surplus instead of wrapping around', async () => {
+  it('refuses a credit the contract does not hold', async () => {
     const { other, receiver } = await loadFixture(fixture)
     const Spoof = await ethers.getContractFactory('TestSpoofedCreditToken')
     const spoof = await Spoof.deploy()
     await spoof.waitForDeployment()
-    await (await spoof.spoofCredit(await receiver.getAddress(), 100n)).wait()
-    expect(await receiver.credited(await spoof.getAddress())).to.eq(100n)
-
+    await expect(spoof.spoofCredit(await receiver.getAddress(), 100n)).to.be.revertedWith('UNBACKED_CREDIT')
+    expect(await receiver.credited(await spoof.getAddress())).to.eq(0n)
     await expect(receiver.rescue(await spoof.getAddress(), other.address, 1n)).to.be.revertedWith('NOT_SURPLUS')
+  })
+
+  it('credits a real D223 payment, backed by the balance it moved', async () => {
+    const { merchant, receiver } = await loadFixture(fixture)
+    const d223 = await (await ethers.getContractFactory('D223Token')).deploy()
+    await d223.waitForDeployment()
+    const amount = ethers.parseEther('12')
+    await (await d223['transfer(address,uint256,bytes)'](await receiver.getAddress(), amount, ethers.id('d'))).wait()
+    expect(await receiver.credited(await d223.getAddress())).to.eq(amount)
+    await (await receiver.withdrawAll(await d223.getAddress())).wait()
+    expect(await d223.balanceOf(merchant.address)).to.eq(amount)
   })
 
   it('withdraws a credited token whose transfer returns nothing', async () => {

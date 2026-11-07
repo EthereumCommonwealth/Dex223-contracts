@@ -319,6 +319,8 @@ contract Dex223AutoListing {
 
     function checkListing(address _token_erc20, address _token_erc223) internal
     {
+        // One address cannot be both versions of a token (from PR #190 by cyczzhao-lab).
+        require(_token_erc20 != _token_erc223, "Identical token addresses");
 
         // There are two possible scenarios here:
         // 1. We are listing a new token on Dex223.
@@ -354,8 +356,8 @@ contract Dex223AutoListing {
             require(
                 (!isListed(_token_erc20)  || listed_tokens[_token_erc20]  == _id) &&
                 (!isListed(_token_erc223) || listed_tokens[_token_erc223] == _id) &&
-                (_token_erc20  == address(0) || _listed.erc20  == address(0) || _listed.erc20  == _token_erc20) &&
-                (_token_erc223 == address(0) || _listed.erc223 == address(0) || _listed.erc223 == _token_erc223),
+                (_token_erc20  == address(0) || ((_listed.erc20  == address(0) || _listed.erc20  == _token_erc20)  && _listed.erc223 != _token_erc20)) &&
+                (_token_erc223 == address(0) || ((_listed.erc223 == address(0) || _listed.erc223 == _token_erc223) && _listed.erc20  != _token_erc223)),
                 "Listing pair mismatch"
             );
             if (_token_erc20 != address(0)) {
@@ -385,11 +387,6 @@ contract Dex223AutoListing {
         // get price for passed token address
         uint price = paymentPrices[paymentToken];
         require(price > 0, "Payment token not accepted");
-
-        // check payment in native coin
-        if (paymentToken == address(0)) {
-            require(msg.value > 0, "Must send ETH");
-        }
 
         return price;
     }
@@ -644,8 +641,17 @@ contract Dex223CoreAutoListing {
         // A converter-made ERC-20 wrapper (or one not deployed yet, which has no code) belongs with its
         // ERC-223 origin; listing it here recorded a codeless wrapper-of-a-wrapper as its ERC-223 version.
         uint256 _token20CodeSize;
-        assembly { _token20CodeSize := extcodesize(token20) }
-        require(_token20CodeSize > 0 && !converter.isWrapper(token20), "Not an ERC-20 origin");
+        bool _is223Origin;
+        assembly {
+            _token20CodeSize := extcodesize(token20)
+            let ptr := mload(0x40)
+            mstore(ptr, shl(224, 0x5a3b7e42))
+            let ok := staticcall(50000, token20, ptr, 4, ptr, 32)
+            if and(ok, eq(returndatasize(), 32)) {
+                _is223Origin := eq(mload(ptr), 223)
+            }
+        }
+        require(_token20CodeSize > 0 && !converter.isWrapper(token20) && !_is223Origin, "Not an ERC-20 origin");
 
         checkListing(token20, token223);
 
@@ -671,6 +677,8 @@ contract Dex223CoreAutoListing {
 
     function checkListing(address _token_erc20, address _token_erc223) internal
     {
+        // One address cannot be both versions of a token (from PR #190 by cyczzhao-lab).
+        require(_token_erc20 != _token_erc223, "Identical token addresses");
 
         // There are two possible scenarios here:
         // 1. We are listing a new token on Dex223.
@@ -706,8 +714,8 @@ contract Dex223CoreAutoListing {
             require(
                 (!isListed(_token_erc20)  || listed_tokens[_token_erc20]  == _id) &&
                 (!isListed(_token_erc223) || listed_tokens[_token_erc223] == _id) &&
-                (_token_erc20  == address(0) || _listed.erc20  == address(0) || _listed.erc20  == _token_erc20) &&
-                (_token_erc223 == address(0) || _listed.erc223 == address(0) || _listed.erc223 == _token_erc223),
+                (_token_erc20  == address(0) || ((_listed.erc20  == address(0) || _listed.erc20  == _token_erc20)  && _listed.erc223 != _token_erc20)) &&
+                (_token_erc223 == address(0) || ((_listed.erc223 == address(0) || _listed.erc223 == _token_erc223) && _listed.erc20  != _token_erc223)),
                 "Listing pair mismatch"
             );
             if (_token_erc20 != address(0)) {
@@ -732,11 +740,6 @@ contract Dex223CoreAutoListing {
         // get price for passed token address
         uint price = paymentPrices[paymentToken];
         require(price > 0, "Payment token not accepted");
-
-        // check payment in native coin
-        if (paymentToken == address(0)) {
-            require(msg.value > 0, "Must send ETH");
-        }
 
         return price;
     }
@@ -1016,6 +1019,8 @@ contract Dex223OwnableListing {
 
     function checkListing(address _token_erc20, address _token_erc223) internal
     {
+        // One address cannot be both versions of a token (from PR #190 by cyczzhao-lab).
+        require(_token_erc20 != _token_erc223, "Identical token addresses");
 
         // There are two possible scenarios here:
         // 1. We are listing a new token on Dex223.
@@ -1051,8 +1056,8 @@ contract Dex223OwnableListing {
             require(
                 (!isListed(_token_erc20)  || listed_tokens[_token_erc20]  == _id) &&
                 (!isListed(_token_erc223) || listed_tokens[_token_erc223] == _id) &&
-                (_token_erc20  == address(0) || _listed.erc20  == address(0) || _listed.erc20  == _token_erc20) &&
-                (_token_erc223 == address(0) || _listed.erc223 == address(0) || _listed.erc223 == _token_erc223),
+                (_token_erc20  == address(0) || ((_listed.erc20  == address(0) || _listed.erc20  == _token_erc20)  && _listed.erc223 != _token_erc20)) &&
+                (_token_erc223 == address(0) || ((_listed.erc223 == address(0) || _listed.erc223 == _token_erc223) && _listed.erc20  != _token_erc223)),
                 "Listing pair mismatch"
             );
             if (_token_erc20 != address(0)) {
@@ -1082,11 +1087,6 @@ contract Dex223OwnableListing {
         // get price for passed token address
         uint price = paymentPrices[paymentToken];
         require(price > 0, "Payment token not accepted");
-
-        // check payment in native coin
-        if (paymentToken == address(0)) {
-            require(msg.value > 0, "Must send ETH");
-        }
 
         return price;
     }

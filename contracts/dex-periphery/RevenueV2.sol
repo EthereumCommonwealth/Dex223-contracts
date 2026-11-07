@@ -19,10 +19,15 @@ import '../interfaces/IERC20Minimal.sol';
 /// Accounting here is the standard reward-per-share model (Synthetix StakingRewards, Curve MultiRewards),
 /// one accumulator per reward token:
 ///   * Revenue is detected as `balanceOf(this) - accounted` - fees arrive by plain transfer, with no hook.
-///   * Detected revenue is queued and streamed linearly over `reward_duration`, so a large fee drop cannot
-///     be captured by staking just before it lands. Revenue arriving mid-stream waits, unless it is at least
-///     what the running stream has left, in which case both are re-spread over a fresh full duration. Dust
-///     can therefore neither stretch a running stream nor hold real revenue behind a stream of dust.
+///   * Detected revenue is queued and streamed linearly over `reward_duration`. A stream pays whoever is
+///     staked while it runs, pro rata to stake and time, so a large fee drop cannot be captured by a short
+///     stake: a share of it costs holding that share of the stake for the whole stream. When the revenue
+///     arrived does not change this: staking just before a sync earns the same as staking just after it,
+///     and fees still in the pools are uncollected revenue of the same kind. stake() therefore does not
+///     sync, which keeps it free of reward-token calls (see below).
+///   * Revenue arriving mid-stream waits, unless it is at least what the running stream has left, in which
+///     case both are re-spread over a fresh full duration. Dust can therefore neither stretch a running
+///     stream nor hold real revenue behind a stream of dust.
 ///   * A staker earns `stake * (reward_per_token_now - reward_per_token_at_last_checkpoint)`. Every change
 ///     to a stake first checkpoints every reward token, so earnings always reflect the stake actually held
 ///     over each interval. Payout order, account splitting and claim timing make no difference.
@@ -242,12 +247,26 @@ contract RevenueV2 {
     /// @notice Withdraw the whole position, in the versions it was staked in, without touching any reward
     ///         accounting, for use if reward bookkeeping ever reverts (it cannot under the configured bounds,
     ///         but principal must never depend on it). Rewards already settled to the caller stay claimable;
-    ///         anything accrued since the caller's last stake, withdraw or claim is forfeited and stays in the
-    ///         contract. Same lock as withdraw().
+    ///         anything accrued since the caller's last stake, withdraw or claim is forfeited and queued to be
+    ///         streamed again to the remaining stakers. Same lock as withdraw().
     function emergency_withdraw() external nonReentrant {
         require(block.timestamp >= unlock_time[msg.sender], 'Tokens are frozen for a specified duration after the last staking');
         uint256 amount = staked[msg.sender];
         require(amount != 0, 'Nothing staked');
+        // Hand the caller's unsettled share of what has already accrued back to the queue. Without this it was
+        // owed to nobody and stayed in `accounted`, so it could never be paid to anyone. Storage only, at the
+        // accumulator as it stands (no _accrue, no external call), so this path still does not depend on the
+        // rest of the reward bookkeeping.
+        uint256 n = reward_tokens.length;
+        for (uint256 i = 0; i < n; i++) {
+            address token = reward_tokens[i];
+            RewardData storage r = reward_data[token];
+            uint256 paid = user_reward_per_token_paid[msg.sender][token];
+            if (r.reward_per_token > paid) {
+                r.queued += amount.mulDiv(r.reward_per_token - paid, PRECISION) * STREAM_SCALE;
+                user_reward_per_token_paid[msg.sender][token] = r.reward_per_token;
+            }
+        }
         // Lowering total_staked without accruing first only re-spreads the not-yet-accrued slice over the
         // remaining stakers; liabilities still never exceed what was streamed, so solvency holds.
         staked[msg.sender] = 0;
