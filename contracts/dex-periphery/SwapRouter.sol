@@ -138,23 +138,32 @@ IERC223Recipient
         ERC7417TokenConverter = IERC7417TokenConverter(_converter);
     }
 
-    function tokenReceived(address _from, uint _value, bytes memory _data) public override lock returns (bytes4)
+    function tokenReceived(address _from, uint _value, bytes memory _data) public override returns (bytes4)
     {
-        depositERC223(_from, msg.sender, _value);
-        call_sender = _from;
-        token_sender = msg.sender;
         // D223 and the converter's ERC-223 wrappers pass four zero bytes, not empty bytes, as "no data" on a
         // plain `transfer(to, value)`. Dispatching that as selector 0x00000000 reverted every plain deposit.
         bool _noData = _data.length == 0 || (_data.length == 4 &&
             _data[0] == bytes1(0) && _data[1] == bytes1(0) && _data[2] == bytes1(0) && _data[3] == bytes1(0));
+        if (!unlocked) {
+            require(call_sender != address(0) && !erc223CallPermit && _noData, 'LOK');
+            if (msg.sender == token_sender) {
+                depositERC223(call_sender, msg.sender, _value);
+            }
+            return 0x8943ec02;
+        }
+        unlocked = false;
+        depositERC223(_from, msg.sender, _value);
+        call_sender = _from;
+        token_sender = msg.sender;
         if (!_noData)
         {
             // Standard ERC-223 swapping via ERC-20 pattern.
             // Authorise exactly one guarded call - the one encoded in `_data`.
             erc223CallPermit = true;
-            (bool success, bytes memory _data_) = address(this).delegatecall(_data);
+            (bool success, ) = address(this).delegatecall(_data);
+            bool consumed = !erc223CallPermit;
             erc223CallPermit = false; // clear it in case the payload never consumed it
-            require(success, "23F");
+            require(success && consumed, "23F");
 /*
             ERC223SwapStep memory encodedSwaps = abi.decode(_data, (ERC223SwapStep));
 
@@ -166,6 +175,7 @@ IERC223Recipient
         }
         delete(call_sender);
         delete(token_sender);
+        unlocked = true;
         return 0x8943ec02;
     }
 

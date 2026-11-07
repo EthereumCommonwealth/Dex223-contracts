@@ -48,6 +48,11 @@ interface IDex223Pool
     ) external returns (uint256 amountOut);
 }
 
+interface IDex223FactoryConverter
+{
+    function converter() external view returns (ITokenStandardConverter);
+}
+
 // WETH9 surface used by orderDepositWETH9: https://etherscan.io/address/0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2
 interface IWETH9
 {
@@ -565,6 +570,7 @@ contract MarginModule is IOrderParams
     function positionDeposit(uint256 positionId, address asset, uint256 idInWhitelist,  uint256 amount) public nonReentrant {
         _requirePositionOwner(positionId);
         require(amount > 0, "Deposit must exceed zero");
+        require(!_isCounterpart(asset, positions[positionId].assets[0]));
 
         _validateAsset(positionId, asset, idInWhitelist);
         _receiveAsset(asset, amount);
@@ -650,10 +656,11 @@ contract MarginModule is IOrderParams
         require(tokenlists[order.whitelist].tokens.length != 0, "Orders whitelist is empty");
 
         require(_collateralIdx < order.collateralAssets.length, "Collaterals error");
+        require(!_isCounterpart(order.collateralAssets[_collateralIdx], order.baseAsset), "Collaterals error");
         //address _collateralAsset = order.collateralAssets[_collateralIdx];  // Commented out to avoid "stack too deep" error.
                                                                               // Have to read order.collateralAssets[..] every time to bypass EVM limitations.
 
-        require(order.minLoan <= _amount, "Minloan error");
+        require(_amount > 0 && order.minLoan <= _amount, "Minloan error");
         require(order.balance >= _amount, "Balance error");
 
         // leverage validation:
@@ -942,7 +949,9 @@ contract MarginModule is IOrderParams
         address baseAsset = position.assets[0];
 
         for (uint256 i = 1; i < position.assets.length; i++) {
-            totalValueInBaseAsset += oracle.getAmountOut(baseAsset, position.assets[i], position.balances[i]);
+            totalValueInBaseAsset += _isCounterpart(position.assets[i], baseAsset)
+                ? position.balances[i]
+                : oracle.getAmountOut(baseAsset, position.assets[i], position.balances[i]);
         }
     }
 
@@ -1219,8 +1228,16 @@ contract MarginModule is IOrderParams
         return requiredAmount;
     }
 
+    function _isCounterpart(address a, address b) private view returns (bool) {
+        if (a == address(0) || b == address(0) || a == b) return false;
+        ITokenStandardConverter conv = IDex223FactoryConverter(address(factory)).converter();
+        if (address(conv) == address(0)) return false;
+        return conv.getERC223WrapperFor(a) == b || conv.getERC20WrapperFor(a) == b
+            || conv.getERC20OriginFor(a) == b || conv.getERC223OriginFor(a) == b;
+    }
+
     function _getEquivalentInBaseAsset(address asset, uint256 amount, address baseAsset, uint256 orderId) internal view returns(uint256 baseAmount) {
-        if (asset == baseAsset) {
+        if (asset == baseAsset || _isCounterpart(asset, baseAsset)) {
             baseAmount = amount;
         } else {
             Order storage order = orders[orderId];

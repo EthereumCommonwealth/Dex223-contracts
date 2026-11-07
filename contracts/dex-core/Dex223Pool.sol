@@ -238,12 +238,15 @@ contract Dex223Pool is IUniswapV3Pool, NoDelegateCall, PeripheryValidation {
         // `uniswapV3SwapCallback` on it, or to dispatch an arbitrary call through the delegatecall below.
         require(msg.sender == token0.erc223 || msg.sender == token1.erc223, 'IT');
 
+        bool _noData = _data.length == 0 || (_data.length == 4 &&
+            _data[0] == bytes1(0) && _data[1] == bytes1(0) && _data[2] == bytes1(0) && _data[3] == bytes1(0));
+
         // A pool short of an ERC-223 origin (such as D223) mid-delivery converts its ERC-20 wrapper through the
-        // converter, which pays the origin back with a plain ERC-223 transfer while the pool is still locked.
+        // converter, which pays the origin back with a plain ERC-223 transfer while the pool is still locked,
+        // and a mint/swap callback may likewise pay the pool in ERC-223 while locked.
         // Take that payment as a balance only: it opens no deposit, dispatches nothing and refunds nothing.
-        // Pool accounting reads balances, so nothing more is needed; any other sender still meets the lock.
         if (!slot0.unlocked) {
-            require(_from == address(converter), 'LOK');
+            require(slot0.sqrtPriceX96 != 0 && _noData, 'LOK');
             return 0x8943ec02;
         }
 
@@ -255,17 +258,18 @@ contract Dex223Pool is IUniswapV3Pool, NoDelegateCall, PeripheryValidation {
 
         swap_sender = _from;
         erc223deposit[_from][msg.sender] += _value;   // add token to user balance
-        if (_data.length != 0) {
+        if (!_noData) {
             // Authorise exactly one guarded call - the one encoded in `_data`. The permit is consumed by the
             // first guarded function entered, so the dispatched call cannot re-enter the pool afterwards.
             erc223CallPermit = true;
             (bool success, bytes memory _data_) = address(this).delegatecall(_data);
+            bool consumed = !erc223CallPermit;
             erc223CallPermit = false; // clear it in case the payload never consumed it
 
             delete(_data);
             // Surface the dispatched call's own reason (e.g. LIB: RECIPIENT_REJECTED); "23F" only when it gave none.
-            if (!success) {
-                if (_data_.length > 0) _bubbleRevert(_data_);
+            if (!success || !consumed) {
+                if (!success && _data_.length > 0) _bubbleRevert(_data_);
                 revert("23F");
             }
         }
