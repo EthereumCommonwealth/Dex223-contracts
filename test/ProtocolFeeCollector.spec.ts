@@ -213,5 +213,29 @@ describe('ProtocolFeeCollector', () => {
       await f.collector.setDefaultFeeProtocol(0, 10)
       expect(await f.collector.defaultFeeProtocol1()).to.eq(10)
     })
+
+    it('collectProtocol does not revert when one side has 1 wei protocol fee and an undeployed wrapper', async () => {
+      const f = await loadFixture(fx)
+      await f.pool.setFeeProtocol(4, 4)
+      await f.swap(expandTo18Decimals(1))
+      expect((await f.pool.protocolFees()).token0).to.be.gt(1n)
+
+      // First collection drains protocolFees.token0 down to the 1-wei gas-saving sentinel.
+      await f.pool.collectProtocol(f.revenue.target, type_uint128_max(), type_uint128_max(), false, false)
+      expect((await f.pool.protocolFees()).token0).to.eq(1n)
+
+      const [, token0Erc223] = await f.pool.token0()
+      expect(await ethers.provider.getCode(token0Erc223)).to.eq('0x')
+
+      // Now token0 has 1 wei in protocolFees (amount0 becomes 0 after amount0--) and its ERC-223 wrapper is undeployed.
+      // Calling collectProtocol with token0_223 = true must skip the 0-amount delivery instead of reverting.
+      await expect(
+        f.pool.collectProtocol(f.revenue.target, type_uint128_max(), type_uint128_max(), true, false)
+      ).to.not.be.reverted
+    })
   })
 })
+
+function type_uint128_max(): bigint {
+  return (1n << 128n) - 1n
+}
