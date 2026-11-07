@@ -462,6 +462,11 @@ contract Dex223AutoListing {
             safeTransfer(_token, msg.sender, _amount);
         }
     }
+
+    function tokenReceived(address, uint256, bytes calldata) external pure returns (bytes4)
+    {
+        return 0x8943ec02;
+    }
 }
 
 contract Dex223CoreAutoListing {
@@ -808,6 +813,11 @@ contract Dex223CoreAutoListing {
         } else {
             safeTransfer(_token, msg.sender, _amount);
         }
+    }
+
+    function tokenReceived(address, uint256, bytes calldata) external pure returns (bytes4)
+    {
+        return 0x8943ec02;
     }
 }
 
@@ -1158,5 +1168,10 @@ contract Dex223OwnableListing {
         } else {
             safeTransfer(_token, msg.sender, _amount);
         }
+    }
+
+    function tokenReceived(address, uint256, bytes calldata) external pure returns (bytes4)
+    {
+        return 0x8943ec02;
     }
 }

@@ -140,6 +140,10 @@ IERC223Recipient
 
     function tokenReceived(address _from, uint _value, bytes memory _data) public override lock returns (bytes4)
     {
+        uint256 codeSize;
+        assembly { codeSize := extcodesize(caller()) }
+        require(codeSize > 0, "SR: NOT_CONTRACT");
+        require(_value > 0, "SR: ZERO_VALUE");
         depositERC223(_from, msg.sender, _value);
         call_sender = _from;
         token_sender = msg.sender;

@@ -1311,6 +1311,10 @@ contract MarginModule is IOrderParams
         // call measures. Crediting them here too left a phantom erc223deposit[pool][token] that
         // nobody could withdraw and that misstated what the module held.
         if (!_entered) {
+            uint256 codeSize;
+            assembly { codeSize := extcodesize(caller()) }
+            require(codeSize > 0, "Not a contract");
+            require(value > 0, "Zero value");
             erc223deposit[user][msg.sender] += value;
         }
         return 0x8943ec02;

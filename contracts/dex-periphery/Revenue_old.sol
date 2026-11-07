@@ -166,6 +166,8 @@ contract Revenue {
 
     function tokenReceived(address user, uint256 value, bytes memory data) public returns (bytes4) {
         address token = msg.sender;
+        require(token == staking_token_erc20 || token == staking_token_erc223, "Unsupported token");
+        require(value > 0, "Zero value");
         erc223deposit[user][token] += value;
 
         return 0x8943ec02;
