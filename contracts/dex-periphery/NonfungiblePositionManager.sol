@@ -378,8 +378,10 @@ IERC223Recipient
     returns (uint256 amount0, uint256 amount1)
     {
         require(params.amount0Max > 0 || params.amount1Max > 0);
-        // allow collecting to the nft position manager address with address 0
-        //address recipient = params.recipient == address(0) ? address(this) : params.recipient;
+        // Uniswap maps recipient 0 to this contract so a multicall can unwrap or sweep afterwards.
+        // This manager has no sweep for ERC-20 or ERC-223, so anything collected here is stranded
+        // (and WETH9 would be claimable by anyone through unwrapWETH9). Refuse it instead.
+        require(params.recipient != address(0), 'Invalid recipient');
 
         uint8 tokensOut = params.tokensOutCode;
 
@@ -433,7 +435,7 @@ IERC223Recipient
 
         // the actual amounts collected are returned
         (amount0, amount1) = IDex223PoolActions(params.pool).collect(
-            params.recipient == address(0) ? address(this) : params.recipient,
+            params.recipient,
             position.tickLower,
             position.tickUpper,
             amount0Collect,
@@ -446,7 +448,7 @@ IERC223Recipient
         // instead of the actual amount so we can burn the token
         (position.tokensOwed0, position.tokensOwed1) = (tokensOwed0 - amount0Collect, tokensOwed1 - amount1Collect);
 
-        emit Collect(params.tokenId, params.recipient == address(0) ? address(this) : params.recipient, amount0Collect, amount1Collect);
+        emit Collect(params.tokenId, params.recipient, amount0Collect, amount1Collect);
     }
 
     /// @inheritdoc INonfungiblePositionManager
