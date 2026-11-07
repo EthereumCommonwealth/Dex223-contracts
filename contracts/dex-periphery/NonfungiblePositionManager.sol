@@ -115,22 +115,31 @@ IERC223Recipient
     }
 
     ERC223TransferInfo private tkn;
+    function _paymentPayer() internal view override returns (address) {
+        return tkn.sender != address(0) ? tkn.sender : msg.sender;
+    }
     function tokenReceived(address _from, uint _value, bytes memory _data) public override returns (bytes4)
     {
-        /**
-         * @dev Note that inside of the token transaction handler the actual sender of token transfer is accessible via the tkn.sender variable
-         * (analogue of msg.sender for Ether transfers)
-         *
-         * tkn.value - is the amount of transferred tokens
-         * tkn.data  - is the "metadata" of token transfer
-         * tkn.token_contract is most likely equal to msg.sender because the token contract typically invokes this function
-        */
+        require(msg.sender == WETH9 || Address.isContract(msg.sender), 'IT');
+        require(_value > 0, 'ZV');
         tkn.token_contract = msg.sender;
         tkn.sender         = _from;
         tkn.value          = _value;
         tkn.data           = _data;
 
         depositERC223(_from, msg.sender, _value);
+
+        bool _noData = _data.length == 0 || (_data.length == 4 &&
+            _data[0] == bytes1(0) && _data[1] == bytes1(0) && _data[2] == bytes1(0) && _data[3] == bytes1(0));
+        if (!_noData) {
+            (bool success, bytes memory ret) = address(this).delegatecall(_data);
+            if (!success) {
+                assembly {
+                    revert(add(ret, 32), mload(ret))
+                }
+            }
+        }
+        delete tkn;
 
         return 0x8943ec02;
     }

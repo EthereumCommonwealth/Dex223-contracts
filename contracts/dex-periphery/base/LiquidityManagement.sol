@@ -31,6 +31,10 @@ contract IDex223Pool
 /// @dev Security-hardened: pool existence checks, zero-liquidity guards,
 ///      clean local variable handling, and slippage protection
 abstract contract LiquidityManagement is IUniswapV3MintCallback, PeripheryImmutableState, PeripheryPayments {
+    function _paymentPayer() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
     struct MintCallbackData {
         PoolAddress.PoolKey poolKey;
         address payer;
@@ -124,7 +128,7 @@ abstract contract LiquidityManagement is IUniswapV3MintCallback, PeripheryImmuta
             params.tickLower,
             params.tickUpper,
             liquidity,
-            abi.encode(MintCallbackData({poolKey: poolKey, payer: msg.sender}))
+            abi.encode(MintCallbackData({poolKey: poolKey, payer: _paymentPayer()}))
         );
 
         require(amount0 >= params.amount0Min && amount1 >= params.amount1Min, 'Price slippage check');
