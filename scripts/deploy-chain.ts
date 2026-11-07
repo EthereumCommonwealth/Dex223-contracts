@@ -30,21 +30,25 @@
  *                this address (mainnet burned it). Burned instead when the chain entry names an existing
  *                ERC-7417 converter to reuse.
  *   nonce 1      AutoListingsRegistry (mainnet burned this nonce; Sepolia has a test token here).
- *   nonces 3-13  exactly mainnet's layout: poolLib, quoteLib, validator and factory at 3-6, factory.set at 7,
- *                router, position manager, quoter and both autolistings at 9-13. Same addresses as mainnet,
- *                but built from this checkout: the pool has changed since mainnet (#61), so POOL_INIT_CODE_HASH
- *                differs from mainnet's. Anything that derives pool addresses (UI, SDK, subgraph) must take
- *                the hash per chain; it is recorded as poolInitCodeHash in the state file.
+ *   nonces 3-9   mainnet's layout: poolLib, quoteLib, validator and factory at 3-6, factory.set at 7, router at
+ *                9. Same addresses as mainnet, but built from this checkout: the pool has changed since mainnet
+ *                (#61), so POOL_INIT_CODE_HASH differs from mainnet's. Anything that derives pool addresses
+ *                (UI, SDK, subgraph) must take the hash per chain; it is recorded as poolInitCodeHash in the
+ *                state file.
+ *   nonces 10-11 NFTDescriptor library, then NonfungibleTokenPositionDescriptor(wrapped native, native symbol)
+ *                linked to it (bounty #70). These two steps shift everything after them by two, so from here
+ *                the addresses no longer match mainnet's v1 layout.
+ *   nonces 12-15 position manager (with the descriptor), quoter and both autolistings.
  *   nonces 2, 8  burned with a zero-value self-transfer, as on mainnet.
- *   nonce 14     coreAutolisting.setPaymentPrice.
+ *   nonce 16     coreAutolisting.setPaymentPrice.
  * With WITH_D223=true (can run later, after the core deploy):
- *   nonce 15     D223Token, byte-identical to mainnet's. Its constructor mints the whole 8,000,000,000 D223
+ *   nonce 17     D223Token, byte-identical to mainnet's. Its constructor mints the whole 8,000,000,000 D223
  *                supply to the deployer; there is no mint function. The address cannot match mainnet's
  *                (Dexaran deployed that one from his own key), but it is the same on every new chain.
- *   nonce 16     converter.createERC20Wrapper(D223): D223's ERC-20 version, as on mainnet.
- *   nonce 17     RevenueV2(D223 ERC-20 version, D223, 7-day reward stream, 10-day lock, 1 D223 minimum),
+ *   nonce 18     converter.createERC20Wrapper(D223): D223's ERC-20 version, as on mainnet.
+ *   nonce 19     RevenueV2(D223 ERC-20 version, D223, 7-day reward stream, 10-day lock, 1 D223 minimum),
  *                the staking contract deploy-fee-collector.ts pays into.
- *   nonce 18     revenue.add_reward_token(wrapped native), so the most common fee token pays out from the
+ *   nonce 20     revenue.add_reward_token(wrapped native), so the most common fee token pays out from the
  *                start. More reward tokens are listed by the owner as pools appear.
  * EXPECTED pins the result; the script refuses any other layout. If the deployer has already been used on
  * the target chain, stop: the layout cannot be reproduced there.
@@ -58,6 +62,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import { CHAINS, Chain, listingPrice } from './chains'
 import { assertPoolHash } from './pool-hash'
+import { NFT_DESCRIPTOR_LIB_FQN, POSITION_DESCRIPTOR_FQN, descriptorLibraries, nativeCurrencyLabel } from './position-descriptor'
 
 const DEPLOYER = '0x9467a00F2DFBF392254133ff36c291c618dF6f54'
 const FEE_TIERS: [number, number][] = [[500, 10], [3000, 60], [10000, 200]]
@@ -78,7 +83,7 @@ const save = () => {
 }
 
 type Step =
-  | { kind: 'deploy'; key: string; fqn: string; args: () => any[] }
+  | { kind: 'deploy'; key: string; fqn: string; args: () => any[]; libraries?: () => Record<string, string> }
   | { kind: 'call'; key: string; send: (s: any, o: { nonce: bigint }) => Promise<any>; done: () => Promise<boolean> }
   | { kind: 'burn'; key: string } // zero-value self-transfer: consumes the nonce, creates nothing
 
@@ -91,12 +96,14 @@ const EXPECTED: Record<string, string> = {
   validator: '0x269Dac0FB22e207468e3D91a0d39088Ae9CaD7e6', //       nonce 5, same address as mainnet
   factory: '0xeA0A163e0196Bf1500B1B41d3ADdA0476dC137eb', //         nonce 6, same address as mainnet
   router: '0xc06C5F3a889DCDF23D54B4fB8FCE3DE2707199ED', //          nonce 9, same address as mainnet
-  positionManager: '0x2A40FF7c062336dC82A502aB38EBD3579e42BAE1', // nonce 10, same address as mainnet
-  quoter: '0x2C44c27a41BCE8BF679b306284d68C1245eE4c52', //          nonce 11, same address as mainnet
-  freeAutolisting: '0xCc46E110426958E83e9298d46a50572691065eC5', // nonce 12, same address as mainnet
-  coreAutolisting: '0x83E1e7f47536515db9Ec4D7C4024e7395CD11A48', // nonce 13, same address as mainnet
-  d223: '0x7219ebDfFD7EF54d3d1F1B7C174ce470f3825001', //            nonce 15, WITH_D223 only
-  revenue: '0xbA75fA26BB88BccEB74a967E4cA2FBfe99d6CE6e', //         nonce 17, WITH_D223 only
+  nftDescriptorLib: '0x2A40FF7c062336dC82A502aB38EBD3579e42BAE1', // nonce 10 (bounty #70: +2 from here)
+  positionDescriptor: '0x2C44c27a41BCE8BF679b306284d68C1245eE4c52', // nonce 11
+  positionManager: '0xCc46E110426958E83e9298d46a50572691065eC5', // nonce 12
+  quoter: '0x83E1e7f47536515db9Ec4D7C4024e7395CD11A48', //          nonce 13
+  freeAutolisting: '0xDcd52dE602C516dA25A608d2f3D308E93f14FBaD', // nonce 14
+  coreAutolisting: '0x7219ebDfFD7EF54d3d1F1B7C174ce470f3825001', // nonce 15
+  d223: '0xbA75fA26BB88BccEB74a967E4cA2FBfe99d6CE6e', //            nonce 17, WITH_D223 only
+  revenue: '0x984e217ddAE675d706509B02EedB2FAF2F6a342E', //         nonce 19, WITH_D223 only
 }
 const D223_KEYS = ['d223', 'revenue']
 
@@ -108,6 +115,8 @@ const FQN = {
   validator: 'contracts/dex-core/Dex223TokenValidator.sol:Dex223TokenValidator',
   factory: 'contracts/dex-core/Dex223Factory.sol:Dex223Factory',
   router: 'contracts/dex-periphery/SwapRouter.sol:ERC223SwapRouter',
+  nftDescriptorLib: NFT_DESCRIPTOR_LIB_FQN,
+  positionDescriptor: POSITION_DESCRIPTOR_FQN,
   positionManager: 'contracts/dex-periphery/NonfungiblePositionManager.sol:DexaransNonfungiblePositionManager',
   quoter: 'contracts/dex-periphery/lens/Quoter223.sol:ERC223Quoter',
   freeAutolisting: 'contracts/dex-core/Autolisting.sol:Dex223AutoListing',
@@ -164,7 +173,10 @@ function plan(addr: Record<string, string>): Step[] {
     },
     { kind: 'burn', key: 'burn nonce 8' },
     { kind: 'deploy', key: 'router', fqn: FQN.router, args: () => [addr.factory, WNATIVE, converter()] },
-    { kind: 'deploy', key: 'positionManager', fqn: FQN.positionManager, args: () => [addr.factory, WNATIVE] },
+    // The descriptor before the manager that points at it (see scripts/position-descriptor.ts).
+    { kind: 'deploy', key: 'nftDescriptorLib', fqn: FQN.nftDescriptorLib, args: () => [] },
+    { kind: 'deploy', key: 'positionDescriptor', fqn: FQN.positionDescriptor, args: () => [WNATIVE, nativeCurrencyLabel(chain.nativeSymbol)], libraries: () => descriptorLibraries(addr.nftDescriptorLib) },
+    { kind: 'deploy', key: 'positionManager', fqn: FQN.positionManager, args: () => [addr.factory, WNATIVE, addr.positionDescriptor] },
     { kind: 'deploy', key: 'quoter', fqn: FQN.quoter, args: () => [addr.factory, WNATIVE] },
     { kind: 'deploy', key: 'freeAutolisting', fqn: FQN.freeAutolisting, args: () => [addr.factory, addr.registry, 'Dex223 Free Auto-listing', 'https://app.dex223.io/'] },
     { kind: 'deploy', key: 'coreAutolisting', fqn: FQN.coreAutolisting, args: () => [addr.factory, addr.registry, converter(), 'Dex223 Core Autolisting', 'https://app.dex223.io/en/swap'] },
@@ -339,7 +351,8 @@ async function main() {
     process.stdout.write(`  send  [${nonce}] ${st.key} ...`)
     let receipt: any
     if (st.kind === 'deploy') {
-      const F = await ethers.getContractFactory(st.fqn, s)
+      const libraries = st.libraries?.()
+      const F = await ethers.getContractFactory(st.fqn, { signer: s, libraries })
       const c = await F.deploy(...st.args(), { nonce })
       receipt = await c.deploymentTransaction()!.wait(confirmations)
       const got = await c.getAddress()
@@ -348,6 +361,7 @@ async function main() {
       state[st.key] = got
       // What scripts/verify-etherscan.ts needs to verify this contract later.
       state[`fqn:${st.key}`] = st.fqn; state[`args:${st.key}`] = JSON.stringify(st.args())
+      if (libraries) state[`libs:${st.key}`] = JSON.stringify(libraries)
     } else if (st.kind === 'burn') {
       const tx = await s.sendTransaction({ to: DEPLOYER, value: 0n, nonce })
       receipt = await tx.wait(confirmations)
@@ -374,6 +388,8 @@ async function main() {
   for (const k of ['router', 'positionManager', 'quoter'] as const) {
     checks.push([`${k}.factory / wrapped native`, async () => { const x = await c(k); return eq(await x.factory(), addr.factory) && eq(await x.WETH9(), WNATIVE) }])
   }
+  checks.push(['positionDescriptor wrapped native / native symbol', async () => { const d = await c('positionDescriptor'); return eq(await d.WETH9(), WNATIVE) && (await d.nativeCurrencyLabel()) === chain.nativeSymbol }])
+  checks.push(['positionManager code carries positionDescriptor', async () => (await ethers.provider.getCode(addr.positionManager)).toLowerCase().includes(addr.positionDescriptor.slice(2).toLowerCase())])
   for (const k of ['freeAutolisting', 'coreAutolisting'] as const) {
     checks.push([`${k} factory / registry / owner`, async () => { const x = await c(k); return eq(await x.getFactory(), addr.factory) && eq(await x.getRegistry(), addr.registry) && eq(await x.owner(), DEPLOYER) }])
   }

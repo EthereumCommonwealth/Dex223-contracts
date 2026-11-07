@@ -99,19 +99,16 @@ IERC223Recipient
     /// @dev The ID of the next pool that is used for the first time. Skips 0
     uint80 private _nextPoolId = 1;
 
-    /// @dev The address of the token descriptor contract, which handles generating token URIs for position tokens
-    // address private immutable _tokenDescriptor;
-
-//    address public pool_lib;
+    /// @dev The token descriptor that renders tokenURI. Fixed at deployment: there is no setter, so
+    /// nobody can later point position metadata at another contract. address(0) means no metadata.
+    address private immutable _tokenDescriptor;
 
     constructor(
         address _factory,
-        address _WETH9 //,
-//        address _library//,
-    /* address _tokenDescriptor_ */
+        address _WETH9,
+        address _tokenDescriptor_
     ) ERC721Permit('Dex223 Positions NFT', 'DEX223-POS', '1') PeripheryImmutableState(_factory, _WETH9) {
-        // _tokenDescriptor = _tokenDescriptor_; removed during testing
-//        pool_lib = _library;
+        _tokenDescriptor = _tokenDescriptor_;
     }
 
     ERC223TransferInfo private tkn;
@@ -245,10 +242,17 @@ IERC223Recipient
         _;
     }
 
+    /// @dev Metadata comes from the descriptor set at deployment. The call is a view into a contract
+    /// that holds no funds, and any fault in it (a token with broken metadata, a rendering bug) is
+    /// caught so that wallets and marketplaces still get an answer instead of a revert.
     function tokenURI(uint256 tokenId) public view override(ERC721, IERC721Metadata) returns (string memory) {
         require(_exists(tokenId));
-        //return INonfungibleTokenPositionDescriptor(_tokenDescriptor).tokenURI(this, tokenId);
-        return "";
+        if (_tokenDescriptor == address(0)) return "";
+        try INonfungibleTokenPositionDescriptor(_tokenDescriptor).tokenURI(this, tokenId) returns (string memory uri) {
+            return uri;
+        } catch {
+            return "";
+        }
     }
 
     // save bytecode by removing implementation of unused method

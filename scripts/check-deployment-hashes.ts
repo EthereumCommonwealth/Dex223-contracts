@@ -14,6 +14,7 @@ import { ethers, artifacts } from 'hardhat'
 import * as fs from 'fs'
 import * as path from 'path'
 import { compiledPoolHash, declaredPoolHash } from './pool-hash'
+import { linkDeployedBytecode } from './position-descriptor'
 
 const STATE_FILE = process.env.STATE_FILE || fail('set STATE_FILE')
 const eq = (a: string, b: string) => a.toLowerCase() === b.toLowerCase()
@@ -52,8 +53,12 @@ async function main() {
     const onchain = await ethers.provider.getCode(addr)
     const art = await artifacts.readArtifact(fqn)
     const refs = await immutableRefs(fqn)
+    // A contract that links an external library (the position descriptor) has placeholders in its
+    // artifact, and a library (NFTDescriptor) carries its own address; the deploy script recorded the
+    // library addresses as `libs:<key>`.
+    const libs: Record<string, string> = st[`libs:${key}`] ? JSON.parse(st[`libs:${key}`]) : {}
     const a = mask(onchain, refs)
-    const b = mask(art.deployedBytecode, refs)
+    const b = mask(linkDeployedBytecode(art, libs, addr), refs)
     check(`${key.padEnd(16)} ${addr}`, a === b,
       a === b ? `keccak ${ethers.keccak256('0x' + a).slice(0, 18)}… (${a.length / 2} bytes, ${refs.length} immutable slots)`
         : `on-chain ${onchain.length / 2 - 1} bytes vs artifact ${art.deployedBytecode.length / 2 - 1}`)
@@ -104,6 +109,16 @@ async function main() {
   }
   for (const k of ['freeAutolisting', 'coreAutolisting']) {
     check(`${k}.getFactory == factory`, eq(await at(k, ['function getFactory() view returns (address)']).getFactory(), st.factory))
+  }
+  if (st.positionDescriptor) {
+    // The manager holds its descriptor in an immutable with no getter, so the value is read out of the
+    // immutable slots of its runtime code (the same slots the bytecode comparison above masks).
+    const code = await ethers.provider.getCode(st.positionManager)
+    const slots = (await immutableRefs(st['fqn:positionManager'])).map((r) => '0x' + code.slice(2 + 2 * (r.start + r.length - 20), 2 + 2 * (r.start + r.length)))
+    check('positionManager immutable tokenDescriptor == positionDescriptor', slots.some((s) => eq(s, st.positionDescriptor)))
+    const d = at('positionDescriptor', ['function WETH9() view returns (address)', 'function nativeCurrencyLabel() view returns (string)'])
+    check('positionDescriptor.WETH9 == weth9', eq(await d.WETH9(), st.weth9))
+    check('positionDescriptor native label', (await d.nativeCurrencyLabel()).length > 0, await d.nativeCurrencyLabel())
   }
   if (st.marginModule) {
     const mm = at('marginModule', ['function factory() view returns (address)', 'function router() view returns (address)', 'function priceOracle() view returns (address)'])

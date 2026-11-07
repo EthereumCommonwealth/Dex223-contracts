@@ -8,11 +8,16 @@
  *   - #140         margin oracle leaves thin slices of the window out of the TWAP (per-pair liquidity floor)
  *   - #141         router: sweepTokenWithFee removed
  *   - #142         pool: exact-output quote side, quote revert bubbling, swapExactInput amount guard. Changes
- *                  Dex223QuoteLib, so the quote library is deployed fresh; the pool library is still reused.
+ *                  Dex223QuoteLib, so the quote library is deployed fresh.
+ *   - #195         pool library: collectProtocol skips a delivery the 1-wei sentinel reduced to 0. Changes
+ *                  Dex223PoolLib, so the pool library is deployed fresh too.
+ *   - bounty #70   position manager renders tokenURI through a fixed NonfungibleTokenPositionDescriptor: the
+ *                  NFTDescriptor library and the descriptor linked to it are deployed just before the position
+ *                  manager, which takes the descriptor as its third constructor argument.
  * The pool hash changes, so the factory and every contract that derives or trusts pool addresses is new:
  * validator, factory, router, position manager, quoter, both autolistings, margin oracle and module, and the
- * protocol fee collector, which becomes the factory owner. The pool library, converter, WETH9, registry and
- * RevenueV2 are reused; a library is reused only if its deployed code is byte-identical to this checkout.
+ * protocol fee collector, which becomes the factory owner. Converter, WETH9, registry and RevenueV2 are reused;
+ * a pool library is reused only if its deployed code is byte-identical to this checkout (neither is, now).
  *
  * Same executor as scripts/deploy-mainnet-v2.ts: resumable, every address pinned by nonce, recovery from chain
  * state instead of resending, read-back checks at the end. Only the plan differs.
@@ -20,8 +25,12 @@
  * Mainnet layout. The deployer 0x9467 is also used on Sepolia (nonce 172 there), and a CREATE address depends
  * only on deployer and nonce, so a mainnet contract must not land on an address that holds a different
  * contract on Sepolia. Checked 2026-10-30: nonces 60-65 hold code on Sepolia (they carry zero-value burns);
- * 66-95 are permanently empty there (nonce already spent, no code), so the contracts go at 66-79 (66: quote library).
- * Sepolia uses its own deployer 0x1b30 (mainnet nonce 0). v4 went out at nonces 68-82; v5 starts at nonce 130.
+ * 66-95 are permanently empty there (nonce already spent, no code), so the contracts go at 66-82 (66-67: pool and quote
+ * libraries, not reused because #195 and #142 changed them; 72-73: NFTDescriptor and the position descriptor,
+ * bounty #70). Each added step moves every later pin, so the table is recomputed whenever the plan changes.
+ * Sepolia uses its own deployer 0x1b30 (mainnet nonce 0). v4 went out at nonces 68-82 and v5 at 130-145; the
+ * deployer's next free nonce was 161 on 2026-11-07, so this plan starts there. Re-check before a Sepolia run: the
+ * script refuses any other nonce, and if 0x1b30 has been used since, re-pin startNonce and the table.
  *
  * ALWAYS rehearse first, with this exact script, on a local anvil fork. Rehearsal impersonates the deployer,
  * so no key is used:
@@ -49,12 +58,16 @@ import * as fs from 'fs'
 import * as path from 'path'
 import { assertPoolHash } from './pool-hash'
 import { mined as minedOn } from './tx-wait'
+import { NFT_DESCRIPTOR_LIB_FQN, POSITION_DESCRIPTOR_FQN, descriptorLibraries, nativeCurrencyLabel } from './position-descriptor'
 
 const FQN = {
+  poolLib: 'contracts/dex-core/Dex223PoolLib.sol:Dex223PoolLib',
   quoteLib: 'contracts/dex-core/Dex223QuoteLib.sol:Dex223QuoteLib',
   validator: 'contracts/dex-core/Dex223TokenValidator.sol:Dex223TokenValidator',
   factory: 'contracts/dex-core/Dex223Factory.sol:Dex223Factory',
   router: 'contracts/dex-periphery/SwapRouter.sol:ERC223SwapRouter',
+  nftDescriptorLib: NFT_DESCRIPTOR_LIB_FQN,
+  positionDescriptor: POSITION_DESCRIPTOR_FQN,
   positionManager: 'contracts/dex-periphery/NonfungiblePositionManager.sol:DexaransNonfungiblePositionManager',
   quoter: 'contracts/dex-periphery/lens/Quoter223.sol:ERC223Quoter',
   coreAutolisting: 'contracts/dex-core/Autolisting.sol:Dex223CoreAutoListing',
@@ -82,9 +95,10 @@ type Chain = {
   burns: number // zero-value burns before the first deploy (address collisions with the other chain)
   converter: string
   weth9: string
+  nativeSymbol: string // the position descriptor's native currency label
   registry: string
   revenue: string
-  poolLib: string // reused: byte-identical to this checkout
+  poolLib?: string // reused if set (byte-identical); otherwise deployed first and pinned in `expected`
   quoteLib?: string // reused if set (byte-identical); otherwise deployed first and pinned in `expected`
   corePrices: [string, bigint][]
   sanity?: { token: string; wrapper223: string } // proves `converter` is the one the existing wrappers belong to
@@ -100,24 +114,28 @@ const MAINNET: Chain = {
   burns: 6,
   converter: '0xe7E969012557f25bECddB717A3aa2f4789ba9f9a',
   weth9: '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2',
+  nativeSymbol: 'ETH',
   registry: '0x105F43A70aFCEd0493545D04C1d5687DF4b3f48f',
   revenue: '0xFDE47dE2fe7c98688373b6D2F3BD628A5Da0Df3D',
-  poolLib: '0x11382596B063B5763401894B46DA94c2487C7b94',
-  // quoteLib 0x23B8 predates #142, so a new one is deployed at nonce 66.
+  // poolLib 0x1138 predates #195 (collectProtocol skips a 0-amount delivery), so a new one is deployed at nonce 66.
+  // quoteLib 0x23B8 predates #142, so a new one is deployed at nonce 67.
   corePrices: [['0xdAC17F958D2ee523a2206206994597C13D831ec7', 40_000_000n]], // 40 USDT, as on v2
   sanity: { token: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', wrapper223: '0xdc87CFa91A4D1A2CF0F74B8ebCE2c7FB1C00BD5e' },
   expected: {
-    quoteLib: '0x79aE0eA499bFE4005c50a8C5b1415dA828562dAe', //        nonce 66
-    validator: '0xf63E13865A3a7673f1b8DFf2018c0cfF04e5be1D', //       nonce 67
-    factory: '0x1Bb4862647C98f562847d0447c13bc0D67eAB376', //         nonce 68 (69: factory.set)
-    router: '0x03891b875D2e8EEbCAA6F2D325cD7b4013416307', //          nonce 70
-    positionManager: '0x5c730F8af871D368ee8a6a06fb148d8c0eAFeB23', // nonce 71
-    quoter: '0x45B6e38036D093c9877672f963EFB1F90E507a23', //          nonce 72
-    coreAutolisting: '0x6e33Df4cDC2989Da4327e80E78711F88AFCC1920', // nonce 73
-    freeAutolisting: '0xD752cF63EaaC2F7F2Bb9FDd483ecA13EBE576cA1', // nonce 74 (75: setPaymentPrice)
-    marginOracle: '0x6Ddd6640864171894D20D77e4Aa8b430724331F4', //    nonce 76
-    marginModule: '0x7e13B5BD1Ed486e6457bF347d69956D0836E3397', //    nonce 77
-    feeCollector: '0xb8Db8F4aD3C010118D0c232C73cB782E082EE162', //    nonce 78 (79: factory.setOwner)
+    poolLib: '0x79aE0eA499bFE4005c50a8C5b1415dA828562dAe', //         nonce 66
+    quoteLib: '0xf63E13865A3a7673f1b8DFf2018c0cfF04e5be1D', //        nonce 67
+    validator: '0x1Bb4862647C98f562847d0447c13bc0D67eAB376', //       nonce 68
+    factory: '0x7896DA16e55cF77aED31d18a1f0785DFe0922625', //         nonce 69 (70: factory.set)
+    router: '0x5c730F8af871D368ee8a6a06fb148d8c0eAFeB23', //          nonce 71
+    nftDescriptorLib: '0x45B6e38036D093c9877672f963EFB1F90E507a23', // nonce 72 (bounty #70)
+    positionDescriptor: '0x6e33Df4cDC2989Da4327e80E78711F88AFCC1920', // nonce 73
+    positionManager: '0xD752cF63EaaC2F7F2Bb9FDd483ecA13EBE576cA1', // nonce 74
+    quoter: '0x55eE7abbd68d8eBB62dA5bC9BE08E1b0F109868f', //          nonce 75
+    coreAutolisting: '0x6Ddd6640864171894D20D77e4Aa8b430724331F4', // nonce 76
+    freeAutolisting: '0x7e13B5BD1Ed486e6457bF347d69956D0836E3397', // nonce 77 (78: setPaymentPrice)
+    marginOracle: '0x46726544a9cb1FE30031991F0537d859238E9E35', //    nonce 79
+    marginModule: '0xeb51B5B4A44029D24dDeebDf921a06Acde176C01', //    nonce 80
+    feeCollector: '0x458979c2Ccd9E9aCf78b3cfBd2658d92176798fd', //    nonce 81 (82: factory.setOwner)
   },
 }
 
@@ -126,14 +144,15 @@ const SEPOLIA: Chain = {
   confirm: 'dex223-v5-sepolia',
   stateName: 'v5',
   deployer: '0x1b305f986F8015DB6B42fFb4D231C77B3d5Af982',
-  startNonce: 130n,
+  startNonce: 161n,
   burns: 0,
   converter: '0x5847f5C0E09182d9e75fE8B1617786F62fee0D9F',
   weth9: '0xb16F35c0Ae2912430DAc15764477E179D9B9EbEa',
+  nativeSymbol: 'ETH',
   registry: '0x6ee7518400c14e8046252E3cC1670FC8093e618F',
   revenue: '0xC107239bfe75382112034a269386Ef608aA80EC1',
-  poolLib: '0x11781d011183124eb1fFF1DF4d456A9c6eC9Bf09',
-  // quoteLib 0x9EE7 (v4) predates #142, so a new one is deployed at nonce 130.
+  // poolLib 0x1178 (v4/v5) predates #195, so a new one is deployed first (nonce 161).
+  // quoteLib 0x9EE7 (v4) predates #142, so a new one is deployed second (nonce 162).
   // Same prices as the v3 core autolisting: 100 wei of ETH, 1 RED, 14.5 TOT1.
   corePrices: [
     [ethers.ZeroAddress, 100n],
@@ -141,23 +160,27 @@ const SEPOLIA: Chain = {
     ['0x51a3F4b5fFA9125Da78b55ed201eFD92401604fa', 145n * 10n ** 17n],
   ],
   expected: {
-    // v4 (deployments/sepolia-v4.json) went out at nonces 68-82 from this deployer.
-    quoteLib: '0xAf4Af1a306b54968d2Acc66Df072A55082E888D3', //        nonce 130
-    validator: '0xCE863cA747954fc619A3125D4A03156f250448Df', //       nonce 131
-    factory: '0x186ac97b3c244D6ad931d14a73C48f3f2A97Fd12', //         nonce 132 (133: factory.set)
-    router: '0x65f52C3DC56f8B2A275C90d612815CEf6A8Ae3dc', //          nonce 134
-    positionManager: '0xd7Ea2a41341E9A0375566cd7400D2fEfe089B923', // nonce 135
-    quoter: '0x9C2427341A004057Ee5b758AE3a8160c80cca42E', //          nonce 136
-    coreAutolisting: '0x0ABCb3321e0d208A0D961a6ab199339389382c06', // nonce 137
-    freeAutolisting: '0x87D82638eAbA509832C6027CEC76CA7BDF0D415F', // nonce 138 (139-141: setPaymentPrice)
-    marginOracle: '0xB591c37e0a1467B36A5727379A9F37CC02065B22', //    nonce 142
-    marginModule: '0xBF667830418525ca10a56E30fa70F2Bc5Ae96891', //    nonce 143
-    feeCollector: '0x45230Ce44B02bF387d1613D0ea2101e8eb9C9AA2', //    nonce 144 (145: factory.setOwner)
+    // v4 went out at nonces 68-82 and v5 (deployments/sepolia-v5.json) at 130-145 from this deployer;
+    // 161 was its next free nonce on 2026-11-07.
+    poolLib: '0xfd70753f025D15061579B19cfffcD7313c22e894', //         nonce 161
+    quoteLib: '0x3F0D011D1Aa6237b344DC11f9cD20228f44B99BB', //        nonce 162
+    validator: '0xb277eA2AbE831Db79c51c404f67B540eC94e4d01', //       nonce 163
+    factory: '0xbdC7986B4C46F3629948f78a8F9942A88c111A86', //         nonce 164 (165: factory.set)
+    router: '0x6812B2784111B8b674773CC0F32b8a480563E71b', //          nonce 166
+    nftDescriptorLib: '0xc9655c833b9e32FC03ae2FDe5D8Ff14a537c8f97', // nonce 167 (bounty #70)
+    positionDescriptor: '0xc70bC334De71D389cabA9CA8C3E6cBCF1FaAEB25', // nonce 168
+    positionManager: '0x461AFb20bB4b8f330608Ea582E13B1a6A749A4D0', // nonce 169
+    quoter: '0x5c2eEB7D37DF54463BFDd61645FbC9E402d4319d', //          nonce 170
+    coreAutolisting: '0x6BB287ab1a02Aa8Bb43Ed98D3Bb1DE824E062b35', // nonce 171
+    freeAutolisting: '0xD46566B0682dccD55BBfCAF45C848086143F5a14', // nonce 172 (173-175: setPaymentPrice)
+    marginOracle: '0x4859265CDBf63767569A76ab3FE22050008e4354', //    nonce 176
+    marginModule: '0x05860334EAC4915fa678FCFa3e012d8c79641D18', //    nonce 177
+    feeCollector: '0x44f9b4Dfa9AAF2F94C373b4B1d8fb356937b5C90', //    nonce 178 (179: factory.setOwner)
   },
 }
 
 type Step =
-  | { kind: 'deploy'; key: Key; args: () => any[] }
+  | { kind: 'deploy'; key: Key; args: () => any[]; libraries?: () => Record<string, string> }
   | { kind: 'call'; key: string; send: (s: any, o: { nonce: bigint }) => Promise<any>; done: () => Promise<boolean> }
   | { kind: 'burn'; key: string } // zero-value self-transfer: consumes the nonce, creates nothing
 
@@ -169,7 +192,9 @@ function plan(c: Chain, addr: Record<string, string>): Step[] {
   const at = (key: Key) => ethers.getContractAt(FQN[key], addr[key]) as Promise<any>
   const steps: Step[] = []
   for (let i = 0; i < c.burns; i++) steps.push({ kind: 'burn', key: `burn nonce ${c.startNonce + BigInt(i)}` })
+  if (!c.poolLib) steps.push({ kind: 'deploy', key: 'poolLib', args: () => [] })
   if (!c.quoteLib) steps.push({ kind: 'deploy', key: 'quoteLib', args: () => [] })
+  const poolLib = () => c.poolLib ?? addr.poolLib
   const quoteLib = () => c.quoteLib ?? addr.quoteLib
   steps.push(
     { kind: 'deploy', key: 'validator', args: () => [] },
@@ -177,14 +202,18 @@ function plan(c: Chain, addr: Record<string, string>): Step[] {
     {
       // Straight after the factory: until this runs, createPool reverts (LIB_NOT_SET).
       kind: 'call', key: 'factory.set(poolLib, quoteLib, converter)',
-      send: async (s, o) => (await at('factory')).connect(s).set(c.poolLib, quoteLib(), c.converter, o),
+      send: async (s, o) => (await at('factory')).connect(s).set(poolLib(), quoteLib(), c.converter, o),
       done: async () => {
         const f = await at('factory')
-        return eq(await f.pool_lib(), c.poolLib) && eq(await f.quote_lib(), quoteLib()) && eq(await f.converter(), c.converter)
+        return eq(await f.pool_lib(), poolLib()) && eq(await f.quote_lib(), quoteLib()) && eq(await f.converter(), c.converter)
       },
     },
     { kind: 'deploy', key: 'router', args: () => [addr.factory, c.weth9, c.converter] },
-    { kind: 'deploy', key: 'positionManager', args: () => [addr.factory, c.weth9] },
+    // The descriptor before the manager that points at it: the manager's tokenURI reaches it through an
+    // external call, which is not a catchable revert while the address has no code.
+    { kind: 'deploy', key: 'nftDescriptorLib', args: () => [] },
+    { kind: 'deploy', key: 'positionDescriptor', args: () => [c.weth9, nativeCurrencyLabel(c.nativeSymbol)], libraries: () => descriptorLibraries(addr.nftDescriptorLib) },
+    { kind: 'deploy', key: 'positionManager', args: () => [addr.factory, c.weth9, addr.positionDescriptor] },
     { kind: 'deploy', key: 'quoter', args: () => [addr.factory, c.weth9] },
     { kind: 'deploy', key: 'coreAutolisting', args: () => [addr.factory, c.registry, c.converter, 'Dex223 Core Autolisting', 'https://app.dex223.io/en/swap'] },
     { kind: 'deploy', key: 'freeAutolisting', args: () => [addr.factory, c.registry, 'Dex223 Free Auto-listing', 'https://app.dex223.io/'] },
@@ -264,8 +293,9 @@ async function preflight(c: Chain, state: Record<string, string>) {
     if (!eq(await conv.getERC223WrapperFor(c.sanity.token), c.sanity.wrapper223)) fail('converter does not know the expected ERC-223 wrapper: wrong converter address')
   }
   // A reused pool library must be exactly this checkout's code: the new pools delegatecall into it. A library
-  // that is not reused (quoteLib unset) is deployed by the plan instead.
-  const reused: [string, string, string][] = [['poolLib', c.poolLib, POOL_LIB_FQN]]
+  // that is not reused (unset) is deployed by the plan instead.
+  const reused: [string, string, string][] = []
+  if (c.poolLib) reused.push(['poolLib', c.poolLib, POOL_LIB_FQN])
   if (c.quoteLib) reused.push(['quoteLib', c.quoteLib, QUOTE_LIB_FQN])
   for (const [n, a, fqn] of reused) {
     if ((await ethers.provider.getCode(a)).toLowerCase() !== (await artifacts.readArtifact(fqn)).deployedBytecode.toLowerCase()) {
@@ -359,7 +389,8 @@ async function main() {
     process.stdout.write(`  send  [${nonce}] ${st.key} ...`)
     let receipt: any
     if (st.kind === 'deploy') {
-      const F = await ethers.getContractFactory(FQN[st.key], s)
+      const libraries = st.libraries?.()
+      const F = await ethers.getContractFactory(FQN[st.key], { signer: s, libraries })
       const dep = await F.deploy(...st.args(), { nonce })
       receipt = await mined(dep.deploymentTransaction()!.hash, confirmations)
       const got = await dep.getAddress()
@@ -368,6 +399,7 @@ async function main() {
       state[st.key] = got
       // What scripts/verify-etherscan.ts and check-deployment-hashes.ts need later.
       state[`fqn:${st.key}`] = FQN[st.key]; state[`args:${st.key}`] = JSON.stringify(st.args())
+      if (libraries) state[`libs:${st.key}`] = JSON.stringify(libraries)
     } else if (st.kind === 'burn') {
       receipt = await mined((await s.sendTransaction({ to: c.deployer, value: 0n, nonce })).hash, confirmations)
     } else {
@@ -379,7 +411,7 @@ async function main() {
     console.log(` ok  block ${receipt.blockNumber}  gas ${receipt.gasUsed.toLocaleString()}`)
   }
   // Recorded so check-deployment-hashes.ts can compare the reused libraries too.
-  state.poolLib = c.poolLib; state['fqn:poolLib'] = POOL_LIB_FQN; state['args:poolLib'] = '[]'
+  state.poolLib = c.poolLib ?? addr.poolLib; state['fqn:poolLib'] = POOL_LIB_FQN; state['args:poolLib'] = '[]'
   state.quoteLib = c.quoteLib ?? addr.quoteLib; state['fqn:quoteLib'] = QUOTE_LIB_FQN; state['args:quoteLib'] = '[]'
   state.validator = addr.validator; state.factory = addr.factory
   state.marginFactory = addr.factory; state.marginRouter = addr.router
@@ -393,9 +425,12 @@ async function main() {
   const checks: [string, () => Promise<boolean>][] = [
     ['factory.owner == feeCollector', async () => eq(await f.owner(), addr.feeCollector)],
     ['factory.tokenValidator', async () => eq(await f.tokenValidator(), addr.validator)],
-    ['factory.pool_lib / quote_lib / converter', async () => eq(await f.pool_lib(), c.poolLib) && eq(await f.quote_lib(), c.quoteLib ?? addr.quoteLib) && eq(await f.converter(), c.converter)],
+    ['factory.pool_lib / quote_lib / converter', async () => eq(await f.pool_lib(), c.poolLib ?? addr.poolLib) && eq(await f.quote_lib(), c.quoteLib ?? addr.quoteLib) && eq(await f.converter(), c.converter)],
     ...FEE_TIERS.map(([fee, spacing]): [string, () => Promise<boolean>] => [`fee tier ${fee} -> spacing ${spacing}`, async () => BigInt(await f.feeAmountTickSpacing(fee)) === BigInt(spacing)]),
     ...(['router', 'positionManager', 'quoter'] as const).map((k): [string, () => Promise<boolean>] => [`${k}.factory / WETH9`, async () => { const x = await ct(k); return eq(await x.factory(), addr.factory) && eq(await x.WETH9(), c.weth9) }]),
+    ['positionDescriptor WETH9 / native label', async () => { const d = await ct('positionDescriptor'); return eq(await d.WETH9(), c.weth9) && (await d.nativeCurrencyLabel()) === c.nativeSymbol }],
+    // The manager keeps the descriptor in an immutable with no getter: its runtime code must carry the address.
+    ['positionManager code carries positionDescriptor', async () => (await ethers.provider.getCode(addr.positionManager)).toLowerCase().includes(addr.positionDescriptor.slice(2).toLowerCase())],
     ...(['freeAutolisting', 'coreAutolisting'] as const).map((k): [string, () => Promise<boolean>] => [`${k} factory / registry / owner`, async () => { const x = await ct(k); return eq(await x.getFactory(), addr.factory) && eq(await x.getRegistry(), c.registry) && eq(await x.owner(), c.deployer) }]),
     ['coreAutolisting prices', async () => { const p: any[] = await (await ct('coreAutolisting')).getPrices(); return c.corePrices.every(([t, v]) => p.some((q) => eq(q[0], t) && BigInt(q[1]) === v)) }],
     ['marginOracle.factory', async () => eq(await (await ct('marginOracle')).factory(), addr.factory)],

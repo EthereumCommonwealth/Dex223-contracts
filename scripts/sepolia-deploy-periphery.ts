@@ -9,6 +9,7 @@ import { ethers, network } from 'hardhat'
 import fs from 'fs'
 import path from 'path'
 import { assertPoolHash, recordedPoolHash } from './pool-hash'
+import { descriptorLibraries, nativeCurrencyLabel } from './position-descriptor'
 
 const STATE = process.env.STATE_FILE || path.join(process.cwd(), '.sepolia-final-state.json')
 const WETH9 = process.env.WETH9 || '0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14' // canonical Sepolia WETH9
@@ -23,27 +24,33 @@ async function main() {
   // Refuse before deploying anything unless this build's pools are the pools this factory creates.
   console.log(`pool hash: ${await assertPoolHash(recordedPoolHash(network.name, state.factory))}`)
 
-  const deployOnce = async (key: string, name: string, args: any[]) => {
+  const deployOnce = async (key: string, name: string, args: any[], libraries?: Record<string, string>) => {
     if (state[key]) { console.log(`  reuse  ${name.padEnd(30)} ${state[key]}`); return state[key] }
     process.stdout.write(`  deploy ${name.padEnd(30)} ...`)
-    const f = await ethers.getContractFactory(name)
+    const f = await ethers.getContractFactory(name, { libraries })
     const c = await f.deploy(...args)
     await c.waitForDeployment()
     const addr = await c.getAddress()
     state[key] = addr
+    if (libraries) state[`libs:${key}`] = JSON.stringify(libraries)
     fs.writeFileSync(STATE, JSON.stringify(state, null, 2))
     console.log(` ${addr}`)
     return addr
   }
 
   const router = await deployOnce('router', 'ERC223SwapRouter', [state.factory, WETH9, state.converter])
-  const nfpm = await deployOnce('nfpm', 'DexaransNonfungiblePositionManager', [state.factory, WETH9])
+  // The descriptor before the manager that points at it (see scripts/position-descriptor.ts).
+  const nftDescriptorLib = await deployOnce('nftDescriptorLib', 'NFTDescriptor', [])
+  const positionDescriptor = await deployOnce('positionDescriptor', 'NonfungibleTokenPositionDescriptor', [WETH9, nativeCurrencyLabel('ETH')], descriptorLibraries(nftDescriptorLib))
+  const nfpm = await deployOnce('nfpm', 'DexaransNonfungiblePositionManager', [state.factory, WETH9, positionDescriptor])
 
   state.weth9 = WETH9
   fs.writeFileSync(STATE, JSON.stringify(state, null, 2))
 
   console.log('\nperiphery ready:')
   console.log(`  SwapRouter (ERC223SwapRouter)          ${router}`)
+  console.log(`  NFTDescriptor (library)                ${nftDescriptorLib}`)
+  console.log(`  NonfungibleTokenPositionDescriptor     ${positionDescriptor}`)
   console.log(`  NonfungiblePositionManager             ${nfpm}`)
   console.log(`  WETH9                                  ${WETH9}`)
 }
