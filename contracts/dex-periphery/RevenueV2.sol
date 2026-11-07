@@ -415,6 +415,7 @@ contract RevenueV2 {
     }
 
     function transfer_ownership(address new_owner) external onlyOwner {
+        require(new_owner != address(0), 'Zero owner');
         pending_owner = new_owner;
         emit OwnershipTransferStarted(owner, new_owner);
     }

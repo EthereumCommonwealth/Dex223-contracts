@@ -24,7 +24,7 @@ contract Dex223TokenValidator {
         address pool_lib,
         address quote_lib,
         address _converter
-    ) external pure {
+    ) external view {
         require(tokenA_erc20 != tokenB_erc20, "FACTORY: IDENTICAL_ERC20");
         require(tokenA_erc223 != tokenB_erc223, "FACTORY: IDENTICAL_ERC223");
         require(tokenA_erc20 != address(0), "FACTORY: ZERO_TOKEN_A_ERC20");
@@ -33,11 +33,21 @@ contract Dex223TokenValidator {
         require(tokenB_erc223 != address(0), "FACTORY: ZERO_TOKEN_B_ERC223");
 
         // Prevent pool creation before the factory is fully configured. If pool_lib/quote_lib are zero
-        // the pool's delegatecall-based functions (swap, mint, burn, collect) silently succeed and do
-        // nothing, leaving a permanently broken pool that blocks future creation for the same pair+fee.
+        // or have no deployed bytecode, the pool's delegatecall-based functions (swap, mint, burn, collect)
+        // silently succeed and do nothing, leaving a permanently broken pool that blocks future creation
+        // for the same pair+fee.
         require(pool_lib != address(0), "FACTORY: LIB_NOT_SET");
         require(quote_lib != address(0), "FACTORY: QUOTE_NOT_SET");
         require(_converter != address(0), "FACTORY: CONVERTER_NOT_SET");
+        uint256 libSize;
+        uint256 quoteSize;
+        uint256 convSize;
+        assembly {
+            libSize := extcodesize(pool_lib)
+            quoteSize := extcodesize(quote_lib)
+            convSize := extcodesize(_converter)
+        }
+        require(libSize > 0 && quoteSize > 0 && convSize > 0, "FACTORY: NO_CODE");
 
         // Prevent address overlaps between the ERC-20 and ERC-223 sides. getPool is populated in every
         // direction, so an address serving as both standards would produce conflicting entries.

@@ -297,6 +297,7 @@ contract D223Token {
     function newOwner(address _owner) external
     {
         require(msg.sender == owner);
+        require(_owner != address(0));
         pending_owner = _owner;
     }
 
@@ -304,5 +305,6 @@ contract D223Token {
     {
         require(msg.sender == pending_owner);
         owner = pending_owner;
+        pending_owner = address(0);
     }
 }
