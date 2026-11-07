@@ -69,11 +69,20 @@ async function isVerified(chainId: bigint, apikey: string, address: string) {
   return r.status === '1' && typeof r.result?.[0]?.SourceCode === 'string' && r.result[0].SourceCode !== ''
 }
 
-async function verifyOne(chainId: bigint, apikey: string, key: string, address: string, fqn: string, args: any[]) {
+async function verifyOne(chainId: bigint, apikey: string, key: string, address: string, fqn: string, args: any[], libs: Record<string, string>) {
   if (await isVerified(chainId, apikey, address)) return 'already verified'
 
   const artifact = await artifacts.readArtifact(fqn)
-  if (Object.keys(artifact.linkReferences).length) fail(`${fqn} links external libraries; not supported here`)
+  // A contract that links external libraries (the position descriptor links NFTDescriptor) is verified
+  // with the library addresses the deploy script recorded as `libs:<key>`; Etherscan takes up to ten.
+  const linked = Object.values(artifact.linkReferences).flatMap((byFile) => Object.keys(byFile))
+  const libraryParams: Record<string, string> = {}
+  linked.forEach((name, i) => {
+    const libAddress = libs[name] ?? fail(`${key}: ${fqn} links library ${name} but the state file has no libs:${key} entry for it`)
+    libraryParams[`libraryname${i + 1}`] = name
+    libraryParams[`libraryaddress${i + 1}`] = libAddress
+  })
+  if (linked.length > 10) fail(`${key}: ${fqn} links ${linked.length} libraries; Etherscan accepts at most 10`)
   const build = (await artifacts.getBuildInfo(fqn)) ?? fail(`no build-info for ${fqn}: run npx hardhat compile`)
 
   // The deployed runtime code must be what this build produces, or Etherscan will reject it anyway.
@@ -93,6 +102,7 @@ async function verifyOne(chainId: bigint, apikey: string, key: string, address: 
     contractname: fqn,
     compilerversion: `v${build.solcLongVersion}`,
     constructorArguements: new ethers.Interface(artifact.abi).encodeDeploy(args).slice(2), // sic: Etherscan's spelling
+    ...libraryParams,
   }
 
   // A freshly deployed contract can take a minute to be indexed; retry until Etherscan accepts the job.
@@ -147,7 +157,7 @@ async function main() {
   for (const key of keys) {
     const address = state[key] || fail(`${key}: no address in state`)
     try {
-      const outcome = await verifyOne(chainId, apikey, key, address, state[`fqn:${key}`], JSON.parse(state[`args:${key}`] ?? '[]'))
+      const outcome = await verifyOne(chainId, apikey, key, address, state[`fqn:${key}`], JSON.parse(state[`args:${key}`] ?? '[]'), JSON.parse(state[`libs:${key}`] ?? '{}'))
       console.log(`  ${outcome.padEnd(16)} ${key.padEnd(18)} ${address}`)
     } catch (e: any) {
       console.log(`  FAILED           ${key.padEnd(18)} ${address}  ${e.message}`); bad++
