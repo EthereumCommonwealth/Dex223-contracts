@@ -778,6 +778,15 @@ describe('NonfungiblePositionManager', () => {
       ).to.be.reverted // With('Not approved')
     })
 
+    it('refuses recipient address(0): the manager cannot sweep, so the tokens would be stranded', async () => {
+      const positions = await nft.positions(tokenId)
+      const pool = await factory.getPool(positions.token0, positions.token1, positions.fee)
+      const params = { pool, tokenId, recipient: ethers.ZeroAddress, amount0Max: MaxUint128, amount1Max: MaxUint128, tokensOutCode: 0n }
+      await expect(nft.connect(other).collect(params)).to.be.revertedWith('Invalid recipient')
+      // The same call with a real recipient goes through.
+      await expect(nft.connect(other).collect({ ...params, recipient: other.address })).to.not.be.reverted
+    })
+
     it('rejects a pool the manager holds positions in that is not this NFT\'s pool', async () => {
       // A second pool for the same pair at a different fee, with a position minted through the manager,
       // so the manager genuinely knows it. Collecting token 1 against it must still be refused.
