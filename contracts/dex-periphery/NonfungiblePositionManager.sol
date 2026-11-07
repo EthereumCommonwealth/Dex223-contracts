@@ -267,6 +267,7 @@ IERC223Recipient
     )
     {
         Position storage position = _positions[params.tokenId];
+        require(position.poolId != 0);
 
         PoolAddress.PoolKey memory poolKey = _poolIdToPoolKey[position.poolId];
 
@@ -420,6 +421,15 @@ IERC223Recipient
             params.amount0Max > tokensOwed0 ? tokensOwed0 : params.amount0Max,
             params.amount1Max > tokensOwed1 ? tokensOwed1 : params.amount1Max
         );
+
+        if (params.recipient == address(0)) {
+            PoolAddress.PoolKey memory poolKey = _poolIdToPoolKey[position.poolId];
+            require(
+                tokensOut == 0 &&
+                    (amount0Collect == 0 || poolKey.token0 == WETH9) &&
+                    (amount1Collect == 0 || poolKey.token1 == WETH9)
+            );
+        }
 
 
         // 0 = both ERC-20
