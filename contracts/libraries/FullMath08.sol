@@ -60,4 +60,16 @@ library FullMath08 {
             return result;
         }
     }
+
+    /// @notice ceil(a * b / denominator) with full precision. Reverts if the result overflows uint256
+    ///         or denominator == 0.
+    function mulDivRoundingUp(uint256 a, uint256 b, uint256 denominator) internal pure returns (uint256 result) {
+        unchecked {
+            result = mulDiv(a, b, denominator);
+            if (mulmod(a, b, denominator) > 0) {
+                require(result < type(uint256).max);
+                result++;
+            }
+        }
+    }
 }

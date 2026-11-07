@@ -10,6 +10,14 @@ library TransferHelper {
     /// @param from The originating address from which the tokens will be transferred
     /// @param to The destination address of the transfer
     /// @param value The amount to be transferred
+    function _hasCode(address account) private view returns (bool) {
+        uint256 size;
+        assembly {
+            size := extcodesize(account)
+        }
+        return size > 0;
+    }
+
     function safeTransferFrom(
         address token,
         address from,
@@ -18,7 +26,7 @@ library TransferHelper {
     ) internal {
         (bool success, bytes memory data) =
             token.call(abi.encodeWithSelector(IERC20.transferFrom.selector, from, to, value));
-        require(success && (data.length == 0 || abi.decode(data, (bool))), 'STF');
+        require(success && (data.length == 0 ? _hasCode(token) : (data.length >= 32 && abi.decode(data, (bool)))), 'STF');
     }
 
     /// @notice Transfers tokens from msg.sender to a recipient
@@ -32,7 +40,7 @@ library TransferHelper {
         uint256 value
     ) internal {
         (bool success, bytes memory data) = token.call(abi.encodeWithSelector(IERC20.transfer.selector, to, value));
-        require(success && (data.length == 0 || abi.decode(data, (bool))), 'ST');
+        require(success && (data.length == 0 ? _hasCode(token) : (data.length >= 32 && abi.decode(data, (bool)))), 'ST');
     }
 
     /// @notice Approves the stipulated contract to spend the given allowance in the given token
@@ -46,7 +54,7 @@ library TransferHelper {
         uint256 value
     ) internal {
         (bool success, bytes memory data) = token.call(abi.encodeWithSelector(IERC20.approve.selector, to, value));
-        require(success && (data.length == 0 || abi.decode(data, (bool))), 'SA');
+        require(success && (data.length == 0 ? _hasCode(token) : (data.length >= 32 && abi.decode(data, (bool)))), 'SA');
     }
 
     /// @notice Transfers ETH to the recipient address
