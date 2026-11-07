@@ -229,6 +229,7 @@ contract Revenue {
     // wait out the claim delay.
     function withdrawDeposit(address _token) public nonReentrant
     {
+        require(msg.sender != address(this), "Self withdrawal");
         uint256 _amount = erc223deposit[msg.sender][_token];
         require(_amount != 0, "Nothing deposited");
         erc223deposit[msg.sender][_token] = 0;

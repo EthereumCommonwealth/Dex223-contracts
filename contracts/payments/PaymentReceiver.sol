@@ -134,7 +134,7 @@ contract PaymentReceiver is IERC223Recipient {
         address to,
         uint256 amount
     ) external onlyOwner {
-        require(to != address(0), 'ZERO_TO');
+        require(to != address(0) && to != address(this), 'ZERO_TO');
         require(amount > 0, 'ZERO_AMOUNT');
         uint256 balance = IERC223(token).balanceOf(address(this));
         uint256 owed = credited[token];

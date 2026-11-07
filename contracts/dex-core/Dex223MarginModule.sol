@@ -518,7 +518,7 @@ contract MarginModule is IOrderParams
     }
 
     function orderDepositToken(uint256 _orderId, uint256 amount) public nonReentrant onlyOrderOwner(_orderId) {
-        _requireOrderOpen(_orderId);
+        require(orders[_orderId].collateralAssets.length > 0 && order_status[_orderId].alive, "Order is not active");
         require(orders[_orderId].baseAsset != address(0));
 
         _receiveAsset(orders[_orderId].baseAsset, amount);
@@ -1318,6 +1318,7 @@ contract MarginModule is IOrderParams
 
     // @audit-fix V1: nonReentrant guard on ERC-223 withdrawals
     function withdraw223(address asset) public nonReentrant {
+        require(msg.sender != address(this));
         uint256 amount = erc223deposit[msg.sender][asset]; 
         require(amount > 0, "No ERC223 deposit");
 
