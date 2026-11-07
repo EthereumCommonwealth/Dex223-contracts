@@ -319,6 +319,8 @@ contract Dex223AutoListing {
 
     function checkListing(address _token_erc20, address _token_erc223) internal
     {
+        // One address cannot be both versions of a token (from PR #190 by cyczzhao-lab).
+        require(_token_erc20 != _token_erc223, "Identical token addresses");
 
         // There are two possible scenarios here:
         // 1. We are listing a new token on Dex223.
@@ -354,8 +356,8 @@ contract Dex223AutoListing {
             require(
                 (!isListed(_token_erc20)  || listed_tokens[_token_erc20]  == _id) &&
                 (!isListed(_token_erc223) || listed_tokens[_token_erc223] == _id) &&
-                (_token_erc20  == address(0) || _listed.erc20  == address(0) || _listed.erc20  == _token_erc20) &&
-                (_token_erc223 == address(0) || _listed.erc223 == address(0) || _listed.erc223 == _token_erc223),
+                (_token_erc20  == address(0) || ((_listed.erc20  == address(0) || _listed.erc20  == _token_erc20)  && _listed.erc223 != _token_erc20)) &&
+                (_token_erc223 == address(0) || ((_listed.erc223 == address(0) || _listed.erc223 == _token_erc223) && _listed.erc20  != _token_erc223)),
                 "Listing pair mismatch"
             );
             if (_token_erc20 != address(0)) {
@@ -675,6 +677,8 @@ contract Dex223CoreAutoListing {
 
     function checkListing(address _token_erc20, address _token_erc223) internal
     {
+        // One address cannot be both versions of a token (from PR #190 by cyczzhao-lab).
+        require(_token_erc20 != _token_erc223, "Identical token addresses");
 
         // There are two possible scenarios here:
         // 1. We are listing a new token on Dex223.
@@ -710,8 +714,8 @@ contract Dex223CoreAutoListing {
             require(
                 (!isListed(_token_erc20)  || listed_tokens[_token_erc20]  == _id) &&
                 (!isListed(_token_erc223) || listed_tokens[_token_erc223] == _id) &&
-                (_token_erc20  == address(0) || _listed.erc20  == address(0) || _listed.erc20  == _token_erc20) &&
-                (_token_erc223 == address(0) || _listed.erc223 == address(0) || _listed.erc223 == _token_erc223),
+                (_token_erc20  == address(0) || ((_listed.erc20  == address(0) || _listed.erc20  == _token_erc20)  && _listed.erc223 != _token_erc20)) &&
+                (_token_erc223 == address(0) || ((_listed.erc223 == address(0) || _listed.erc223 == _token_erc223) && _listed.erc20  != _token_erc223)),
                 "Listing pair mismatch"
             );
             if (_token_erc20 != address(0)) {
@@ -1015,6 +1019,8 @@ contract Dex223OwnableListing {
 
     function checkListing(address _token_erc20, address _token_erc223) internal
     {
+        // One address cannot be both versions of a token (from PR #190 by cyczzhao-lab).
+        require(_token_erc20 != _token_erc223, "Identical token addresses");
 
         // There are two possible scenarios here:
         // 1. We are listing a new token on Dex223.
@@ -1050,8 +1056,8 @@ contract Dex223OwnableListing {
             require(
                 (!isListed(_token_erc20)  || listed_tokens[_token_erc20]  == _id) &&
                 (!isListed(_token_erc223) || listed_tokens[_token_erc223] == _id) &&
-                (_token_erc20  == address(0) || _listed.erc20  == address(0) || _listed.erc20  == _token_erc20) &&
-                (_token_erc223 == address(0) || _listed.erc223 == address(0) || _listed.erc223 == _token_erc223),
+                (_token_erc20  == address(0) || ((_listed.erc20  == address(0) || _listed.erc20  == _token_erc20)  && _listed.erc223 != _token_erc20)) &&
+                (_token_erc223 == address(0) || ((_listed.erc223 == address(0) || _listed.erc223 == _token_erc223) && _listed.erc20  != _token_erc223)),
                 "Listing pair mismatch"
             );
             if (_token_erc20 != address(0)) {

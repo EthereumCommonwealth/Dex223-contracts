@@ -1086,6 +1086,31 @@ describe('MarginModule', () => {
       await expect(c.mm.positionDeposit(0, c.third.target, 0, expandTo18Decimals(1))).to.be.reverted
       await expect(c.mm.positionDeposit(0, c.third.target, 1, expandTo18Decimals(1))).to.be.reverted
     })
+
+    it('positionDeposit refuses a whitelisted asset the oracle cannot price, and still takes base top-ups', async () => {
+      const c = await loadFixture(fx)
+      await c.seedPool() // base/collat only: no pool prices third against the base asset
+      const list = [c.base.target.toString(), c.collat.target.toString(), c.third.target.toString()]
+      await c.mm.addTokenlist(list, false)
+      await c.mm.createOrder({ ...c.orderParams, whitelistId: await predictTokenListsID(list, false) })
+      await c.mm.setOrderStatus(0, true)
+      await c.base.approve(c.mm.target, ethers.MaxUint256)
+      await c.collat.approve(c.mm.target, ethers.MaxUint256)
+      await c.third.approve(c.mm.target, ethers.MaxUint256)
+      await c.mm.orderDepositToken(0, expandTo18Decimals(100))
+      await c.mm.takeLoan(0, expandTo18Decimals(1), 0, expandTo18Decimals(1))
+
+      // An unpriceable holding would leave the position impossible to value, close or liquidate.
+      await expect(c.mm.positionDeposit(0, c.third.target, 2, expandTo18Decimals(1))).to.be.revertedWith('Oracle: no pool found')
+      expect((await c.mm.getPositionAssets(0)).length).to.eq(2)
+      // The base asset needs no price, and priced assets are still accepted.
+      await c.mm.positionDeposit(0, c.base.target, 0, expandTo18Decimals(1))
+      await c.mm.positionDeposit(0, c.collat.target, 1, expandTo18Decimals(1))
+      // Once a pool can price it, the same deposit goes through.
+      await c.seedThirdPool()
+      await c.mm.positionDeposit(0, c.third.target, 2, expandTo18Decimals(1))
+      expect((await c.mm.getPositionAssets(0)).length).to.eq(3)
+    })
   })
 
   describe('ERC-223 assets in a position', () => {
