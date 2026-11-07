@@ -379,10 +379,13 @@ describe('Oracle (TWAP)', () => {
     })
 
     it('only the owner sets the floor, and ownership moves in two steps', async () => {
-      const { oracle, a, b, other } = await loadFixture(fx)
+      const { oracle, a, b, other, seed } = await loadFixture(fx)
       const [t0, t1] = a.target < b.target ? [a.target, b.target] : [b.target, a.target]
       await expect(oracle.connect(other).setMinLiquidity(a.target, b.target, 5)).to.be.revertedWith('Oracle: not owner')
       await expect(oracle.setMinLiquidity(a.target, a.target, 5)).to.be.revertedWith('Oracle: bad pair')
+      // Without a pool the ERC-20 addresses of the pair cannot be told apart from the ERC-223 ones.
+      await expect(oracle.setMinLiquidity(a.target, b.target, 5)).to.be.revertedWith('Oracle: no pool for pair')
+      await seed()
       await expect(oracle.setMinLiquidity(b.target, a.target, 5)).to.emit(oracle, 'MinLiquidityUpdated').withArgs(t0, t1, 5)
       expect(await oracle.minLiquidity(t0, t1)).to.eq(5n)
 

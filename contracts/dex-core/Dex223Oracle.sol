@@ -106,19 +106,29 @@ contract Oracle {
     /// @notice Set the liquidity a slice must average for `tokenA`/`tokenB` to count towards the
     ///         price. Choose it below the pair's honest full-range liquidity (so no honest slice is
     ///         ever left out) and above anything a dust position would add.
+    /// @dev Either version of each token may be passed: the floor is keyed by the pair's ERC-20
+    ///      addresses as the pool reports them, which is how getTwap and _findPool read it. The pair
+    ///      needs a pool, otherwise there is no way to tell the ERC-20 addresses from the ERC-223
+    ///      ones and a floor stored under ERC-223 addresses would never be read.
     function setMinLiquidity(address tokenA, address tokenB, uint128 _minLiquidity) external onlyOwner {
         require(tokenA != tokenB && tokenA != address(0) && tokenB != address(0), "Oracle: bad pair");
-        (address token0, address token1) = tokenA < tokenB ? (tokenA, tokenB) : (tokenB, tokenA);
-        for (uint256 i = 0; i < NUM_FEE_TIERS; i++) {
-            address pool = factory.getPool(token0, token1, _feeTier(i));
-            if (pool != address(0)) {
-                (token0, ) = IDex223PoolTokens(pool).token0();
-                (token1, ) = IDex223PoolTokens(pool).token1();
-                break;
-            }
+        address pool;
+        for (uint256 i = 0; i < NUM_FEE_TIERS && pool == address(0); i++) {
+            pool = factory.getPool(tokenA, tokenB, _feeTier(i));
         }
+        require(pool != address(0), "Oracle: no pool for pair");
+        (address token0, ) = IDex223PoolTokens(pool).token0();
+        (address token1, ) = IDex223PoolTokens(pool).token1();
         minLiquidity[token0][token1] = _minLiquidity;
         emit MinLiquidityUpdated(token0, token1, _minLiquidity);
+    }
+
+    /// @dev minLiquidity of `pool`'s pair, keyed by the pool's ERC-20 addresses. Callers may name a
+    ///      pair by either version of each token, so the key must come from the pool.
+    function _pairFloor(address pool) internal view returns (uint128) {
+        (address t0, ) = IDex223PoolTokens(pool).token0();
+        (address t1, ) = IDex223PoolTokens(pool).token1();
+        return minLiquidity[t0][t1];
     }
 
     // @audit-info: Helper to return fee tier by index (replaces mutable storage array).
@@ -177,10 +187,8 @@ contract Oracle {
     ///      valued, opened, closed or liquidated until a slice does.
     function getTwap(address poolAddress) public view returns (int24 tick, uint128 liquidity) {
         require(poolAddress != address(0), "Oracle: zero pool");
-        (address t0, ) = IDex223PoolTokens(poolAddress).token0();
-        (address t1, ) = IDex223PoolTokens(poolAddress).token1();
         bool ok;
-        (ok, tick, liquidity) = _twap(poolAddress, minLiquidity[t0][t1]);
+        (ok, tick, liquidity) = _twap(poolAddress, _pairFloor(poolAddress));
         require(ok, "Oracle: no liquidity in window");
     }
 
@@ -313,7 +321,7 @@ contract Oracle {
         secondsAgos[1] = 0;
         (, uint160[] memory secondsPerLiquidityCumulativeX128s) = IUniswapV3Pool(poolAddress).observe(secondsAgos);
         uint160 delta = secondsPerLiquidityCumulativeX128s[1] - secondsPerLiquidityCumulativeX128s[0];
-        if (delta == 0) return type(uint128).max;
+        if (delta == 0) return 0;
         uint192 secondsAgoX160 = uint192(twapWindow) * type(uint160).max;
         return uint128(secondsAgoX160 / (uint192(delta) << 32));
     }
@@ -339,6 +347,11 @@ contract Oracle {
         require(tokenB != address(0), "Oracle: zero address tokenB");
 
         (address token0, address token1) = tokenA < tokenB ? (tokenA, tokenB) : (tokenB, tokenA);
+        // The floor is keyed by the pair's ERC-20 addresses, and tokenA/tokenB may be either
+        // version of each token, so it is read from the first candidate pool (every fee tier of a
+        // pair holds the same tokens). Keying it by the caller's addresses left ERC-223 and mixed
+        // queries with no floor at all. max = not read yet.
+        uint256 floor = type(uint256).max;
 
         for (uint256 i = 0; i < NUM_FEE_TIERS; i++) {
             address pool = factory.getPool(token0, token1, _feeTier(i));
@@ -346,13 +359,12 @@ contract Oracle {
             // gained liquidity but has no history would otherwise win the selection and then
             // revert every valuation with "OLD", which would block liquidations.
             if (pool != address(0) && poolCanServeWindow(pool)) {
-                (address t0, ) = IDex223PoolTokens(pool).token0();
-                (address t1, ) = IDex223PoolTokens(pool).token1();
+                if (floor == type(uint256).max) floor = _pairFloor(pool);
                 // Ranked by liquidity averaged over the kept slices of the window (getTwap), not by
                 // liquidity() right now. Spot liquidity can be added and removed within one
                 // transaction, which let anyone steer the valuation to a thin pool whose TWAP they
                 // had skewed. A pool none of whose slices count is not a candidate.
-                (bool ok, int24 poolTick, uint128 poolLiquidity) = _twap(pool, minLiquidity[t0][t1]);
+                (bool ok, int24 poolTick, uint128 poolLiquidity) = _twap(pool, uint128(floor));
                 if (ok && poolLiquidity >= liquidity) {
                     liquidity = poolLiquidity;
                     poolAddress = pool;
