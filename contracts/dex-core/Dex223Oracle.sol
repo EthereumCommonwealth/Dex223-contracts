@@ -244,11 +244,15 @@ contract Oracle {
 
     // sell token1, buy token0
     function getPrice(address poolAddress, address buy, address sell) public view returns(uint256, bool) {
+        require(buy != sell, "Oracle: identical tokens");
+        bool buyIsToken0 = _isToken0(poolAddress, buy);
+        bool sellIsToken0 = _isToken0(poolAddress, sell);
+        require(buyIsToken0 != sellIsToken0, "Oracle: invalid pair");
         uint160 sqrtPriceX96 = getSqrtPriceX96(poolAddress);
         uint256 priceX96 = uint256(sqrtPriceX96) * uint256(sqrtPriceX96);
 
         // if buy token0 rather than token1, need to invert the price
-        bool needToInverse = !_isToken0(poolAddress, sell);
+        bool needToInverse = !sellIsToken0;
 
         return (priceX96, needToInverse);
     }
@@ -293,7 +297,10 @@ contract Oracle {
     /// @dev True when `token` is either version of `pool`'s token0.
     function _isToken0(address pool, address token) internal view returns (bool) {
         (address t0_20, address t0_223) = IDex223PoolTokens(pool).token0();
-        return token == t0_20 || token == t0_223;
+        if (token == t0_20 || token == t0_223) return true;
+        (address t1_20, address t1_223) = IDex223PoolTokens(pool).token1();
+        require(token == t1_20 || token == t1_223, "Oracle: token not in pool");
+        return false;
     }
 
     /// @notice Harmonic mean of `poolAddress`'s in-range liquidity over the whole last `twapWindow`
