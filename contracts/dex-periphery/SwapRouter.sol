@@ -138,8 +138,14 @@ IERC223Recipient
         ERC7417TokenConverter = IERC7417TokenConverter(_converter);
     }
 
-    function tokenReceived(address _from, uint _value, bytes memory _data) public override lock returns (bytes4)
+    function tokenReceived(address _from, uint _value, bytes memory _data) public override returns (bytes4)
     {
+        if (!unlocked) {
+            require(call_sender != address(0) && !erc223CallPermit, 'LOK');
+            depositERC223(call_sender, msg.sender, _value);
+            return 0x8943ec02;
+        }
+        unlocked = false;
         depositERC223(_from, msg.sender, _value);
         call_sender = _from;
         token_sender = msg.sender;
@@ -166,6 +172,7 @@ IERC223Recipient
         }
         delete(call_sender);
         delete(token_sender);
+        unlocked = true;
         return 0x8943ec02;
     }
 

@@ -37,6 +37,7 @@ library PoolAddress {
     /// @return pool The contract address of the V3 pool
     function computeAddress(address factory, PoolKey memory key) internal pure returns (address pool) {
         require(factory != address(0), 'PA: ZERO_FACTORY');
+        require(key.token0 != address(0), 'PA: ZERO_ADDRESS');
         require(key.token0 < key.token1, 'PA: UNSORTED');
         pool = address(
             uint160(
