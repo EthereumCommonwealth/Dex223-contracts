@@ -78,6 +78,13 @@ contract MarginModule is IOrderParams
     // 1 + 10000 / MAINTENANCE_MARGIN_BPS (11x at 10%); marginSwap() keeps the same rule, so an owner
     // cannot trade into the buffer either.
     uint256 public constant MAINTENANCE_MARGIN_BPS = 1000;
+    // A lender may raise its order's buffer up to this (50%), never below the default.
+    uint256 constant private MAX_MAINTENANCE_MARGIN_BPS = 5000;
+    // Once a position is worth less than its debt, any sale realizes a loss for the lender. For this
+    // long after that is first seen, only the lender (or the keeper it names) may complete the
+    // liquidation, so the lender decides between taking the loss now and waiting for the price;
+    // afterwards anyone may, so a position cannot stay frozen if the lender is away.
+    uint256 constant private LENDER_WINDOW = 24 hours;
     uint256 constant private INTEREST_RATE_PRECISION = 10000;
     IDex223Factory public factory;
     ISwapRouter public router;
@@ -99,6 +106,12 @@ contract MarginModule is IOrderParams
     // summed per order. The order balance only ever receives what a sale actually returned, so this
     // is the lender's realised loss; see LiquidationShortfall for the per-position figure.
     mapping (uint256 => uint256)  public orderShortfall;
+    // Per-order maintenance margin in basis points; 0 means MAINTENANCE_MARGIN_BPS.
+    mapping (uint256 => uint256)  public orderMaintenanceMarginBps;
+    // Address the lender allows to complete loss liquidations during LENDER_WINDOW.
+    mapping (uint256 => address)  public orderLiquidationKeeper;
+    // When liquidate() first saw the position worth less than its debt; 0 while it is not.
+    mapping (uint256 => uint256)  public positionUnderwaterSince;
 
     uint256 public orderIndex;
     uint256 public positionIndex;
@@ -114,7 +127,7 @@ contract MarginModule is IOrderParams
     bool private _entered;
 
     modifier nonReentrant() {
-        require(!_entered, "REENTRANCY");
+        require(!_entered, "MM01");
         _entered = true;
         _;
         _entered = false;
@@ -332,14 +345,14 @@ contract MarginModule is IOrderParams
     constructor(address _factory, address _router, address _priceOracle) {
         uint256 oracleCodeSize;
         assembly { oracleCodeSize := extcodesize(_priceOracle) }
-        require(oracleCodeSize > 0, "Oracle has no code");
+        require(oracleCodeSize > 0, "MM02");
         factory = IDex223Factory(_factory);
         router = ISwapRouter(_router);
         priceOracle = _priceOracle;
     }
 
     function _requirePriceOracle(address _oracle) private view {
-        require(_oracle == priceOracle, "Unsupported oracle");
+        require(_oracle == priceOracle, "MM03");
     }
 
     // NOTE: deliberately no `receive()`. Every ETH inflow already arrives through a payable entry
@@ -360,11 +373,6 @@ contract MarginModule is IOrderParams
         return orders[_orderId].collateralAssets;
     }
     
-    function predictTokenListsID(address[] calldata tokens, bool isContract) public pure returns(bytes32) {
-        bytes32 _hash = keccak256(abi.encode(isContract, tokens));
-        return _hash;
-    }
-
     function addTokenlist(address[] calldata tokens, bool isContract) public returns(bytes32) {
         //tokenlists.push(list);
         bytes32 _hash = keccak256(abi.encode(isContract, tokens));
@@ -436,11 +444,27 @@ contract MarginModule is IOrderParams
     
     function orderSetCollaterals(uint256 _orderId, address[] calldata collateral) public onlyOrderOwner(_orderId) {
         Order storage order = orders[_orderId];
-        require(order_status[_orderId].positions == 0, "Order has active positions");
-        require(collateral.length > 0, "Order needs a collateral");
+        require(order_status[_orderId].positions == 0, "MM04");
+        require(collateral.length > 0, "MM05");
 
         order.collateralAssets = collateral;
         emit OrderCollateralsSet(_orderId, collateral);
+    }
+
+    /// @notice Lender protection for an order: its maintenance margin (0 = the default 10 percent,
+    /// else 10-50 percent; only while the order has no open positions, so live loans keep their terms)
+    /// and the keeper allowed to complete loss liquidations during LENDER_WINDOW (address(0) = none).
+    function orderSetLenderProtection(uint256 _orderId, uint256 _maintenanceMarginBps, address _keeper)
+        public onlyOrderOwner(_orderId)
+    {
+        if (_maintenanceMarginBps != orderMaintenanceMarginBps[_orderId]) {
+            require(order_status[_orderId].positions == 0, "MM36");
+            // 0 (the default) or 10-50 percent: subtracting the floor wraps 1-999 above the range.
+            require(_maintenanceMarginBps == 0
+                || _maintenanceMarginBps - MAINTENANCE_MARGIN_BPS <= MAX_MAINTENANCE_MARGIN_BPS - MAINTENANCE_MARGIN_BPS, "MM37");
+            orderMaintenanceMarginBps[_orderId] = _maintenanceMarginBps;
+        }
+        orderLiquidationKeeper[_orderId] = _keeper;
     }
 
     function setOrderStatus(uint256 _orderId, bool _status) public onlyOrderOwner(_orderId)
@@ -464,7 +488,7 @@ contract MarginModule is IOrderParams
             onlyOrderOwner(_orderId)
     {
         Order storage order = orders[_orderId];
-        require(order_status[_orderId].positions == 0, "Order has active positions");
+        require(order_status[_orderId].positions == 0, "MM04");
         _requirePriceOracle(_oracle);
 
         order.whitelist     = _whitelist;
@@ -526,7 +550,7 @@ contract MarginModule is IOrderParams
         emit OrderDeposit(_orderId, orders[_orderId].baseAsset, amount);
     }
 
-    function isOrderOpen(uint256 id) public view returns(bool) {
+    function isOrderOpen(uint256 id) internal view returns(bool) {
         Order storage order = orders[id];
         ( , , uint32 deadline) = getOrderExpirationData(id);
         bool isActivated = order.collateralAssets.length > 0;
@@ -537,11 +561,11 @@ contract MarginModule is IOrderParams
 
     /// @dev One copy of each check instead of one per entry point; modifiers inline their body.
     function _requireOrderOpen(uint256 id) internal view {
-        require(isOrderOpen(id), "Order is expired");
+        require(isOrderOpen(id), "MM06");
     }
 
     function _requirePositionOwner(uint256 id) internal view {
-        require(positions[id].owner == msg.sender, "Not position owner");
+        require(positions[id].owner == msg.sender, "MM07");
     }
 
     // @audit-fix V7: nonReentrant guard, and a balance check that carries a reason.
@@ -553,7 +577,7 @@ contract MarginModule is IOrderParams
     // lender out of their own uncommitted funds for as long as any position stays open, and it
     // breaks the existing guard-release test, which withdraws while two positions are live.
     function orderWithdraw(uint256 _orderId, uint256 amount) public nonReentrant onlyOrderOwner(_orderId) {
-        require(orders[_orderId].balance >= amount, "Insufficient order balance");
+        require(orders[_orderId].balance >= amount, "MM08");
 
         orders[_orderId].balance -= amount;
         _transferOut(orders[_orderId].baseAsset, amount, msg.sender);
@@ -564,7 +588,7 @@ contract MarginModule is IOrderParams
     // TODO: Anyone can deposit funds to a position, not only the owner of the position.
     function positionDeposit(uint256 positionId, address asset, uint256 idInWhitelist,  uint256 amount) public nonReentrant {
         _requirePositionOwner(positionId);
-        require(amount > 0, "Deposit must exceed zero");
+        require(amount > 0, "MM09");
 
         _validateAsset(positionId, asset, idInWhitelist);
         _receiveAsset(asset, amount);
@@ -647,22 +671,22 @@ contract MarginModule is IOrderParams
         _requireOrderOpen(_orderId);
 
         Order storage order = orders[_orderId];
-        require(tokenlists[order.whitelist].tokens.length != 0, "Orders whitelist is empty");
+        require(tokenlists[order.whitelist].tokens.length != 0, "MM10");
 
-        require(_collateralIdx < order.collateralAssets.length, "Collaterals error");
+        require(_collateralIdx < order.collateralAssets.length, "MM11");
         //address _collateralAsset = order.collateralAssets[_collateralIdx];  // Commented out to avoid "stack too deep" error.
                                                                               // Have to read order.collateralAssets[..] every time to bypass EVM limitations.
 
-        require(order.minLoan <= _amount, "Minloan error");
-        require(order.balance >= _amount, "Balance error");
+        require(order.minLoan <= _amount, "MM12");
+        require(order.balance >= _amount, "MM13");
 
         // leverage validation:
         // (collateral + loaned_asset) / collateral <= order.leverage
         // Checked as a multiplication so nothing is truncated: the old integer division rounded
         // the ratio down, so a 3x order accepted (collateral + loan) up to just under 4x collateral.
         uint256 collateralEquivalentInBaseAsset = _getEquivalentInBaseAsset(order.collateralAssets[_collateralIdx], _collateralAmount, order.baseAsset, _orderId);
-        require(collateralEquivalentInBaseAsset > 0, "Collateral error");
-        require(collateralEquivalentInBaseAsset + _amount <= uint256(order.leverage) * collateralEquivalentInBaseAsset, "Leverage error");
+        require(collateralEquivalentInBaseAsset > 0, "MM14");
+        require(collateralEquivalentInBaseAsset + _amount <= uint256(order.leverage) * collateralEquivalentInBaseAsset, "MM15");
 
         address[] memory _assets;
         uint256[] memory _balances;
@@ -722,7 +746,7 @@ contract MarginModule is IOrderParams
             // Deposit collateral
             // In case the collateral asset is Ether
             if (order.collateralAssets[_collateralIdx] == address(0)) {
-                require(receivedEth >= _collateralAmount, "ETH reception error");
+                require(receivedEth >= _collateralAmount, "MM16");
                 receivedEth -= _collateralAmount;
             // or ERC-20
             } else {
@@ -733,7 +757,7 @@ contract MarginModule is IOrderParams
             // In case the reward asset is Ether
             (uint256 rewardAmount, address rewardAsset, ) = getOrderExpirationData(_orderId);
             if (rewardAsset == address(0)) {
-                require(receivedEth >= rewardAmount, "ETH reward reception error");
+                require(receivedEth >= rewardAmount, "MM17");
                 receivedEth -= rewardAmount;
             // or ERC-20
             } else {
@@ -742,14 +766,14 @@ contract MarginModule is IOrderParams
 
             // Whatever was not consumed as collateral or reward would otherwise stay in the
             // contract with no one able to claim it.
-            require(receivedEth == 0, "Excess ETH");
+            require(receivedEth == 0, "MM18");
         }
 
         // Make sure position is not subject to liquidation right after it was created.
         // Revert otherwise.
         // This automatically checks if all the collateral that was paid satisfies the criteria set by the lender.
 
-        require(!subjectToLiquidation(_positionId), "Position opens liquidatable");
+        require(!subjectToLiquidation(_positionId), "MM19");
 
         // Increment the amount of active positions associated with the parent order,
         // we are tracking the active positions to make sure that the Order owner
@@ -794,7 +818,7 @@ contract MarginModule is IOrderParams
     /// the borrowed funds into a pool they control at any price and walk away with the loan, leaving
     /// the lender with only the collateral.
     function _requireSolventAfterSwap(uint256 _positionId) internal view {
-        require(!subjectToLiquidation(_positionId), "Swap makes position liquidatable");
+        require(!subjectToLiquidation(_positionId), "MM20");
     }
 
     function _marginSwapInternal(
@@ -899,7 +923,7 @@ contract MarginModule is IOrderParams
         uint256 balInBefore = IERC20Minimal(_asset1).balanceOf(address(this));
         uint256 amountOut = _execute223Swap(pool, _asset1, _asset2, _feeTier, _amount);
         require(amountOut > 0);
-        require(amountOut >= _minAmountOut, "Too little received");
+        require(amountOut >= _minAmountOut, "MM21");
         uint256 amountInUsed = balInBefore - IERC20Minimal(_asset1).balanceOf(address(this));
 
         // add new (received) asset to Position
@@ -955,20 +979,25 @@ contract MarginModule is IOrderParams
     /// @dev The holdings value below which a position with this debt is liquidatable: the debt plus
     /// the maintenance margin, rounded up so `value < threshold` means exactly
     /// `value * 10000 < debt * (10000 + MAINTENANCE_MARGIN_BPS)`.
-    function _liquidationThreshold(uint256 requiredAmount) internal pure returns (uint256) {
-        return (requiredAmount * (10000 + MAINTENANCE_MARGIN_BPS) + 9999) / 10000;
+    function _liquidationThreshold(uint256 orderId, uint256 requiredAmount) internal view returns (uint256) {
+        return (requiredAmount * (10000 + _maintenanceMarginBps(orderId)) + 9999) / 10000;
+    }
+
+    function _maintenanceMarginBps(uint256 orderId) internal view returns (uint256 bps) {
+        bps = orderMaintenanceMarginBps[orderId];
+        if (bps == 0) bps = MAINTENANCE_MARGIN_BPS;
     }
 
     function subjectToLiquidation(uint256 positionId) public view returns (bool) {
         (uint256 requiredAmount, uint256 totalValueInBaseAsset) = _positionValue(positionId);
-        return totalValueInBaseAsset < _liquidationThreshold(requiredAmount);
+        return totalValueInBaseAsset < _liquidationThreshold(positions[positionId].orderId, requiredAmount);
     }
 
     function subjectToLiquidationExtended(uint256 positionId) public view returns (bool _subjectToLiquidation, address liquidator, uint256 frozenTimestamp, bool liquidated, uint256 insolvensy_expected_time)
     {
         Position storage position = positions[positionId];
         (uint256 requiredAmount, uint256 totalValueInBaseAsset) = _positionValue(positionId);
-        uint256 threshold = _liquidationThreshold(requiredAmount);
+        uint256 threshold = _liquidationThreshold(position.orderId, requiredAmount);
 
         // insolvensy_expected_time is the moment interest alone would make the position
         // liquidatable at today's prices. 0 means "never": an interest-free loan (or an empty one)
@@ -978,7 +1007,7 @@ contract MarginModule is IOrderParams
         // The threshold grows (10000 + MAINTENANCE_MARGIN_BPS) / 10000 times as fast as the debt.
         if(totalValueInBaseAsset > threshold && position.interest > 0 && position.initialBalance > 0)
         {
-            uint256 _insolvency_time_delta = ((totalValueInBaseAsset - threshold) * 10000 * 10000 * 30 days) / (position.interest * position.initialBalance * (10000 + MAINTENANCE_MARGIN_BPS));
+            uint256 _insolvency_time_delta = ((totalValueInBaseAsset - threshold) * 10000 * 10000 * 30 days) / (position.interest * position.initialBalance * (10000 + _maintenanceMarginBps(position.orderId)));
             insolvensy_expected_time = _insolvency_time_delta + block.timestamp;
         }
         return (totalValueInBaseAsset < threshold, position.liquidator, position.frozenTime, !position.open, insolvensy_expected_time);
@@ -1005,17 +1034,38 @@ contract MarginModule is IOrderParams
     // @audit-fix V1, V6: nonReentrant guard + strict frozen time comparison.
     //   Previously `frozenTime < block.timestamp` could be true in the same block
     //   if a miner manipulates timestamp. Now we require at least 1 full second to pass.
+    /// @dev subjectToLiquidation(), plus recording when the position is first seen worth less than
+    /// its debt (cleared when it is seen above it again), which starts LENDER_WINDOW.
+    function _requireLiquidatable(uint256 positionId) internal {
+        (uint256 debt, uint256 value) = _positionValue(positionId);
+        require(value < _liquidationThreshold(positions[positionId].orderId, debt), "MM23");
+        if (value >= debt) positionUnderwaterSince[positionId] = 0;
+        else if (positionUnderwaterSince[positionId] == 0) positionUnderwaterSince[positionId] = block.timestamp;
+    }
+
+    /// @dev Selling a position worth less than its debt realizes a loss for the lender. During
+    /// LENDER_WINDOW only the lender or its keeper may do it; inside the buffer (value still above
+    /// the debt) and after the window, anyone may.
+    function _requireMayRealizeLoss(uint256 positionId) internal view {
+        uint256 since = positionUnderwaterSince[positionId];
+        if (since != 0 && block.timestamp < since + LENDER_WINDOW) {
+            uint256 orderId = positions[positionId].orderId;
+            require(msg.sender == orders[orderId].owner || msg.sender == orderLiquidationKeeper[orderId], "MM38");
+        }
+    }
+
     function liquidate(uint256 positionId, address receiver) public nonReentrant {
         Position storage position = positions[positionId];
 
-        require(position.open, "Position is closed");
-        require(subjectToLiquidation(positionId), "Not liquidatable");
+        require(position.open, "MM22");
+        _requireLiquidatable(positionId);
 
         // A live freeze (placed earlier and not yet lapsed) completes the liquidation; otherwise this
         // call places or renews the freeze.
         if (position.frozenTime > 0 && block.timestamp - position.frozenTime <= MAX_FREEZE_DURATION)
         {
-            require(block.timestamp > position.frozenTime, "Freeze and liquidate: same block");
+            require(block.timestamp > position.frozenTime, "MM24");
+            _requireMayRealizeLoss(positionId);
             _liquidate(positionId, receiver);
             emit Liquidation(positionId, position.orderId, msg.sender, receiver);
         }
@@ -1046,13 +1096,14 @@ contract MarginModule is IOrderParams
             position.open && position.frozenTime > 0 && block.timestamp > position.frozenTime
                 && block.timestamp - position.frozenTime <= MAX_FREEZE_DURATION
                 && msg.sender == position.liquidator,
-            "Not frozen"
+            "MM26"
         );
-        require(subjectToLiquidation(positionId), "Not liquidatable");
+        _requireLiquidatable(positionId);
+        _requireMayRealizeLoss(positionId);
         uint256 id = getAssetId(positionId, asset);
         // index 0 is the base asset, which is never sold. The swap itself rejects an amount above
         // the position's balance and a zero amount.
-        require(id > 0 && id < position.assets.length, "Asset not found in position");
+        require(id > 0 && id < position.assets.length, "MM25");
 
         _swapToBaseAsset(positionId, asset, amount);
     }
@@ -1065,11 +1116,12 @@ contract MarginModule is IOrderParams
     function unfreeze(uint256 positionId) public {
         Position storage position = positions[positionId];
 
-        require(position.open && position.frozenTime > 0, "Not frozen");
-        require(!subjectToLiquidation(positionId), "Liquidatable");
+        require(position.open && position.frozenTime > 0, "MM26");
+        require(!subjectToLiquidation(positionId), "MM27");
 
         position.frozenTime = 0;
         position.liquidator = address(0);
+        positionUnderwaterSince[positionId] = 0;
         emit PositionUnfrozen(positionId, msg.sender);
     }
 
@@ -1080,22 +1132,22 @@ contract MarginModule is IOrderParams
     function positionClose(uint256 positionId, bool autoWithdraw) public nonReentrant {
         Position storage position = positions[positionId];
         Order storage order = orders[position.orderId];
-        require(position.open, "Position is not open");
+        require(position.open, "MM28");
 
         // Only position owner can close, or order owner after deadline
         if (msg.sender != position.owner) {
             bool isExpired = position.deadline <= block.timestamp;
-            require(isExpired && msg.sender == order.owner, "Not authorized to close");
+            require(isExpired && msg.sender == order.owner, "MM29");
         }
 
         // A freeze on its own no longer blocks closing: the only thing a freeze protects is a
         // liquidation that is still due, and that is what the check below guards. A position that
         // recovered after being frozen repays the lender in full here instead of staying locked.
-        require(subjectToLiquidation(positionId) == false, "Subject to liquidation");
+        require(subjectToLiquidation(positionId) == false, "MM30");
 
         // Sell other holdings only until the base asset covers the debt, then the debt must be
         // repaid in full. The liquidation fee goes back to the closer.
-        require(_settle(positionId, msg.sender, false) == 0, "Insufficient funds to close");
+        require(_settle(positionId, msg.sender, false) == 0, "MM31");
 
         emit PositionClosed(positionId, msg.sender);
 
@@ -1127,14 +1179,14 @@ contract MarginModule is IOrderParams
     function _positionWithdraw(uint256 positionId, address asset) internal {
         Position storage position = positions[positionId];
         _requirePositionOwner(positionId);
-        require(!position.open, "Position still open");
+        require(!position.open, "MM32");
 
         uint256 id = getAssetId(positionId, asset);
-        require(id < position.assets.length, "Asset not found in position");
+        require(id < position.assets.length, "MM25");
 
         uint256[] storage balances = position.balances;
         uint256 amount = balances[id];
-        require(amount > 0, "No balance to withdraw");
+        require(amount > 0, "MM33");
 
         reduceAsset(positionId, asset, amount);
         emit PositionWithdrawal(positionId, asset, amount);
@@ -1261,7 +1313,7 @@ contract MarginModule is IOrderParams
         require(asset != address(0)); // _transferOut routes address(0) to _sendEth
 
         bool success = IERC20Minimal(asset).transfer(receiver, amount);
-        require(success, "ERC20 transfer failed");
+        require(success, "MM34");
     }
 
     function _sendEth(uint256 amount, address receiver) internal {
@@ -1319,7 +1371,7 @@ contract MarginModule is IOrderParams
     // @audit-fix V1: nonReentrant guard on ERC-223 withdrawals
     function withdraw223(address asset) public nonReentrant {
         uint256 amount = erc223deposit[msg.sender][asset]; 
-        require(amount > 0, "No ERC223 deposit");
+        require(amount > 0, "MM35");
 
         erc223deposit[msg.sender][asset] = 0;
         require(IERC223(asset).transfer(msg.sender, amount));
@@ -1386,13 +1438,8 @@ contract MarginModule is IOrderParams
     }
 
 /*
-    function getOrdersLength() public view returns (uint256) {
-       return orderIndex;
-    }
-
-    function getPositionsLength() public view returns (uint256) {
-        return positionIndex;
-    }
+    // getOrdersLength() and getPositionsLength() were removed for EIP-170 headroom: they returned
+    // orderIndex and positionIndex, which have public getters, and nothing called them.
 */
 
     function getIdFromTokenlist(bytes32 _listId, address asset) public view returns(uint256 assetId) {

@@ -5,6 +5,10 @@ import { completeFixture } from './shared/completeFixture'
 import { useRealTimePoolLib } from './shared/realTimePoolLib'
 import { encodePriceSqrt, expandTo18Decimals, FeeAmount, getMaxTick, getMinTick, TICK_SPACINGS } from './shared/utilities'
 
+function predictTokenListsID(tokens: string[], isContract: boolean): string {
+  return ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(["bool", "address[]"], [isContract, tokens]))
+}
+
 /**
  * Regressions for the cross-standard swap accounting and the order position counter, after
  * EthereumCommonwealth/Dex223-contracts#115 (Khanhtnq). The three swap scenarios are that PR's
@@ -61,7 +65,7 @@ describe('MarginModule: ERC-20 / ERC-223 swap accounting and the position counte
     const pool = await seedPoolWith(base, collat, base223, collat223)
     const list = [base.target.toString(), collat.target.toString(), collat223.target.toString()]
     await mm.addTokenlist(list, false)
-    const whitelistId = await mm.predictTokenListsID(list, false)
+    const whitelistId = await predictTokenListsID(list, false)
 
     await mm.createOrder({
       whitelistId, interestRate: 5000n, duration: BigInt(365 * DAY), minLoan: 1n,
@@ -108,7 +112,7 @@ describe('MarginModule: ERC-20 / ERC-223 swap accounting and the position counte
     const pool = await seedPoolWith(base, collat, base223, collat223)
     const list = [base223.target.toString(), collat.target.toString()]
     await mm.addTokenlist(list, false)
-    const whitelistId = await mm.predictTokenListsID(list, false)
+    const whitelistId = await predictTokenListsID(list, false)
 
     await mm.createOrder({
       whitelistId, interestRate: 10000n, duration: BigInt(365 * DAY), minLoan: 1n,
@@ -134,6 +138,8 @@ describe('MarginModule: ERC-20 / ERC-223 swap accounting and the position counte
 
     await time.increase(90 * DAY)
     expect(await mm.subjectToLiquidation(0)).to.eq(true)
+    // The position is under water, so a third party may complete the sale only as the lender's keeper.
+    await mm.orderSetLenderProtection(0, 0, liquidator.address)
     await mm.connect(liquidator).liquidate(0, liquidator.address)   // freeze
     await time.increase(60)
     await expect(mm.connect(liquidator).liquidate(0, liquidator.address)).to.not.be.reverted
@@ -150,7 +156,7 @@ describe('MarginModule: ERC-20 / ERC-223 swap accounting and the position counte
     const poolAddr = await seedPoolWith(base, collat, base223, collat223, FeeAmount.MEDIUM, expandTo18Decimals(10))
     const list = [base.target.toString(), collat.target.toString()]
     await mm.addTokenlist(list, false)
-    const whitelistId = await mm.predictTokenListsID(list, false)
+    const whitelistId = await predictTokenListsID(list, false)
 
     await mm.createOrder({
       whitelistId, interestRate: 0n, duration: BigInt(365 * DAY), minLoan: 1n,
@@ -189,7 +195,7 @@ describe('MarginModule: ERC-20 / ERC-223 swap accounting and the position counte
     // Base == collateral == reward: no oracle pricing, so 300 loans open quickly.
     const list = [base.target.toString()]
     await mm.addTokenlist(list, false)
-    const whitelistId = await mm.predictTokenListsID(list, false)
+    const whitelistId = await predictTokenListsID(list, false)
     await mm.createOrder({
       whitelistId, interestRate: 0n, duration: BigInt(365 * DAY), minLoan: 1n,
       liquidationRewardAmount: 0n, liquidationRewardAsset: base.target.toString(), asset: base.target.toString(),
@@ -206,7 +212,7 @@ describe('MarginModule: ERC-20 / ERC-223 swap accounting and the position counte
     expect((await mm.order_status(0)).positions).to.eq(300n)
     await expect(mm.modifyOrder(
       0, whitelistId, 1n, BigInt(365 * DAY), 1n, 5, 5, await oracle.getAddress(), 0n, base.target, BigInt(now + 365 * DAY),
-    )).to.be.revertedWith('Order has active positions')
+    )).to.be.revertedWith('MM04')
 
     await mm.positionClose(299, false)
     expect((await mm.order_status(0)).positions).to.eq(299n)
