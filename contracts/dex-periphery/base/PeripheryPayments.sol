@@ -69,13 +69,13 @@ abstract contract PeripheryPayments is IPeripheryPayments, PeripheryImmutableSta
     /// @notice Withdraws ERC-223 tokens previously deposited by the caller
     /// @dev If _quantity is 0, withdraws the caller's full balance of the specified token.
     ///      Uses checks-effects-interactions pattern to prevent reentrancy:
-    ///      balance is decremented before the external transfer call.
+    ///      balance is decremented before the external transfer call, and self-transfers are rejected.
     /// @param _token The ERC-223 token to withdraw
     /// @param _recipient The address to receive the withdrawn tokens
     /// @param _quantity The amount to withdraw (0 = full balance)
     function withdraw(address _token, address _recipient, uint256 _quantity) external
     {
-        require(_recipient != address(0), "WR");
+        require(_recipient != address(0) && _recipient != address(this), "WR");
 
         // If _quantity is 0, withdraw the full deposited balance
         if (_quantity == 0) {
@@ -110,12 +110,15 @@ abstract contract PeripheryPayments is IPeripheryPayments, PeripheryImmutableSta
     }
 
     /// @inheritdoc IPeripheryPayments
-    /// @dev Unwraps all WETH9 held by this contract and sends as native ETH.
-    ///      Validates that recipient is not address(0) to prevent burning ETH.
+    /// @dev Unwraps all non-custodial WETH9 held by this contract and sends as native ETH.
+    ///      Validates that recipient is not address(0) to prevent burning ETH, and excludes
+    ///      depositor balances recorded in `_erc223TotalDeposits[WETH9]`.
     function unwrapWETH9(uint256 amountMinimum, address recipient) public payable override {
         require(recipient != address(0), 'Invalid recipient');
 
-        uint256 balanceWETH9 = IWETH9(WETH9).balanceOf(address(this));
+        uint256 rawBalanceWETH9 = IWETH9(WETH9).balanceOf(address(this));
+        uint256 custodialWETH9 = _erc223TotalDeposits[WETH9];
+        uint256 balanceWETH9 = rawBalanceWETH9 > custodialWETH9 ? rawBalanceWETH9 - custodialWETH9 : 0;
         require(balanceWETH9 >= amountMinimum, 'Insufficient WETH9');
 
         if (balanceWETH9 > 0) {
