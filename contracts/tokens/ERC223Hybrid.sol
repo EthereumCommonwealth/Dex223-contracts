@@ -200,6 +200,7 @@ contract ERC223HybridToken is IERC223, ERC165 {
 
     function transferFrom(address _from, address _to, uint _value) public returns (bool) {
 
+        require(_to != address(0), "ERC-223: transfer to the zero address.");
         require(allowances[_from][msg.sender] >= _value, "ERC-223: Insufficient allowance.");
 
         balances[_from] -= _value;

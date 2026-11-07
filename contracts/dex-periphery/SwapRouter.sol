@@ -123,15 +123,18 @@ IERC223Recipient
     }
 
     modifier adjustableSender() {
-        
-        if (call_sender == address(0))
+        bool _set = (call_sender == address(0));
+        if (_set)
         {
             call_sender = msg.sender;
         }
 
         _;
 
-        delete(call_sender);
+        if (_set)
+        {
+            delete(call_sender);
+        }
     }
 
     constructor(address _factory, address _WETH9, address _converter) PeripheryImmutableState(_factory, _WETH9) {
@@ -232,10 +235,12 @@ IERC223Recipient
         uint160 sqrtPriceLimitX96,
         bool prefer223Out,
         SwapCallbackData memory data
-    ) private returns (uint256 amountOut) {
-        if (recipient == address(0)) recipient = address(this);
-
+    )     private returns (uint256 amountOut) {
         (address tokenIn, address tokenOut, uint24 fee) = data.path.decodeFirstPool();
+        if (recipient == address(0)) {
+            require(!prefer223Out && tokenOut == WETH9, 'Invalid recipient');
+            recipient = address(this);
+        }
         bool zeroForOne = tokenIn < tokenOut;
         address pool = address(getPool(tokenIn, tokenOut, fee));
 
@@ -457,11 +462,13 @@ IERC223Recipient
         address recipient,
         uint160 sqrtPriceLimitX96,
         SwapCallbackData memory data
-    ) private returns (uint256 amountIn) {
-        // allow swapping to the router address with address 0
-        if (recipient == address(0)) recipient = address(this);
-
+    )     private returns (uint256 amountIn) {
         (address tokenOut, address tokenIn, uint24 fee) = data.path.decodeFirstPool();
+        // allow swapping to the router address with address 0 only when unwrapping WETH9
+        if (recipient == address(0)) {
+            require(tokenOut == WETH9, 'Invalid recipient');
+            recipient = address(this);
+        }
 
         bool zeroForOne = tokenIn < tokenOut;
 

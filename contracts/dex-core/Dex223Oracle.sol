@@ -109,6 +109,16 @@ contract Oracle {
     function setMinLiquidity(address tokenA, address tokenB, uint128 _minLiquidity) external onlyOwner {
         require(tokenA != tokenB && tokenA != address(0) && tokenB != address(0), "Oracle: bad pair");
         (address token0, address token1) = tokenA < tokenB ? (tokenA, tokenB) : (tokenB, tokenA);
+        for (uint256 i = 0; i < NUM_FEE_TIERS; i++) {
+            address pool = factory.getPool(tokenA, tokenB, _feeTier(i));
+            if (pool != address(0)) {
+                (address t0, ) = IDex223PoolTokens(pool).token0();
+                (address t1, ) = IDex223PoolTokens(pool).token1();
+                require(t0 != address(0) && t1 != address(0) && t0 != t1, "Oracle: bad pair");
+                (token0, token1) = (t0, t1);
+                break;
+            }
+        }
         minLiquidity[token0][token1] = _minLiquidity;
         emit MinLiquidityUpdated(token0, token1, _minLiquidity);
     }
