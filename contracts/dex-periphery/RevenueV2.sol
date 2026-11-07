@@ -352,6 +352,7 @@ contract RevenueV2 {
 
     /// @notice Revenue of `token` that has arrived but has not been synced yet.
     function unsynced(address token) external view returns (uint256) {
+        if (!reward_data[token].listed) return 0;
         uint256 bal = IERC20Minimal(token).balanceOf(address(this));
         uint256 accounted = reward_data[token].accounted;
         return bal > accounted ? bal - accounted : 0;
@@ -487,7 +488,7 @@ contract RevenueV2 {
         uint256 remaining;
         if (block.timestamp < r.period_finish) {
             remaining = r.rate * (r.period_finish - block.timestamp);
-            if (r.queued < remaining) return;
+            if (total_staked != 0 && r.queued < remaining) return;
         }
         uint256 duration = reward_duration;
         uint256 pot = r.queued + remaining;
