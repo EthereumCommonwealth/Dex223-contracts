@@ -57,32 +57,29 @@ library Position {
             liquidityNext = LiquidityMath.addDelta(_self.liquidity, liquidityDelta);
         }
 
-        // calculate accumulated fees
-        uint128 tokensOwed0 =
-            uint128(
-                FullMath.mulDiv(
-                    feeGrowthInside0X128 - _self.feeGrowthInside0LastX128,
-                    _self.liquidity,
-                    FixedPoint128.Q128
-                )
-            );
-        uint128 tokensOwed1 =
-            uint128(
-                FullMath.mulDiv(
-                    feeGrowthInside1X128 - _self.feeGrowthInside1LastX128,
-                    _self.liquidity,
-                    FixedPoint128.Q128
-                )
-            );
+        // calculate accumulated fees with saturation at uint128.max to prevent silent truncation or wrap-around
+        uint256 feeDelta0 = FullMath.mulDiv(
+            feeGrowthInside0X128 - _self.feeGrowthInside0LastX128,
+            _self.liquidity,
+            FixedPoint128.Q128
+        );
+        uint256 feeDelta1 = FullMath.mulDiv(
+            feeGrowthInside1X128 - _self.feeGrowthInside1LastX128,
+            _self.liquidity,
+            FixedPoint128.Q128
+        );
+        uint128 tokensOwed0 = feeDelta0 > type(uint128).max ? type(uint128).max : uint128(feeDelta0);
+        uint128 tokensOwed1 = feeDelta1 > type(uint128).max ? type(uint128).max : uint128(feeDelta1);
 
         // update the position
         if (liquidityDelta != 0) self.liquidity = liquidityNext;
         self.feeGrowthInside0LastX128 = feeGrowthInside0X128;
         self.feeGrowthInside1LastX128 = feeGrowthInside1X128;
         if (tokensOwed0 > 0 || tokensOwed1 > 0) {
-            // overflow is acceptable, have to withdraw before you hit type(uint128).max fees
-            self.tokensOwed0 += tokensOwed0;
-            self.tokensOwed1 += tokensOwed1;
+            uint256 nextOwed0 = uint256(_self.tokensOwed0) + tokensOwed0;
+            uint256 nextOwed1 = uint256(_self.tokensOwed1) + tokensOwed1;
+            self.tokensOwed0 = nextOwed0 > type(uint128).max ? type(uint128).max : uint128(nextOwed0);
+            self.tokensOwed1 = nextOwed1 > type(uint128).max ? type(uint128).max : uint128(nextOwed1);
         }
     }
 }

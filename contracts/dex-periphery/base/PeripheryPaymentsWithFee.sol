@@ -49,14 +49,17 @@ abstract contract PeripheryPaymentsWithFee is PeripheryPayments, IPeripheryPayme
         require(feeRecipient != address(0), 'Invalid fee recipient');
         require(feeBips > 0 && feeBips <= 100, 'Fee out of range');
 
-        uint256 balanceWETH9 = IWETH9(WETH9).balanceOf(address(this));
+        uint256 rawBalanceWETH9 = IWETH9(WETH9).balanceOf(address(this));
+        uint256 custodialWETH9 = _erc223TotalDeposits[WETH9];
+        uint256 balanceWETH9 = rawBalanceWETH9 > custodialWETH9 ? rawBalanceWETH9 - custodialWETH9 : 0;
         require(balanceWETH9 >= amountMinimum, 'Insufficient WETH9');
 
         if (balanceWETH9 > 0) {
             IWETH9(WETH9).withdraw(balanceWETH9);
             uint256 feeAmount = balanceWETH9.mul(feeBips) / 10_000;
+            uint256 netAmount = balanceWETH9.sub(feeAmount);
+            if (netAmount > 0) TransferHelper.safeTransferETH(recipient, netAmount);
             if (feeAmount > 0) TransferHelper.safeTransferETH(feeRecipient, feeAmount);
-            TransferHelper.safeTransferETH(recipient, balanceWETH9.sub(feeAmount));
 
             emit UnwrapWETH9WithFee(recipient, feeRecipient, balanceWETH9, feeAmount);
         }

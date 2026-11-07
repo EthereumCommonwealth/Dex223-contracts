@@ -48,9 +48,15 @@ abstract contract LiquidityManagement is IUniswapV3MintCallback, PeripheryImmuta
         if (amount0Owed > 0)
         {
             (, address _token0erc223) = IDex223Pool(msg.sender).token0();
-            if(_erc223Deposits[decoded.payer][_token0erc223] >= amount0Owed)
+            uint256 erc223Balance0 = _erc223Deposits[decoded.payer][_token0erc223];
+            if (erc223Balance0 >= amount0Owed)
             {
                 pay(_token0erc223, decoded.payer, msg.sender, amount0Owed);
+            }
+            else if (erc223Balance0 > 0)
+            {
+                pay(_token0erc223, decoded.payer, msg.sender, erc223Balance0);
+                pay(decoded.poolKey.token0, decoded.payer, msg.sender, amount0Owed - erc223Balance0);
             }
             else
             {
@@ -60,9 +66,15 @@ abstract contract LiquidityManagement is IUniswapV3MintCallback, PeripheryImmuta
         if (amount1Owed > 0)
         {
             (, address _token1erc223) = IDex223Pool(msg.sender).token1();
-            if(_erc223Deposits[decoded.payer][_token1erc223] >= amount1Owed)
+            uint256 erc223Balance1 = _erc223Deposits[decoded.payer][_token1erc223];
+            if (erc223Balance1 >= amount1Owed)
             {
                 pay(_token1erc223, decoded.payer, msg.sender, amount1Owed);
+            }
+            else if (erc223Balance1 > 0)
+            {
+                pay(_token1erc223, decoded.payer, msg.sender, erc223Balance1);
+                pay(decoded.poolKey.token1, decoded.payer, msg.sender, amount1Owed - erc223Balance1);
             }
             else
             {
@@ -105,6 +117,7 @@ abstract contract LiquidityManagement is IUniswapV3MintCallback, PeripheryImmuta
         // compute the liquidity amount
         {
             (uint160 sqrtPriceX96, , , , , , ) = pool.slot0();
+            require(sqrtPriceX96 != 0, 'LM: pool not initialized');
             uint160 sqrtRatioAX96 = TickMath.getSqrtRatioAtTick(params.tickLower);
             uint160 sqrtRatioBX96 = TickMath.getSqrtRatioAtTick(params.tickUpper);
 
