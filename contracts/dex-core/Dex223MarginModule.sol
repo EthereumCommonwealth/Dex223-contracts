@@ -570,6 +570,11 @@ contract MarginModule is IOrderParams
         _receiveAsset(asset, amount);
 
         addAsset(positionId, asset, amount);
+        if (positions[positionId].frozenTime > 0 && !subjectToLiquidation(positionId)) {
+            positions[positionId].frozenTime = 0;
+            positions[positionId].liquidator = address(0);
+            emit PositionUnfrozen(positionId, msg.sender);
+        }
         emit PositionDeposit(positionId, asset, amount);
     }
 
@@ -793,8 +798,13 @@ contract MarginModule is IOrderParams
     /// @dev An owner's swap must not leave the position liquidatable. Otherwise the owner could sell
     /// the borrowed funds into a pool they control at any price and walk away with the loan, leaving
     /// the lender with only the collateral.
-    function _requireSolventAfterSwap(uint256 _positionId) internal view {
+    function _requireSolventAfterSwap(uint256 _positionId) internal {
         require(!subjectToLiquidation(_positionId), "Swap makes position liquidatable");
+        if (positions[_positionId].frozenTime > 0) {
+            positions[_positionId].frozenTime = 0;
+            positions[_positionId].liquidator = address(0);
+            emit PositionUnfrozen(_positionId, msg.sender);
+        }
     }
 
     function _marginSwapInternal(
