@@ -112,8 +112,6 @@ contract MarginModule is IOrderParams
     mapping (uint256 => address)  public orderLiquidationKeeper;
     // When liquidate() first saw the position worth less than its debt; 0 while it is not.
     mapping (uint256 => uint256)  public positionUnderwaterSince;
-    // True once liquidateStep() has started selling a position while it was still above its debt.
-    mapping (uint256 => bool)     private _bufferLiquidation;
 
     uint256 public orderIndex;
     uint256 public positionIndex;
@@ -600,12 +598,11 @@ contract MarginModule is IOrderParams
         _receiveAsset(asset, amount);
 
         addAsset(positionId, asset, amount);
-        if (positionUnderwaterSince[positionId] != 0 || _bufferLiquidation[positionId]) {
+        // A top-up back above the debt ends the underwater spell, so a later dip starts a fresh
+        // LENDER_WINDOW (unfreeze() cannot clear it while the value is still inside the buffer).
+        if (positionUnderwaterSince[positionId] != 0) {
             (uint256 debt, uint256 value) = _positionValue(positionId);
-            if (value >= debt) {
-                positionUnderwaterSince[positionId] = 0;
-                _bufferLiquidation[positionId] = false;
-            }
+            if (value >= debt) positionUnderwaterSince[positionId] = 0;
         }
         emit PositionDeposit(positionId, asset, amount);
     }
@@ -833,7 +830,6 @@ contract MarginModule is IOrderParams
     function _requireSolventAfterSwap(uint256 _positionId) internal {
         require(!subjectToLiquidation(_positionId), "MM20");
         positionUnderwaterSince[_positionId] = 0;
-        _bufferLiquidation[_positionId] = false;
     }
 
     function _marginSwapInternal(
@@ -1055,7 +1051,7 @@ contract MarginModule is IOrderParams
         (uint256 debt, uint256 value) = _positionValue(positionId);
         require(value < _liquidationThreshold(positions[positionId].orderId, debt), "MM23");
         if (value >= debt) positionUnderwaterSince[positionId] = 0;
-        else if (positionUnderwaterSince[positionId] == 0 && !_bufferLiquidation[positionId]) positionUnderwaterSince[positionId] = block.timestamp;
+        else if (positionUnderwaterSince[positionId] == 0) positionUnderwaterSince[positionId] = block.timestamp;
     }
 
     function _isLossLiquidator(uint256 orderId, address who) private view returns (bool) {
@@ -1107,7 +1103,9 @@ contract MarginModule is IOrderParams
     /// live (within MAX_FREEZE_DURATION, at least one block old), exactly like the final sale: a
     /// lapsed freeze must be renewed with liquidate() first, which restores the block between the
     /// trigger and the sale, and the freezer's hour of exclusivity keeps steps from being used by
-    /// others to talk the TWAP down or to pull value out of a position they do not liquidate.
+    /// others to talk the TWAP down or to pull value out of a position they do not liquidate. The
+    /// one exception is LENDER_WINDOW: while the position is under water only the lender or its
+    /// keeper may sell, and either may take over a freeze someone else placed.
     function liquidateStep(uint256 positionId, address asset, uint256 amount) public nonReentrant {
         Position storage position = positions[positionId];
 
@@ -1117,12 +1115,15 @@ contract MarginModule is IOrderParams
             "MM26"
         );
         _requireLiquidatable(positionId);
+        // Under water during LENDER_WINDOW only the lender or its keeper may sell (MM38 above). If
+        // someone else holds the freeze (a bot, the borrower, or a liquidator who began stepping
+        // while the position was still above its debt), the lender or keeper takes it over;
+        // otherwise steps stay with the freezer.
         if (_requireMayRealizeLoss(positionId) && !_isLossLiquidator(position.orderId, position.liquidator)) {
             position.liquidator = msg.sender;
         } else {
             require(msg.sender == position.liquidator, "MM26");
         }
-        if (positionUnderwaterSince[positionId] == 0) _bufferLiquidation[positionId] = true;
         uint256 id = getAssetId(positionId, asset);
         // index 0 is the base asset, which is never sold. The swap itself rejects an amount above
         // the position's balance and a zero amount.
@@ -1145,7 +1146,6 @@ contract MarginModule is IOrderParams
         position.frozenTime = 0;
         position.liquidator = address(0);
         positionUnderwaterSince[positionId] = 0;
-        _bufferLiquidation[positionId] = false;
         emit PositionUnfrozen(positionId, msg.sender);
     }
 

@@ -1614,7 +1614,7 @@ describe('MarginModule', () => {
       expect((await c.mm.positions(0)).liquidator).to.eq(c.wallet.address)
     })
 
-    it('a third-party stepped liquidation started inside the buffer completes even after steps push value below debt', async () => {
+    it('a third party that began stepping in the buffer hands over to the lender once the position is under water', async () => {
       const c = await pooledPosition(10000n, expandTo18Decimals(100), expandTo18Decimals(200))
       await time.increase(55 * DAY)                                 // debt ~283.33, value ~300, threshold ~311.67
       const [debt0, val0] = await c.mm.getPositionStatus(0)
@@ -1625,23 +1625,36 @@ describe('MarginModule', () => {
       expect(await c.mm.positionUnderwaterSince(0)).to.eq(0n)
       await time.increase(60)
 
-      for (let i = 0; i < 10; i++) {
-        if (i > 0 && i % 2 === 0) {
-          await c.mm.connect(c.other).liquidate(0, c.other.address)
+      // Inside the buffer the freezer steps alone; the lender may not.
+      await expect(c.mm.liquidateStep(0, c.collat.target, expandTo18Decimals(20))).to.be.revertedWith('MM26')
+      // Step until the sale's costs push the value below the debt.
+      let steps = 0
+      for (;;) {
+        const [d, v] = await c.mm.getPositionStatus(0)
+        if (v < d) break
+        expect(++steps).to.be.lte(10)
+        if (steps > 1 && (steps - 1) % 2 === 0) {
+          await c.mm.connect(c.other).liquidate(0, c.other.address) // renew the lapsed freeze
           await time.increase(60)
         }
         await c.mm.connect(c.other).liquidateStep(0, c.collat.target, expandTo18Decimals(20))
         await time.increase(c.TWAP_WINDOW)
       }
 
-      const [debtAfter, valAfter] = await c.mm.getPositionStatus(0)
-      expect(valAfter).to.be.lt(debtAfter)
-      expect(await c.mm.positionUnderwaterSince(0)).to.eq(0n)
-
-      await c.mm.connect(c.other).liquidate(0, c.other.address)
-      await time.increase(60)
-      await expect(c.mm.connect(c.other).liquidate(0, c.other.address)).to.emit(c.mm, 'LiquidationShortfall')
-      expect((await c.mm.positions(0)).open).to.eq(false)
+      // Under water: the loss belongs to the lender. The third party can neither step nor finish on
+      // its own freeze any more; the lender takes the live freeze over and steps on.
+      if ((await c.mm.positions(0)).frozenTime + 3600n < BigInt(await time.latest()) + 60n) {
+        await c.mm.connect(c.other).liquidate(0, c.other.address)   // renew a lapsed freeze
+        await time.increase(60)
+      }
+      expect((await c.mm.positions(0)).liquidator).to.eq(c.other.address)
+      await expect(c.mm.connect(c.other).liquidateStep(0, c.collat.target, expandTo18Decimals(20))).to.be.revertedWith('MM38')
+      await expect(c.mm.connect(c.other).liquidate(0, c.other.address)).to.be.revertedWith('MM38')
+      await c.mm.liquidateStep(0, c.collat.target, expandTo18Decimals(20))
+      expect((await c.mm.positions(0)).liquidator).to.eq(c.wallet.address)
+      expect(await c.mm.positionUnderwaterSince(0)).to.be.greaterThan(0n)
+      // The lender now holds the freeze: the third party cannot take it back.
+      await expect(c.mm.connect(c.other).liquidateStep(0, c.collat.target, expandTo18Decimals(1))).to.be.revertedWith('MM38')
     })
   })
   describe('lender protection', () => {
