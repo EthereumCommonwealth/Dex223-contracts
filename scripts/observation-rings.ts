@@ -16,7 +16,8 @@
  *   FACTORY=0x4EC06106Cf666A817586563ae042ffF8B76e3460 FROM_BLOCK=12026940 \
  *     npx hardhat run scripts/observation-rings.ts --network sepolia
  *
- * Grow every pool whose next cardinality is below CARDINALITY (default 50), or only the pools in POOLS:
+ * Grow every pool whose next cardinality is below CARDINALITY (default 50), or only the pools in POOLS
+ * (with POOLS the factory's logs are not scanned, so FACTORY and FROM_BLOCK may be omitted):
  *
  *   GROW=1 RING_KEY=... POOLS=0xabc...,0xdef... FACTORY=... FROM_BLOCK=... \
  *     npx hardhat run scripts/observation-rings.ts --network sepolia
@@ -24,6 +25,7 @@
  * A grown ring only fills as swaps write new observations, and the oracle still needs the oldest one to be
  * twapWindow old, so a pool is usable for margin about 30 minutes after its first observation, as before.
  */
+import type { Provider } from "ethers";
 import { ethers, network } from "hardhat";
 import { mined } from "./tx-wait";
 
@@ -36,16 +38,15 @@ const FACTORY_ABI = [
 ];
 const POOL_ABI = [
   "function slot0() view returns (uint160,int24,uint16,uint16,uint16,uint8,bool)",
+  "function token0() view returns (address,address)",
+  "function token1() view returns (address,address)",
+  "function fee() view returns (uint24)",
   "function liquidity() view returns (uint128)",
   "function increaseObservationCardinalityNext(uint16)",
 ];
 const ORACLE_ABI = ["function poolCanServeWindow(address) view returns (bool)"];
 
-async function poolsOf(
-  provider: ethers.Provider,
-  factory: string,
-  fromBlock: number
-) {
+async function poolsOf(provider: Provider, factory: string, fromBlock: number) {
   const iface = new ethers.Interface(FACTORY_ABI);
   const topic = iface.getEvent("PoolCreated")!.topicHash;
   const latest = await provider.getBlockNumber();
@@ -76,24 +77,43 @@ async function main() {
   const provider = new ethers.JsonRpcProvider(url, undefined, {
     staticNetwork: true,
   });
-  const factory = process.env.FACTORY || fail("set FACTORY");
-  const fromBlock = Number(
-    process.env.FROM_BLOCK || fail("set FROM_BLOCK (the factory deploy block)")
-  );
-  const target = Number(process.env.CARDINALITY || 50);
   const only = (process.env.POOLS || "")
     .split(",")
     .map((a) => a.trim().toLowerCase())
     .filter(Boolean);
+  const factory =
+    process.env.FACTORY || (only.length ? "" : fail("set FACTORY"));
+  const fromBlock = Number(
+    process.env.FROM_BLOCK ||
+      (only.length ? 0 : fail("set FROM_BLOCK (the factory deploy block)"))
+  );
+  const target = Number(process.env.CARDINALITY || 50);
   const oracle = process.env.ORACLE
     ? new ethers.Contract(process.env.ORACLE, ORACLE_ABI, provider)
     : null;
 
-  let pools = await poolsOf(provider, factory, fromBlock);
-  if (only.length)
-    pools = pools.filter((p) => only.includes(p.pool.toLowerCase()));
+  // With POOLS, read just those pools: no log scan, which free RPCs prune or rate-limit.
+  const pools = only.length
+    ? await Promise.all(
+        only.map(async (pool) => {
+          const c = new ethers.Contract(pool, POOL_ABI, provider);
+          const [[t0], [t1], fee] = await Promise.all([
+            c.token0(),
+            c.token1(),
+            c.fee(),
+          ]);
+          return {
+            pool: ethers.getAddress(pool),
+            pair: `${t0}/${t1}`,
+            fee: Number(fee),
+          };
+        })
+      )
+    : await poolsOf(provider, factory, fromBlock);
   console.log(
-    `${pools.length} pool(s) from factory ${factory} on ${network.name}, target cardinality ${target}\n`
+    `${pools.length} pool(s) ${
+      only.length ? "given" : `from factory ${factory}`
+    } on ${network.name}, target cardinality ${target}\n`
   );
 
   const small: string[] = [];
