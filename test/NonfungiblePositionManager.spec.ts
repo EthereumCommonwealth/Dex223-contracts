@@ -17,6 +17,7 @@ import { encodePriceSqrt, expandTo18Decimals, getMaxTick, getMinTick } from './s
 import { expect, use } from 'chai'
 import getPermitNFTSignature from './shared/getPermitNFTSignature'
 import { encodePath } from './shared/path'
+import { extractJSONFromURI } from './shared/extractJSONFromURI'
 import poolAtAddress from './shared/poolAtAddress'
 import { sortedTokens } from './shared/tokenSort'
 import { loadFixture } from "@nomicfoundation/hardhat-toolbox/network-helpers";
@@ -1322,18 +1323,16 @@ describe('NonfungiblePositionManager', () => {
       await expect(nft.tokenURI(tokenId + 1)).to.be.reverted
     })
 
-    // NOTE does not return URI
-    // it('returns a data URI with correct mime type', async () => {
-    //   expect(await nft.tokenURI(tokenId)).to.match(/data:application\/json;base64,.+/)
-    // })
+    it('returns a data URI with correct mime type', async () => {
+      expect(await nft.tokenURI(tokenId)).to.match(/data:application\/json;base64,.+/)
+    })
 
-    // NOTE does not return URI
-    // it('content is valid JSON and structure', async () => {
-    //   const content = extractJSONFromURI(await nft.tokenURI(tokenId))
-    //   expect(content).to.haveOwnProperty('name').is.a('string')
-    //   expect(content).to.haveOwnProperty('description').is.a('string')
-    //   expect(content).to.haveOwnProperty('image').is.a('string')
-    // })
+    it('content is valid JSON and structure', async () => {
+      const content = extractJSONFromURI(await nft.tokenURI(tokenId))
+      expect(content).to.haveOwnProperty('name').is.a('string')
+      expect(content).to.haveOwnProperty('description').is.a('string')
+      expect(content).to.haveOwnProperty('image').is.a('string')
+    })
   })
 
   describe('fees accounting', () => {

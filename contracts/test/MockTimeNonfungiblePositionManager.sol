@@ -9,9 +9,9 @@ contract MockTimeNonfungiblePositionManager is DexaransNonfungiblePositionManage
 
     constructor(
         address _factory,
-        address _WETH9
-//        address _tokenDescriptor
-    ) DexaransNonfungiblePositionManager(_factory, _WETH9) {}
+        address _WETH9,
+        address _tokenDescriptor
+    ) DexaransNonfungiblePositionManager(_factory, _WETH9, _tokenDescriptor) {}
 
     function _blockTimestamp() internal view override returns (uint32) {
         return uint32(time);

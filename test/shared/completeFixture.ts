@@ -44,7 +44,7 @@ export async function  completeFixture():  Promise<{
   const nft = (await positionManagerFactory.deploy(
     factory.target.toString(),
     weth9.target.toString(),
-    // nftDescriptor.target
+    nftDescriptor.target.toString()
   )) as MockTimeNonfungiblePositionManager;
 
   tokens.sort((a, b) => (a.target.toString().toLowerCase() < b.target.toString().toLowerCase() ? -1 : 1))

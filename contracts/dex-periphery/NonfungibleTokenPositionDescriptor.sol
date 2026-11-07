@@ -3,10 +3,9 @@ pragma solidity =0.7.6;
 pragma abicoder v2;
 
 import '../interfaces/IUniswapV3Pool.sol';
-import '../libraries/SafeERC20Namer.sol';
+import '../libraries/SafeTokenMetadata.sol';
 import '../libraries/TokenRatioSortOrder.sol';
 import '../libraries/ChainId.sol';
-import '../tokens/interfaces/IERC20Metadata.sol';
 
 import './interfaces/INonfungiblePositionManager.sol';
 import './interfaces/INonfungibleTokenPositionDescriptor.sol';
@@ -75,12 +74,15 @@ contract NonfungibleTokenPositionDescriptor is INonfungibleTokenPositionDescript
                     baseTokenAddress: baseTokenAddress,
                     quoteTokenSymbol: quoteTokenAddress == WETH9
                         ? nativeCurrencyLabel()
-                        : SafeERC20Namer.tokenSymbol(quoteTokenAddress),
+                        : SafeTokenMetadata.symbol(quoteTokenAddress),
                     baseTokenSymbol: baseTokenAddress == WETH9
                         ? nativeCurrencyLabel()
-                        : SafeERC20Namer.tokenSymbol(baseTokenAddress),
-                    quoteTokenDecimals: IERC20Metadata(quoteTokenAddress).decimals(),
-                    baseTokenDecimals: IERC20Metadata(baseTokenAddress).decimals(),
+                        : SafeTokenMetadata.symbol(baseTokenAddress),
+                    // The pool's sides are its ERC-20 addresses, so metadata is read from the ERC-20
+                    // side of each token. A token with no, broken or hostile metadata gets a fallback
+                    // (SafeTokenMetadata) instead of failing the whole URI.
+                    quoteTokenDecimals: SafeTokenMetadata.decimals(quoteTokenAddress),
+                    baseTokenDecimals: SafeTokenMetadata.decimals(baseTokenAddress),
                     flipRatio: _flipRatio,
                     tickLower: tickLower,
                     tickUpper: tickUpper,
