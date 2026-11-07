@@ -1600,6 +1600,49 @@ describe('MarginModule', () => {
       expect(recovered, 'the 100 base held plus the proceeds of the 200 collat').to.be.gt(expandTo18Decimals(250))
       expect(recovered + await c.mm.orderShortfall(0)).to.be.closeTo(debt, ONE / 100n)
     })
+
+    it('under water, the lender or keeper may step a liquidation even when a third party placed the freeze', async () => {
+      const c = await pooledPosition(10000n, expandTo18Decimals(100), expandTo18Decimals(200))
+      await time.increase(60 * DAY)                                 // debt 300, value < 300 (under water)
+      await c.mm.connect(c.other).liquidate(0, c.other.address)     // third party places freeze
+      expect(await c.mm.positionUnderwaterSince(0)).to.be.greaterThan(0n)
+      await time.increase(60)
+
+      await expect(c.mm.connect(c.other).liquidateStep(0, c.collat.target, expandTo18Decimals(20))).to.be.revertedWith('MM38')
+      // The lender takes over the live freeze to step the sale during LENDER_WINDOW.
+      await c.mm.liquidateStep(0, c.collat.target, expandTo18Decimals(20))
+      expect((await c.mm.positions(0)).liquidator).to.eq(c.wallet.address)
+    })
+
+    it('a third-party stepped liquidation started inside the buffer completes even after steps push value below debt', async () => {
+      const c = await pooledPosition(10000n, expandTo18Decimals(100), expandTo18Decimals(200))
+      await time.increase(55 * DAY)                                 // debt ~283.33, value ~300, threshold ~311.67
+      const [debt0, val0] = await c.mm.getPositionStatus(0)
+      expect(val0).to.be.gt(debt0)
+      expect(await c.mm.subjectToLiquidation(0)).to.eq(true)
+
+      await c.mm.connect(c.other).liquidate(0, c.other.address)     // freeze inside the buffer
+      expect(await c.mm.positionUnderwaterSince(0)).to.eq(0n)
+      await time.increase(60)
+
+      for (let i = 0; i < 10; i++) {
+        if (i > 0 && i % 2 === 0) {
+          await c.mm.connect(c.other).liquidate(0, c.other.address)
+          await time.increase(60)
+        }
+        await c.mm.connect(c.other).liquidateStep(0, c.collat.target, expandTo18Decimals(20))
+        await time.increase(c.TWAP_WINDOW)
+      }
+
+      const [debtAfter, valAfter] = await c.mm.getPositionStatus(0)
+      expect(valAfter).to.be.lt(debtAfter)
+      expect(await c.mm.positionUnderwaterSince(0)).to.eq(0n)
+
+      await c.mm.connect(c.other).liquidate(0, c.other.address)
+      await time.increase(60)
+      await expect(c.mm.connect(c.other).liquidate(0, c.other.address)).to.emit(c.mm, 'LiquidationShortfall')
+      expect((await c.mm.positions(0)).open).to.eq(false)
+    })
   })
   describe('lender protection', () => {
     // Same malicious-token setup as liquidatable(): base, collateral and reward are one token, so
@@ -1710,6 +1753,26 @@ describe('MarginModule', () => {
       await mm.positionDeposit(0, await evil.getAddress(), 0, expandTo18Decimals(10))
       await mm.unfreeze(0)
       expect(await mm.positionUnderwaterSince(0)).to.eq(0n)
+    })
+
+    it('topping up a position above its debt clears the underwater timestamp even without unfreeze()', async () => {
+      const { mm, evil, other } = await evilOrders([0n])
+      await time.increase(90 * DAY)                                 // debt 4, value 2
+      await mm.connect(other).liquidate(0, other.address)
+      const firstSince = await mm.positionUnderwaterSince(0)
+      expect(firstSince).to.be.greaterThan(0n)
+
+      // Top up by 2.1 units: value (4.1) > debt (4.0), but still < threshold (4.4), so unfreeze() reverts.
+      await mm.positionDeposit(0, await evil.getAddress(), 0, ( expandTo18Decimals(21) ) / 10n)
+      await expect(mm.unfreeze(0)).to.be.revertedWith('MM27')
+      expect(await mm.positionUnderwaterSince(0)).to.eq(0n)
+
+      // 15 days later (> 24h after firstSince), debt is 4.5 > value 4.1: a fresh LENDER_WINDOW must start.
+      await time.increase(15 * DAY)
+      await mm.connect(other).liquidate(0, other.address)
+      expect(await mm.positionUnderwaterSince(0)).to.be.greaterThan(firstSince)
+      await time.increase(60)
+      await expect(mm.connect(other).liquidate(0, other.address)).to.be.revertedWith('MM38')
     })
   })
 
