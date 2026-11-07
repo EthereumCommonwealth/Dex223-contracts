@@ -95,7 +95,7 @@ describe('Oracle (TWAP)', () => {
       })
     }
 
-    return { oracle, factory, a, b, other, seed, seedAt, seedRange, mintRange, mintFullRange, plainMeanTick, swap, swapTo, TS }
+    return { oracle, factory, a, b, wa, wb, other, seed, seedAt, seedRange, mintRange, mintFullRange, plainMeanTick, swap, swapTo, TS }
   }
 
   it('rejects a zero window', async () => {
@@ -392,6 +392,59 @@ describe('Oracle (TWAP)', () => {
       await oracle.connect(other).acceptOwnership()
       expect(await oracle.owner()).to.eq(other.address)
       await expect(oracle.setMinLiquidity(a.target, b.target, 7)).to.be.revertedWith('Oracle: not owner')
+    })
+
+    it('enforces minLiquidity across ERC-223 and mixed token queries in getAmountOut', async () => {
+      const { oracle, a, b, wa, wb, seedRange, mintFullRange, swapTo } = await loadFixture(fx)
+      const pool = await seedRange(10)
+      const honest = await pool.liquidity()
+      await mintFullRange(1000n)
+      await pool.increaseObservationCardinalityNext(32)
+      await time.increase(WINDOW)
+      const before = await oracle.getAmountOut(b.target, a.target, one)
+
+      await swapTo(ALL_OUT, -800_000)
+      await time.increase(168)
+
+      // Without minLiquidity, both ERC-20 and ERC-223 queries include the dust slice.
+      expect(await oracle.getAmountOut(b.target, a.target, one)).to.be.lt(before / 10n)
+      expect(await oracle.getAmountOut(wb.target, wa.target, one)).to.be.lt(before / 10n)
+
+      // Setting minLiquidity on the pair must protect ERC-20, ERC-223, and mixed-standard queries alike.
+      await oracle.setMinLiquidity(a.target, b.target, honest / 2n)
+      expect(await oracle.getAmountOut(b.target, a.target, one)).to.be.closeTo(before, before / 1000n)
+      expect(await oracle.getAmountOut(wb.target, a.target, one)).to.be.closeTo(before, before / 1000n)
+      expect(await oracle.getAmountOut(b.target, wa.target, one)).to.be.closeTo(before, before / 1000n)
+      expect(await oracle.getAmountOut(wb.target, wa.target, one)).to.be.closeTo(before, before / 1000n)
+    })
+
+    it('canonicalizes setMinLiquidity called with ERC-223 addresses and excludes thin tiers for ERC-223 queries', async () => {
+      const { oracle, a, b, wa, wb, seedAt, seedRange, swap } = await loadFixture(fx)
+      const deep = await seedRange(10, FeeAmount.MEDIUM, expandTo18Decimals(1000))
+      const thin = await seedAt(1n, 1n, expandTo18Decimals(1), expandTo18Decimals(1), FeeAmount.HIGH)
+      await deep.increaseObservationCardinalityNext(32)
+      await thin.increaseObservationCardinalityNext(32)
+      await time.increase(WINDOW)
+
+      const floor = (await thin.liquidity()) * 10n
+      const [t0, t1] = a.target < b.target ? [a.target, b.target] : [b.target, a.target]
+
+      // Calling setMinLiquidity with ERC-223 addresses keys the floor by the pair's canonical ERC-20 addresses.
+      await expect(oracle.setMinLiquidity(wb.target, wa.target, floor))
+        .to.emit(oracle, 'MinLiquidityUpdated')
+        .withArgs(t0, t1, floor)
+      expect(await oracle.minLiquidity(t0, t1)).to.eq(floor)
+
+      await swap(ALL_OUT) // push deep pool into its gap
+      await time.increase(168)
+      expect((await oracle.findPoolWithHighestLiquidity(wa.target, wb.target))[0]).to.eq(deep.target)
+      expect((await oracle.findPoolWithHighestLiquidity(a.target, wb.target))[0]).to.eq(deep.target)
+
+      // When the deep pool sits in its gap for the full window, the thin tier is rejected for ERC-223 queries too.
+      await time.increase(WINDOW)
+      await expect(oracle.findPoolWithHighestLiquidity(wa.target, wb.target)).to.be.revertedWith('Oracle: no pool found')
+      await expect(oracle.getAmountOut(wb.target, wa.target, one)).to.be.revertedWith('Oracle: no pool found')
+      await expect(oracle.getAmountOut(b.target, wa.target, one)).to.be.revertedWith('Oracle: no pool found')
     })
   })
 })
