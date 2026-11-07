@@ -161,6 +161,8 @@ contract ProtocolFeeCollector {
         uint8 feeProtocol1,
         bool custom
     ) external onlyOwner {
+        require(isFactoryPool(pool), 'NOT_FACTORY_POOL');
+        require(validFeeProtocol(feeProtocol0) && validFeeProtocol(feeProtocol1), 'BAD_FEE_PROTOCOL');
         customFeeProtocol[pool] = custom;
         IFeeCollectorPool(pool).setFeeProtocol(feeProtocol0, feeProtocol1);
         emit PoolFeeProtocolSet(pool, feeProtocol0, feeProtocol1, custom);
@@ -173,6 +175,8 @@ contract ProtocolFeeCollector {
         uint256 value,
         bytes calldata data
     ) external payable onlyOwner returns (bytes memory result) {
+        require(target != address(0), 'ZERO_TARGET');
+        require(msg.value == value, 'VALUE_MISMATCH');
         bool success;
         (success, result) = target.call{value: value}(data);
         if (!success) {

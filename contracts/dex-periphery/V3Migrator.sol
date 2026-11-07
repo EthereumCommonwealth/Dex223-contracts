@@ -35,10 +35,24 @@ contract V3Migrator is IV3Migrator, PeripheryImmutableState, PoolInitializer, Mu
     function migrate(MigrateParams calldata params) external override {
         require(params.percentageToMigrate > 0, 'Percentage too small');
         require(params.percentageToMigrate <= 100, 'Percentage too large');
+        require(params.liquidityToMigrate > 0, 'Zero liquidity to migrate');
+        require(params.recipient != address(0), 'Zero recipient');
+
+        IUniswapV2Pair v2Pair = IUniswapV2Pair(params.pair);
+        address pairToken0 = v2Pair.token0();
+        address pairToken1 = v2Pair.token1();
+        require(
+            (pairToken0 == params.token0 && pairToken1 == params.token1) ||
+                (pairToken0 == params.token1 && pairToken1 == params.token0),
+            'Pair token mismatch'
+        );
 
         // burn v2 liquidity to this address
-        IUniswapV2Pair(params.pair).transferFrom(msg.sender, params.pair, params.liquidityToMigrate);
-        (uint256 amount0V2, uint256 amount1V2) = IUniswapV2Pair(params.pair).burn(address(this));
+        TransferHelper.safeTransferFrom(params.pair, msg.sender, params.pair, params.liquidityToMigrate);
+        (uint256 amount0V2, uint256 amount1V2) = v2Pair.burn(address(this));
+        if (pairToken0 != params.token0) {
+            (amount0V2, amount1V2) = (amount1V2, amount0V2);
+        }
 
         // calculate the amounts to migrate to v3
         uint256 amount0V2ToMigrate = amount0V2.mul(params.percentageToMigrate) / 100;
@@ -67,11 +81,10 @@ contract V3Migrator is IV3Migrator, PeripheryImmutableState, PoolInitializer, Mu
             );
 
         // if necessary, clear allowance and refund dust
+        if (amount0V3 < amount0V2ToMigrate) {
+            TransferHelper.safeApprove(params.token0, nonfungiblePositionManager, 0);
+        }
         if (amount0V3 < amount0V2) {
-            if (amount0V3 < amount0V2ToMigrate) {
-                TransferHelper.safeApprove(params.token0, nonfungiblePositionManager, 0);
-            }
-
             uint256 refund0 = amount0V2 - amount0V3;
             if (params.refundAsETH && params.token0 == WETH9) {
                 IWETH9(WETH9).withdraw(refund0);
@@ -80,11 +93,10 @@ contract V3Migrator is IV3Migrator, PeripheryImmutableState, PoolInitializer, Mu
                 TransferHelper.safeTransfer(params.token0, msg.sender, refund0);
             }
         }
+        if (amount1V3 < amount1V2ToMigrate) {
+            TransferHelper.safeApprove(params.token1, nonfungiblePositionManager, 0);
+        }
         if (amount1V3 < amount1V2) {
-            if (amount1V3 < amount1V2ToMigrate) {
-                TransferHelper.safeApprove(params.token1, nonfungiblePositionManager, 0);
-            }
-
             uint256 refund1 = amount1V2 - amount1V3;
             if (params.refundAsETH && params.token1 == WETH9) {
                 IWETH9(WETH9).withdraw(refund1);
