@@ -5,6 +5,10 @@ import { completeFixture } from './shared/completeFixture'
 import { useRealTimePoolLib } from './shared/realTimePoolLib'
 import { encodePriceSqrt, expandTo18Decimals, FeeAmount, getMaxTick, getMinTick, TICK_SPACINGS } from './shared/utilities'
 
+function predictTokenListsID(tokens: string[], isContract: boolean): string {
+  return ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(["bool", "address[]"], [isContract, tokens]))
+}
+
 /**
  * First functional coverage for Dex223 MarginModule. It previously had none, despite holding
  * collateral, issuing loans and executing liquidations.
@@ -26,7 +30,7 @@ describe('MarginModule', () => {
 
     const listTokens = [base.target.toString(), collat.target.toString()]
     await mm.addTokenlist(listTokens, false)
-    const whitelistId = await mm.predictTokenListsID(listTokens, false)
+    const whitelistId = await predictTokenListsID(listTokens, false)
 
     const now = (await ethers.provider.getBlock('latest'))!.timestamp
 
@@ -86,14 +90,14 @@ describe('MarginModule', () => {
     it('addTokenlist is deterministic and readable', async () => {
       const { mm, base, collat } = await loadFixture(fx)
       const list = [base.target.toString(), collat.target.toString()]
-      const id = await mm.predictTokenListsID(list, false)
+      const id = await predictTokenListsID(list, false)
       expect(await mm.getTokenlist(id)).to.deep.eq(list)
     })
 
     it('re-adding the same list is a no-op and keeps the same id', async () => {
       const { mm, base, collat } = await loadFixture(fx)
       const list = [base.target.toString(), collat.target.toString()]
-      const id = await mm.predictTokenListsID(list, false)
+      const id = await predictTokenListsID(list, false)
       await expect(mm.addTokenlist(list, false)).to.not.be.reverted
       expect(await mm.getTokenlist(id)).to.deep.eq(list)
     })
@@ -101,8 +105,8 @@ describe('MarginModule', () => {
     it('a different standard flag yields a different list id', async () => {
       const { mm, base, collat } = await loadFixture(fx)
       const list = [base.target.toString(), collat.target.toString()]
-      expect(await mm.predictTokenListsID(list, false)).to.not.eq(
-        await mm.predictTokenListsID(list, true)
+      expect(await predictTokenListsID(list, false)).to.not.eq(
+        await predictTokenListsID(list, true)
       )
     })
   })
@@ -293,7 +297,7 @@ describe('MarginModule', () => {
       const { mm } = await ready()
       // The old check computed uint8((1 + 4.5) / 1) = 5 and let this through.
       await expect(mm.takeLoan(0, expandTo18Decimals(45) / 10n, 0, expandTo18Decimals(1)))
-        .to.be.revertedWith('Leverage error')
+        .to.be.revertedWith('MM15')
       // Comfortably within 5x: (1 + 3.9) / 1 = 4.9x.
       await mm.takeLoan(0, expandTo18Decimals(39) / 10n, 0, expandTo18Decimals(1))
       expect((await mm.positions(0)).open).to.eq(true)
@@ -387,7 +391,7 @@ describe('MarginModule', () => {
         it('refuses a loan past the order leverage', async () => {
           const { mm } = await ready()
           // (2,600 + 10,500) / 2,600 > 5x
-          await expect(mm.takeLoan(0, USDC(10500n), 0, ONE)).to.be.revertedWith('Leverage error')
+          await expect(mm.takeLoan(0, USDC(10500n), 0, ONE)).to.be.revertedWith('MM15')
         })
       })
     }
@@ -403,7 +407,7 @@ describe('MarginModule', () => {
       const evilAddr = await evil.getAddress()
 
       await mm.addTokenlist([evilAddr], false)
-      const whitelistId = await mm.predictTokenListsID([evilAddr], false)
+      const whitelistId = await predictTokenListsID([evilAddr], false)
 
       await mm.createOrder({
         whitelistId,
@@ -464,7 +468,7 @@ describe('MarginModule', () => {
 
       await mm.addTokenlist([evilAddr], false)
       await mm.createOrder({
-        whitelistId: await mm.predictTokenListsID([evilAddr], false),
+        whitelistId: await predictTokenListsID([evilAddr], false),
         interestRate: 10n, duration: BigInt(30 * DAY), minLoan: 1n,
         liquidationRewardAmount: 0n, liquidationRewardAsset: evilAddr, asset: evilAddr,
         deadline: BigInt(now + 365 * DAY), currencyLimit: 5n, leverage: 200n,
@@ -484,7 +488,7 @@ describe('MarginModule', () => {
       expect(await evil.innerSucceeded(), 'nested takeLoan executed despite the guard').to.eq(false)
       // Revert strings are kept on MarginModule now that the test scaffolding lives in its own
       // file (contracts/test/MarginModuleTestHelpers.sol), so the reason must come through.
-      expect(await evil.innerError()).to.eq('REENTRANCY')
+      expect(await evil.innerError()).to.eq('MM01')
 
       // exactly one position, one loan drawn
       expect(await mm.positionIndex()).to.eq(1n)
@@ -518,7 +522,7 @@ describe('MarginModule', () => {
 
       await mm.addTokenlist([evilAddr], false)
       await mm.createOrder({
-        whitelistId: await mm.predictTokenListsID([evilAddr], false),
+        whitelistId: await predictTokenListsID([evilAddr], false),
         interestRate: 10000n,            // debt doubles every 30 days
         duration: BigInt(3650 * DAY),
         minLoan: 1n,
@@ -643,7 +647,7 @@ describe('MarginModule', () => {
 
       await mm.addTokenlist([tokAddr], false)
       await mm.createOrder({
-        whitelistId: await mm.predictTokenListsID([tokAddr], false),
+        whitelistId: await predictTokenListsID([tokAddr], false),
         interestRate: interest, duration: BigInt(3650 * DAY), minLoan: 1n,
         liquidationRewardAmount: rewardAmount, liquidationRewardAsset: tokAddr, asset: tokAddr,
         deadline: BigInt(now + 3650 * DAY), currencyLimit: 5n, leverage: 200n,
@@ -709,7 +713,7 @@ describe('MarginModule', () => {
       expect((await mm.positions(0)).frozenTime).to.be.greaterThan(0n)
       // The freeze itself no longer blocks closing (see "liquidation safety" below); the position
       // is still underwater, and that does.
-      await expect(mm.positionClose(0, false)).to.be.revertedWith('Subject to liquidation')
+      await expect(mm.positionClose(0, false)).to.be.revertedWith('MM30')
     })
 
     it('autoWithdraw returns the remaining assets to the owner', async () => {
@@ -806,7 +810,7 @@ describe('MarginModule', () => {
       await c.mm.addTokenlist(list, false)
       await c.mm.createOrder({
         ...c.orderParams, interestRate, duration: BigInt(365 * DAY),
-        whitelistId: await c.mm.predictTokenListsID(list, false),
+        whitelistId: await predictTokenListsID(list, false),
       })
       await c.mm.setOrderStatus(0, true)
       await c.base.approve(c.mm.target, ethers.MaxUint256)
@@ -914,12 +918,14 @@ describe('MarginModule', () => {
 
     it('after a crash the liquidator waits for the TWAP to catch up, then liquidates through the floor', async () => {
       const c = await underwaterWithCollateral()
+      // `other` is a third party: the lender names it keeper so it may complete a loss liquidation.
+      await c.mm.orderSetLenderProtection(0, 0, c.other.address)
       await c.mm.connect(c.other).liquidate(0, c.other.address)   // freeze, `other` is the liquidator
       await crashCollateralSpot(c)
       // The liquidator has no swap of their own to fall back on.
       await expect(
         c.mm.connect(c.other).marginSwap(0, 1, 1, 0, expandTo18Decimals(1), c.base.target, FeeAmount.MEDIUM, 0, 0)
-      ).to.be.revertedWith('Not position owner')
+      ).to.be.revertedWith('MM07')
       await expect(c.mm.connect(c.other).liquidate(0, c.other.address)).to.be.revertedWith('Too little received')
       // Once the TWAP reflects the crash the floor is met. The freeze (1 hour) is still live.
       await time.increase(c.TWAP_WINDOW)
@@ -950,7 +956,7 @@ describe('MarginModule', () => {
         await c.mm.positionClose(0, true)
         expect((await c.mm.positions(0)).open).to.eq(false)
       } else {
-        await expect(c.mm.positionClose(0, true)).to.be.revertedWith('Subject to liquidation')
+        await expect(c.mm.positionClose(0, true)).to.be.revertedWith('MM30')
       }
     })
   })
@@ -1036,7 +1042,7 @@ describe('MarginModule', () => {
     it('is blocked while the order has an open position', async () => {
       const c = await fundedOrder()
       await c.mm.takeLoan(0, expandTo18Decimals(1), 0, expandTo18Decimals(1))
-      await expect(c.mm.modifyOrder(...args(c, c.whitelistId))).to.be.revertedWith('Order has active positions')
+      await expect(c.mm.modifyOrder(...args(c, c.whitelistId))).to.be.revertedWith('MM04')
       await c.mm.positionDeposit(0, c.base.target, 0, expandTo18Decimals(1))
       await c.mm.positionClose(0, true)
       await c.mm.modifyOrder(...args(c, c.whitelistId))
@@ -1045,9 +1051,9 @@ describe('MarginModule', () => {
 
     it('orderSetCollaterals is likewise blocked with open positions and rejects an empty list', async () => {
       const c = await fundedOrder()
-      await expect(c.mm.orderSetCollaterals(0, [])).to.be.revertedWith('Order needs a collateral')
+      await expect(c.mm.orderSetCollaterals(0, [])).to.be.revertedWith('MM05')
       await c.mm.takeLoan(0, expandTo18Decimals(1), 0, expandTo18Decimals(1))
-      await expect(c.mm.orderSetCollaterals(0, [c.third.target])).to.be.revertedWith('Order has active positions')
+      await expect(c.mm.orderSetCollaterals(0, [c.third.target])).to.be.revertedWith('MM04')
     })
   })
 
@@ -1059,7 +1065,7 @@ describe('MarginModule', () => {
       const list = [c.base.target.toString(), c.collat.target.toString(), c.third.target.toString()]
       await c.mm.addTokenlist(list, false)
       // Limit 2: base + collateral fill it; a third asset must be refused.
-      await c.mm.createOrder({ ...c.orderParams, whitelistId: await c.mm.predictTokenListsID(list, false), currencyLimit: 2n })
+      await c.mm.createOrder({ ...c.orderParams, whitelistId: await predictTokenListsID(list, false), currencyLimit: 2n })
       await c.mm.setOrderStatus(0, true)
       await c.base.approve(c.mm.target, ethers.MaxUint256)
       await c.collat.approve(c.mm.target, ethers.MaxUint256)
@@ -1090,7 +1096,7 @@ describe('MarginModule', () => {
       await c.seedPool()
       const list = [c.base.target.toString(), c.collat.target.toString(), c.collat223.target.toString()]
       await c.mm.addTokenlist(list, false)
-      await c.mm.createOrder({ ...c.orderParams, whitelistId: await c.mm.predictTokenListsID(list, false) })
+      await c.mm.createOrder({ ...c.orderParams, whitelistId: await predictTokenListsID(list, false) })
       await c.mm.setOrderStatus(0, true)
       await c.base.approve(c.mm.target, ethers.MaxUint256)
       await c.collat.approve(c.mm.target, ethers.MaxUint256)
@@ -1128,7 +1134,7 @@ describe('MarginModule', () => {
       const c = await positionWith223Collateral()
       const id = await c.mm.getAssetId(0, c.collat223.target)
       await expect(c.mm.connect(c.other).marginSwap223(0, id, 2, 0, c.amount, c.base.target, FeeAmount.MEDIUM))
-        .to.be.revertedWith('Not position owner')
+        .to.be.revertedWith('MM07')
     })
 
     it('the ERC-223 asset is priced through the oracle like any other holding', async () => {
@@ -1147,7 +1153,7 @@ describe('MarginModule', () => {
       await c.mm.addTokenlist([ETH], false)
       await c.mm.createOrder({
         ...c.orderParams,
-        whitelistId: await c.mm.predictTokenListsID([ETH], false),
+        whitelistId: await predictTokenListsID([ETH], false),
         asset: ETH, collateral: [ETH],
         liquidationRewardAsset: ETH, liquidationRewardAmount: expandTo18Decimals(1) / 100n,
         interestRate: 10000n, duration: BigInt(365 * DAY),
@@ -1180,7 +1186,7 @@ describe('MarginModule', () => {
       const collateral = expandTo18Decimals(1)
       const reward = expandTo18Decimals(1) / 100n
       await expect(c.mm.takeLoan(0, expandTo18Decimals(1), 0, collateral, { value: collateral }))
-        .to.be.revertedWith('ETH reward reception error')
+        .to.be.revertedWith('MM17')
       await c.mm.takeLoan(0, expandTo18Decimals(1), 0, collateral, { value: collateral + reward })
       // Ether is both base and collateral, so the position holds a single 2 ETH balance.
       expect((await c.mm.getPositionAssets(0)).length).to.eq(1)
@@ -1202,11 +1208,11 @@ describe('MarginModule', () => {
       const collateral = expandTo18Decimals(1)
       const reward = expandTo18Decimals(1) / 100n
       await expect(c.mm.takeLoan(0, expandTo18Decimals(1), 0, collateral, { value: collateral + reward + 1n }))
-        .to.be.revertedWith('Excess ETH')
+        .to.be.revertedWith('MM18')
       // A token order takes no Ether at all.
       const t = await fundedOrder()
       await expect(t.mm.takeLoan(0, expandTo18Decimals(1), 0, expandTo18Decimals(1), { value: 1n }))
-        .to.be.revertedWith('Excess ETH')
+        .to.be.revertedWith('MM18')
     })
   })
 
@@ -1216,7 +1222,7 @@ describe('MarginModule', () => {
       const weth = c.weth9.target.toString()
       await c.mm.addTokenlist([weth], false)
       await c.mm.createOrder({
-        ...c.orderParams, whitelistId: await c.mm.predictTokenListsID([weth], false),
+        ...c.orderParams, whitelistId: await predictTokenListsID([weth], false),
         asset: weth, collateral: [weth], liquidationRewardAsset: weth,
       })
       await c.mm.setOrderStatus(0, true)
@@ -1235,13 +1241,13 @@ describe('MarginModule', () => {
     it('is refused while the position is open and works after a close without autoWithdraw', async () => {
       const c = await fundedOrder({ interestRate: 0n })
       await c.mm.takeLoan(0, expandTo18Decimals(1), 0, expandTo18Decimals(1))
-      await expect(c.mm.positionWithdraw(0, c.collat.target)).to.be.revertedWith('Position still open')
+      await expect(c.mm.positionWithdraw(0, c.collat.target)).to.be.revertedWith('MM32')
       await c.mm.positionClose(0, false)
       const before = await c.collat.balanceOf(c.wallet.address)
       await c.mm.positionWithdraw(0, c.collat.target)
       expect(await c.collat.balanceOf(c.wallet.address)).to.eq(before + expandTo18Decimals(1))
-      await expect(c.mm.positionWithdraw(0, c.collat.target)).to.be.revertedWith('Asset not found in position')
-      await expect(c.mm.connect(c.other).positionWithdraw(0, c.base.target)).to.be.revertedWith('Not position owner')
+      await expect(c.mm.positionWithdraw(0, c.collat.target)).to.be.revertedWith('MM25')
+      await expect(c.mm.connect(c.other).positionWithdraw(0, c.base.target)).to.be.revertedWith('MM07')
     })
   })
 
@@ -1277,7 +1283,7 @@ describe('MarginModule', () => {
       const c = await loadFixture(fx)
       await c.mm.addTokenlist([ETH], false)
       const p = {
-        ...c.orderParams, whitelistId: await c.mm.predictTokenListsID([ETH], false),
+        ...c.orderParams, whitelistId: await predictTokenListsID([ETH], false),
         asset: ETH, collateral: [ETH], liquidationRewardAsset: ETH, liquidationRewardAmount: ONE / 100n,
       }
       // Order 0 belongs to an honest lender with 10 ETH in it.
@@ -1301,7 +1307,7 @@ describe('MarginModule', () => {
       const c = await twoEthOrders()
       const weth = c.weth9.target.toString()
       await c.mm.addTokenlist([weth], false)
-      await c.mm.createOrder({ ...c.p, whitelistId: await c.mm.predictTokenListsID([weth], false),
+      await c.mm.createOrder({ ...c.p, whitelistId: await predictTokenListsID([weth], false),
         asset: weth, collateral: [weth], liquidationRewardAsset: weth })
       await c.mm.setOrderStatus(1, true)
       const call = c.mm.interface.encodeFunctionData('orderDepositWETH9', [1, weth])
@@ -1340,6 +1346,8 @@ describe('MarginModule', () => {
       await c.mm.orderDepositToken(0, expandTo18Decimals(100))
       await c.mm.takeLoan(0, ONE, 0, ONE)
       await time.increase(90 * DAY)
+      // `other` is a third party: the lender names it keeper so it may complete a loss liquidation.
+      await c.mm.orderSetLenderProtection(0, 0, c.other.address)
       await c.mm.connect(c.other).liquidate(0, c.other.address)   // `other` freezes and is the liquidator
       // A pool where 1 collat fetches only 0.01 base.
       await thinPool(c, [1n, 100n])
@@ -1395,8 +1403,8 @@ describe('MarginModule', () => {
       const c = await loadFixture(fx)
       expect(await c.mm.priceOracle()).to.eq(c.oracle.target)
       const rogue = await (await ethers.getContractFactory('contracts/dex-core/Dex223Oracle.sol:Oracle')).deploy(c.factory.target, c.TWAP_WINDOW)
-      await expect(c.mm.createOrder({ ...c.orderParams, oracle: rogue.target })).to.be.revertedWith('Unsupported oracle')
-      await expect(c.mm.createOrder({ ...c.orderParams, oracle: ethers.ZeroAddress })).to.be.revertedWith('Unsupported oracle')
+      await expect(c.mm.createOrder({ ...c.orderParams, oracle: rogue.target })).to.be.revertedWith('MM03')
+      await expect(c.mm.createOrder({ ...c.orderParams, oracle: ethers.ZeroAddress })).to.be.revertedWith('MM03')
       await c.mm.createOrder(c.orderParams)
       expect((await c.mm.orders(0)).oracle).to.eq(c.oracle.target)
     })
@@ -1407,7 +1415,7 @@ describe('MarginModule', () => {
       const rogue = await (await ethers.getContractFactory('contracts/dex-core/Dex223Oracle.sol:Oracle')).deploy(c.factory.target, c.TWAP_WINDOW)
       const modify = (oracle: string) => c.mm.modifyOrder(
         0, c.whitelistId, 777n, BigInt(7 * DAY), 5n, 3, 4, oracle, 1n, c.base.target, BigInt(c.now + 30 * DAY))
-      await expect(modify(rogue.target.toString())).to.be.revertedWith('Unsupported oracle')
+      await expect(modify(rogue.target.toString())).to.be.revertedWith('MM03')
       await modify(c.oracle.target.toString())
       expect((await c.mm.orders(0)).oracle).to.eq(c.oracle.target)
     })
@@ -1415,7 +1423,7 @@ describe('MarginModule', () => {
     it('the module cannot be deployed without an oracle contract', async () => {
       const { factory, router } = await loadFixture(completeFixture)
       const MM = await ethers.getContractFactory('MarginModule')
-      await expect(MM.deploy(factory.target, router.target, ethers.ZeroAddress)).to.be.revertedWith('Oracle has no code')
+      await expect(MM.deploy(factory.target, router.target, ethers.ZeroAddress)).to.be.revertedWith('MM02')
     })
   })
 
@@ -1462,7 +1470,7 @@ describe('MarginModule', () => {
       await c.collat.approve(c.mm.target, ethers.MaxUint256)
       await c.mm.orderDepositToken(0, expandTo18Decimals(100))
       // 1 base against 0.05 collat passes the 200x cap but is worth ~1.05 against a threshold of 1.1.
-      await expect(c.mm.takeLoan(0, ONE, 0, ONE / 20n)).to.be.revertedWith('Position opens liquidatable')
+      await expect(c.mm.takeLoan(0, ONE, 0, ONE / 20n)).to.be.revertedWith('MM19')
       // 0.2 collat: worth ~1.2, outside the buffer.
       await c.mm.takeLoan(0, ONE, 0, ONE / 5n)
       expect(await c.mm.subjectToLiquidation(0)).to.eq(false)
@@ -1486,13 +1494,13 @@ describe('MarginModule', () => {
       const c = await pooledPosition(10000n)
       await time.increase(30 * DAY)                                 // debt 2, threshold 2.2, value ~2
       await c.mm.connect(c.other).liquidate(0, c.other.address)   // freeze
-      await expect(c.mm.unfreeze(0)).to.be.revertedWith('Liquidatable')
+      await expect(c.mm.unfreeze(0)).to.be.revertedWith('MM27')
 
       // The owner tops the position up with 1 base: value ~3 against a threshold of 2.2.
       await c.mm.positionDeposit(0, c.base.target, 0, ONE)
       expect(await c.mm.subjectToLiquidation(0)).to.eq(false)
-      await expect(c.mm.connect(c.other).liquidate(0, c.other.address)).to.be.revertedWith('Not liquidatable')
-      await expect(c.mm.connect(c.other).liquidateStep(0, c.collat.target, ONE / 10n)).to.be.revertedWith('Not liquidatable')
+      await expect(c.mm.connect(c.other).liquidate(0, c.other.address)).to.be.revertedWith('MM23')
+      await expect(c.mm.connect(c.other).liquidateStep(0, c.collat.target, ONE / 10n)).to.be.revertedWith('MM23')
 
       // Anyone can lift the freeze now.
       await expect(c.mm.connect(c.other).unfreeze(0)).to.emit(c.mm, 'PositionUnfrozen').withArgs(0, c.other.address)
@@ -1500,7 +1508,7 @@ describe('MarginModule', () => {
       expect(pos.open).to.eq(true)
       expect(pos.frozenTime).to.eq(0n)
       expect(pos.liquidator).to.eq(ethers.ZeroAddress)
-      await expect(c.mm.unfreeze(0)).to.be.revertedWith('Not frozen')
+      await expect(c.mm.unfreeze(0)).to.be.revertedWith('MM26')
 
       // Interest keeps growing by 1 base per 30 days: after another 30 days the debt is 3 and the
       // threshold 3.3 against ~3 of holdings, so liquidate() places a fresh freeze.
@@ -1513,7 +1521,7 @@ describe('MarginModule', () => {
       const c = await pooledPosition(10000n)
       await time.increase(30 * DAY)
       await c.mm.connect(c.other).liquidate(0, c.other.address)   // freeze
-      await expect(c.mm.positionClose(0, true)).to.be.revertedWith('Subject to liquidation')
+      await expect(c.mm.positionClose(0, true)).to.be.revertedWith('MM30')
 
       await c.mm.positionDeposit(0, c.base.target, 0, ONE * 2n)
       const before = (await c.mm.orders(0)).balance
@@ -1527,6 +1535,8 @@ describe('MarginModule', () => {
 
     it('records the part of the debt a full liquidation could not recover', async () => {
       const c = await pooledPosition(10000n)
+      // `other` is a third party: the lender names it keeper so it may complete a loss liquidation.
+      await c.mm.orderSetLenderProtection(0, 0, c.other.address)
       await time.increase(60 * DAY)                                 // debt 3 against 1 base + 1 collat
       await c.mm.connect(c.other).liquidate(0, c.other.address)   // freeze
       await time.increase(60)
@@ -1545,7 +1555,9 @@ describe('MarginModule', () => {
     it('a position too large for its pool is sold in steps and then liquidated', async () => {
       // 100 base against 200 collat on a pool holding ~1000 of each.
       const c = await pooledPosition(10000n, expandTo18Decimals(100), expandTo18Decimals(200))
-      await expect(c.mm.liquidateStep(0, c.collat.target, ONE)).to.be.revertedWith('Not frozen')
+      // `other` is a third party: the lender names it keeper so it may complete a loss liquidation.
+      await c.mm.orderSetLenderProtection(0, 0, c.other.address)
+      await expect(c.mm.liquidateStep(0, c.collat.target, ONE)).to.be.revertedWith('MM26')
       await time.increase(60 * DAY)                                 // debt 300, threshold 330, value ~300
       expect(await c.mm.subjectToLiquidation(0)).to.eq(true)
       await c.mm.connect(c.other).liquidate(0, c.other.address)   // freeze
@@ -1556,9 +1568,9 @@ describe('MarginModule', () => {
       await expect(c.mm.connect(c.other).liquidate(0, c.other.address)).to.be.revertedWith('Too little received')
 
       // Only the liquidator who placed the freeze may step, and only on an asset the position holds.
-      await expect(c.mm.liquidateStep(0, c.collat.target, ONE)).to.be.revertedWith('Not frozen')
-      await expect(c.mm.connect(c.other).liquidateStep(0, c.base.target, ONE)).to.be.revertedWith('Asset not found in position')
-      await expect(c.mm.connect(c.other).liquidateStep(0, c.third.target, ONE)).to.be.revertedWith('Asset not found in position')
+      await expect(c.mm.liquidateStep(0, c.collat.target, ONE)).to.be.revertedWith('MM26')
+      await expect(c.mm.connect(c.other).liquidateStep(0, c.base.target, ONE)).to.be.revertedWith('MM25')
+      await expect(c.mm.connect(c.other).liquidateStep(0, c.third.target, ONE)).to.be.revertedWith('MM25')
       await expect(c.mm.connect(c.other).liquidateStep(0, c.collat.target, expandTo18Decimals(201))).to.be.reverted
 
       // 20 collat per step moves the pool by ~2%; a TWAP window between steps lets the floor follow.
@@ -1566,7 +1578,7 @@ describe('MarginModule', () => {
       // renews the freeze, and after a block the steps continue.
       for (let i = 0; i < 10; i++) {
         if (i > 0 && i % 2 === 0) {
-          await expect(c.mm.connect(c.other).liquidateStep(0, c.collat.target, expandTo18Decimals(20))).to.be.revertedWith('Not frozen')
+          await expect(c.mm.connect(c.other).liquidateStep(0, c.collat.target, expandTo18Decimals(20))).to.be.revertedWith('MM26')
           await expect(c.mm.connect(c.other).liquidate(0, c.other.address)).to.emit(c.mm, 'PositionFrozen')
           await time.increase(60)
         }
@@ -1589,4 +1601,116 @@ describe('MarginModule', () => {
       expect(recovered + await c.mm.orderShortfall(0)).to.be.closeTo(debt, ONE / 100n)
     })
   })
+  describe('lender protection', () => {
+    // Same malicious-token setup as liquidatable(): base, collateral and reward are one token, so
+    // the position holds 2 units (1 loan + 1 collateral) and the debt is 1 + t/30d at 100%/30d.
+    async function evilOrders(marginBps: bigint[]) {
+      const { mm, oracle, wallet, other, now, orderParams } = await loadFixture(fx)
+      const evil = await (await ethers.getContractFactory('ReentrantCollateralToken')).deploy()
+      const evilAddr = await evil.getAddress()
+      await mm.addTokenlist([evilAddr], false)
+      await evil.mint(wallet.address, expandTo18Decimals(1000))
+      await evil.approve(mm.target, ethers.MaxUint256)
+      for (let i = 0; i < marginBps.length; i++) {
+        await mm.createOrder({
+          whitelistId: await predictTokenListsID([evilAddr], false),
+          interestRate: 10000n, duration: BigInt(3650 * DAY), minLoan: 1n,
+          liquidationRewardAmount: 0n, liquidationRewardAsset: evilAddr, asset: evilAddr,
+          deadline: BigInt(now + 3650 * DAY), currencyLimit: 5n, leverage: 200n,
+          oracle: await oracle.getAddress(), collateral: [evilAddr],
+        })
+        if (marginBps[i] !== 0n) await mm.orderSetLenderProtection(i, marginBps[i], ethers.ZeroAddress)
+        await mm.setOrderStatus(i, true)
+        await mm.orderDepositToken(i, expandTo18Decimals(100))
+        await mm.takeLoan(i, expandTo18Decimals(1), 0, expandTo18Decimals(1))
+      }
+      return { mm, evil, wallet, other, orderParams }
+    }
+
+    it('only the order owner sets protection; the margin is 0 or 10-50% and fixed while positions are open', async () => {
+      const { mm, other, orderParams } = await evilOrders([0n])
+      await expect(mm.connect(other).orderSetLenderProtection(0, 0, other.address)).to.be.reverted
+      // Position 0 is open on order 0: the margin cannot change, the keeper can.
+      await expect(mm.orderSetLenderProtection(0, 3000, ethers.ZeroAddress)).to.be.revertedWith('MM36')
+      await mm.orderSetLenderProtection(0, 0, other.address)
+      expect(await mm.orderLiquidationKeeper(0)).to.eq(other.address)
+      // A fresh order: 999 and 5001 bps are out of range, 1000, 5000 and 0 are fine.
+      await mm.createOrder(orderParams)
+      await expect(mm.orderSetLenderProtection(1, 999, ethers.ZeroAddress)).to.be.revertedWith('MM37')
+      await expect(mm.orderSetLenderProtection(1, 5001, ethers.ZeroAddress)).to.be.revertedWith('MM37')
+      await mm.orderSetLenderProtection(1, 1000, ethers.ZeroAddress)
+      await mm.orderSetLenderProtection(1, 5000, ethers.ZeroAddress)
+      expect(await mm.orderMaintenanceMarginBps(1)).to.eq(5000n)
+      await mm.orderSetLenderProtection(1, 0, ethers.ZeroAddress)
+      expect(await mm.orderMaintenanceMarginBps(1)).to.eq(0n)
+    })
+
+    it('a larger maintenance margin makes a position liquidatable earlier', async () => {
+      // Value 2 against debt 1 + t/30d. Default 10%: liquidatable once debt > 1.818 (t > 24.5 d).
+      // 30%: once debt > 1.538 (t > 16.2 d). At 20 days only the 30% order's position is.
+      const { mm } = await evilOrders([0n, 3000n])
+      await time.increase(20 * DAY)
+      expect(await mm.subjectToLiquidation(0), 'default margin').to.eq(false)
+      expect(await mm.subjectToLiquidation(1), '30% margin').to.eq(true)
+      await time.increase(6 * DAY)
+      expect(await mm.subjectToLiquidation(0)).to.eq(true)
+    })
+
+    it('inside the buffer anyone may liquidate; the lender is not losing money', async () => {
+      // 27 days: debt 1.9, value 2 (liquidatable at 10%, not under water).
+      const { mm, other } = await evilOrders([0n])
+      await time.increase(27 * DAY)
+      await mm.connect(other).liquidate(0, other.address)
+      expect(await mm.positionUnderwaterSince(0)).to.eq(0n)
+      await time.increase(60)
+      await mm.connect(other).liquidate(0, other.address)
+      expect((await mm.positions(0)).open).to.eq(false)
+    })
+
+    it('under water, only the lender may complete the liquidation during the window', async () => {
+      // 90 days: debt 4, value 2.
+      const { mm, wallet, other } = await evilOrders([0n])
+      await time.increase(90 * DAY)
+      await mm.connect(other).liquidate(0, other.address)             // anyone may freeze
+      expect(await mm.positionUnderwaterSince(0)).to.be.greaterThan(0n)
+      await time.increase(60)
+      await expect(mm.connect(other).liquidate(0, other.address)).to.be.revertedWith('MM38')
+      // The lender takes the loss itself: any live freeze lets it complete the sale.
+      await mm.liquidate(0, wallet.address)
+      expect((await mm.positions(0)).open).to.eq(false)
+    })
+
+    it("the lender's keeper may complete it during the window", async () => {
+      const { mm, other } = await evilOrders([0n])
+      await mm.orderSetLenderProtection(0, 0, other.address)
+      await time.increase(90 * DAY)
+      await mm.connect(other).liquidate(0, other.address)
+      await time.increase(60)
+      await mm.connect(other).liquidate(0, other.address)
+      expect((await mm.positions(0)).open).to.eq(false)
+    })
+
+    it('after the window anyone may complete it, so a position never stays frozen', async () => {
+      const { mm, other } = await evilOrders([0n])
+      await time.increase(90 * DAY)
+      await mm.connect(other).liquidate(0, other.address)             // starts the window
+      await time.increase(24 * 60 * 60 + 1)                           // window over, freeze lapsed
+      await mm.connect(other).liquidate(0, other.address)             // renews the freeze
+      await time.increase(60)
+      await mm.connect(other).liquidate(0, other.address)
+      expect((await mm.positions(0)).open).to.eq(false)
+    })
+
+    it('unfreezing a recovered position clears the window', async () => {
+      const { mm, evil, other } = await evilOrders([0n])
+      await time.increase(90 * DAY)
+      await mm.connect(other).liquidate(0, other.address)
+      expect(await mm.positionUnderwaterSince(0)).to.be.greaterThan(0n)
+      // The owner tops the position up well above the debt, then anyone unfreezes it.
+      await mm.positionDeposit(0, await evil.getAddress(), 0, expandTo18Decimals(10))
+      await mm.unfreeze(0)
+      expect(await mm.positionUnderwaterSince(0)).to.eq(0n)
+    })
+  })
+
 })

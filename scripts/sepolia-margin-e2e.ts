@@ -25,6 +25,12 @@ import { ethers, network } from 'hardhat'
 import * as fs from 'fs'
 import * as path from 'path'
 
+// MarginModule.predictTokenListsID was removed for EIP-170 headroom; the id is keccak256(abi.encode(isContract, tokens)).
+function predictTokenListsID(tokens: string[], isContract: boolean): string {
+  return ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(['bool', 'address[]'], [isContract, tokens]))
+}
+
+
 const DEPLOY_STATE = process.env.DEPLOY_STATE_FILE || path.join(process.cwd(), 'deployments', `${network.name}.json`)
 const STATE = process.env.STATE_FILE || path.join(process.cwd(), '.sepolia-margin-e2e-state.json')
 const DEFAULTS: Record<string, { nfpm: string; tokenA: string; tokenB: string }> = {
@@ -168,7 +174,7 @@ async function main() {
 
   // 5. Whitelist, order, deposit.
   const list = [tokenA, tokenB]
-  const whitelistId: string = await mm.predictTokenListsID(list, false)
+  const whitelistId: string = await predictTokenListsID(list, false)
   await step('tokenlist', async () => {
     if ((await mm.getTokenlist(whitelistId)).length) return 'exists'
     return send('added', mm.addTokenlist(list, false))

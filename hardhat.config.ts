@@ -263,7 +263,8 @@ const config: HardhatUserConfig = {
         version: "0.7.6",
         settings: { optimizer: { enabled: true, runs: 1 }, debug: { revertStrings: "strip" } }
       },
-      // MarginModule keeps its revert strings: 24,333 bytes at runs: 1, 243 under the limit. It used
+      // MarginModule reverts with short codes (MMnn, table in docs/margin-revert-codes.md) to stay
+      // under the limit with lender protection added (24,542 bytes at runs: 1). It used
       // to be compiled with revertStrings: "strip" only because the test scaffolding
       // (UtilityModuleCfg and friends) shared its file and was 383 bytes over even at runs: 1. That
       // scaffolding now lives in contracts/test/MarginModuleTestHelpers.sol with the squeezed

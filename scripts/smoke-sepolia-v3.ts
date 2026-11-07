@@ -13,6 +13,12 @@ import * as fs from 'fs'
 import * as path from 'path'
 import { mined } from './tx-wait'
 
+// MarginModule.predictTokenListsID was removed for EIP-170 headroom; the id is keccak256(abi.encode(isContract, tokens)).
+function predictTokenListsID(tokens: string[], isContract: boolean): string {
+  return ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(['bool', 'address[]'], [isContract, tokens]))
+}
+
+
 const DEPLOYER = '0x1b305f986F8015DB6B42fFb4D231C77B3d5Af982'
 const RED = '0x1DEf777468F76ed1E74fC87bD32334d3Ccb520d0'
 const TOT1 = '0x51a3F4b5fFA9125Da78b55ed201eFD92401604fa'
@@ -78,7 +84,7 @@ async function main() {
   const mm = await ethers.getContractAt('contracts/dex-core/Dex223MarginModule.sol:MarginModule', st.marginModule, s)
   const list = [RED, TOT1]
   await send('addTokenlist [RED, TOT1]', mm.addTokenlist(list, false, await fees()))
-  const whitelistId = await mm.predictTokenListsID(list, false)
+  const whitelistId = await predictTokenListsID(list, false)
   const params = {
     whitelistId, interestRate: 100n, duration: 7n * 24n * 3600n, minLoan: ONE,
     liquidationRewardAmount: ONE / 100n, liquidationRewardAsset: RED, asset: RED,
@@ -90,7 +96,7 @@ async function main() {
     fail('an order with a foreign oracle was accepted')
   } catch (e: any) {
     if (!/Unsupported oracle/.test(e.shortMessage ?? e.message)) throw e
-    console.log('  ok    an order naming another oracle is refused ("Unsupported oracle")')
+    console.log('  ok    an order naming another oracle is refused ("MM03")')
   }
   const orderId = await mm.orderIndex()
   await send(`createOrder #${orderId}`, mm.createOrder(params, await fees()))
