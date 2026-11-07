@@ -247,12 +247,26 @@ contract RevenueV2 {
     /// @notice Withdraw the whole position, in the versions it was staked in, without touching any reward
     ///         accounting, for use if reward bookkeeping ever reverts (it cannot under the configured bounds,
     ///         but principal must never depend on it). Rewards already settled to the caller stay claimable;
-    ///         anything accrued since the caller's last stake, withdraw or claim is forfeited and stays in the
-    ///         contract. Same lock as withdraw().
+    ///         anything accrued since the caller's last stake, withdraw or claim is forfeited and queued to be
+    ///         streamed again to the remaining stakers. Same lock as withdraw().
     function emergency_withdraw() external nonReentrant {
         require(block.timestamp >= unlock_time[msg.sender], 'Tokens are frozen for a specified duration after the last staking');
         uint256 amount = staked[msg.sender];
         require(amount != 0, 'Nothing staked');
+        // Hand the caller's unsettled share of what has already accrued back to the queue. Without this it was
+        // owed to nobody and stayed in `accounted`, so it could never be paid to anyone. Storage only, at the
+        // accumulator as it stands (no _accrue, no external call), so this path still does not depend on the
+        // rest of the reward bookkeeping.
+        uint256 n = reward_tokens.length;
+        for (uint256 i = 0; i < n; i++) {
+            address token = reward_tokens[i];
+            RewardData storage r = reward_data[token];
+            uint256 paid = user_reward_per_token_paid[msg.sender][token];
+            if (r.reward_per_token > paid) {
+                r.queued += amount.mulDiv(r.reward_per_token - paid, PRECISION) * STREAM_SCALE;
+                user_reward_per_token_paid[msg.sender][token] = r.reward_per_token;
+            }
+        }
         // Lowering total_staked without accruing first only re-spreads the not-yet-accrued slice over the
         // remaining stakers; liabilities still never exceed what was streamed, so solvency holds.
         staked[msg.sender] = 0;

@@ -533,6 +533,29 @@ describe('RevenueV2', () => {
       void alice
     })
 
+    it('emergency_withdraw streams the forfeited rewards to the remaining stakers instead of stranding them', async () => {
+      const { signers, revenue, stake, feesArrive, reward, bal } = await loadFixture(fixture)
+      const [, alice, bob] = signers
+      await stake(alice, 10n * E18)
+      await stake(bob, 10n * E18)
+      await feesArrive(700n * E18)
+      await time.increase(LOCK) // the week's stream has run out; half of it accrued to alice
+      await revenue.sync([reward.target]) // brings the accumulator up to date
+      near(await revenue.earned(alice.address, reward.target), 350n * E18, E18 / 1000n)
+
+      await revenue.connect(alice).emergency_withdraw()
+      expect(await revenue.earned(alice.address, reward.target)).to.eq(0n)
+      // Her share is queued again and streamed to bob, the only staker left.
+      await revenue.sync([reward.target])
+      await time.increase(WEEK + DAY)
+      await revenue.connect(bob).claim([reward.target])
+      near(await bal(bob), 700n * E18, E18 / 1000n)
+      expect(await bal(bob)).to.be.lte(700n * E18)
+      const r = await revenue.reward_data(reward.target)
+      expect(await reward.balanceOf(revenue.target)).to.be.gte(r.accounted) // still solvent
+      expect(await reward.balanceOf(revenue.target)).to.be.lt(E18 / 1000n) // nothing stranded beyond rounding dust
+    })
+
     it('emergency_withdraw returns principal without touching reward accounting', async () => {
       const { signers, d20, revenue, stake, feesArrive, reward, bal } = await loadFixture(fixture)
       const [, alice, bob] = signers
