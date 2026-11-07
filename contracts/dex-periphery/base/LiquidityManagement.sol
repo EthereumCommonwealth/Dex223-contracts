@@ -36,12 +36,17 @@ abstract contract LiquidityManagement is IUniswapV3MintCallback, PeripheryImmuta
         address payer;
     }
 
+    address private constant NO_MINT_CALLBACK_POOL = address(1);
+    address private expectedMintCallbackPool = NO_MINT_CALLBACK_POOL;
+
     /// @inheritdoc IUniswapV3MintCallback
     function uniswapV3MintCallback(
         uint256 amount0Owed,
         uint256 amount1Owed,
         bytes calldata data
     ) external override {
+        require(msg.sender == expectedMintCallbackPool, 'MCB');
+        expectedMintCallbackPool = NO_MINT_CALLBACK_POOL;
         MintCallbackData memory decoded = abi.decode(data, (MintCallbackData));
         CallbackValidation.verifyCallback(factory, decoded.poolKey);
 
@@ -119,6 +124,7 @@ abstract contract LiquidityManagement is IUniswapV3MintCallback, PeripheryImmuta
 
         require(liquidity > 0, 'LM: zero liquidity');
 
+        expectedMintCallbackPool = poolAddr;
         (amount0, amount1) = pool.mint(
             params.recipient,
             params.tickLower,
@@ -126,6 +132,7 @@ abstract contract LiquidityManagement is IUniswapV3MintCallback, PeripheryImmuta
             liquidity,
             abi.encode(MintCallbackData({poolKey: poolKey, payer: msg.sender}))
         );
+        expectedMintCallbackPool = NO_MINT_CALLBACK_POOL;
 
         require(amount0 >= params.amount0Min && amount1 >= params.amount1Min, 'Price slippage check');
     }

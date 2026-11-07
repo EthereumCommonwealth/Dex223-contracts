@@ -422,6 +422,10 @@ IERC223Recipient
         );
 
 
+        // Update tokensOwed before calling pool.collect (CEI pattern) so ERC-223 tokenReceived
+        // callbacks cannot observe stale tokensOwed alongside already-updated feeGrowthInside*LastX128.
+        (position.tokensOwed0, position.tokensOwed1) = (tokensOwed0 - amount0Collect, tokensOwed1 - amount1Collect);
+
         // 0 = both ERC-20
         // 1 = token0 ERC-20 & token1 ERC-223
         // 2 = token0 ERC-223 & token1 ERC-20
@@ -437,10 +441,6 @@ IERC223Recipient
             tokensOut == 3 || tokensOut == 2, // True = request ERC-223 token0
             tokensOut == 3 || tokensOut == 1  // True = request ERC-223 token1
         );
-
-        // sometimes there will be a few less wei than expected due to rounding down in core, but we just subtract the full amount expected
-        // instead of the actual amount so we can burn the token
-        (position.tokensOwed0, position.tokensOwed1) = (tokensOwed0 - amount0Collect, tokensOwed1 - amount1Collect);
 
         emit Collect(params.tokenId, params.recipient == address(0) ? address(this) : params.recipient, amount0Collect, amount1Collect);
     }
