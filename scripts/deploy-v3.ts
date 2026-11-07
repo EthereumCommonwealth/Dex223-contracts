@@ -36,18 +36,18 @@
  * so no key is used:
  *
  *   ~/.foundry/bin/anvil --fork-url <sepolia RPC> --chain-id 11155111 --port 8546
- *   rm -f deployments/sepolia-v5.json
+ *   rm -f deployments/sepolia-v6.json
  *   SEPOLIA_RPC_URL=http://127.0.0.1:8546 npx hardhat run scripts/deploy-v3.ts --network sepolia
  *
  *   ~/.foundry/bin/anvil --fork-url <mainnet RPC> --chain-id 1 --port 8546
  *   rm -f deployments/fork-v3.json
  *   npx hardhat run scripts/deploy-v3.ts --network fork
  *
- * Rehearsals write their state to deployments/<network>-v3.json (sepolia: -v5); delete it before a live run.
+ * Rehearsals write their state to deployments/<network>-v3.json (sepolia: -v6); delete it before a live run.
  *
  * Live (irreversible; the deployer's PRIVATE_KEY in the environment):
  *
- *   CONFIRM_DEPLOY=dex223-v5-sepolia npx hardhat run scripts/deploy-v3.ts --network sepolia
+ *   CONFIRM_DEPLOY=dex223-v6-sepolia npx hardhat run scripts/deploy-v3.ts --network sepolia
  *   CONFIRM_DEPLOY=dex223-v3-mainnet MAX_GWEI=2 npx hardhat run scripts/deploy-v3.ts --network mainnet
  *
  * Not done here: moving the fee collector to the multisig (collector.transferOwnership(safe), then the Safe
@@ -141,8 +141,8 @@ const MAINNET: Chain = {
 
 const SEPOLIA: Chain = {
   chainId: 11155111n,
-  confirm: 'dex223-v5-sepolia',
-  stateName: 'v5',
+  confirm: 'dex223-v6-sepolia',
+  stateName: 'v6',
   deployer: '0x1b305f986F8015DB6B42fFb4D231C77B3d5Af982',
   startNonce: 161n,
   burns: 0,
