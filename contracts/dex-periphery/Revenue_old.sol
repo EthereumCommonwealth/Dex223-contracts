@@ -22,6 +22,7 @@ contract Dex223PoolMinimal {
     Token public token0;
     Token public token1;
     ProtocolFees public protocolFees;
+    uint24 public fee;
     
     function collectProtocol(
         address recipient,
@@ -46,6 +47,16 @@ contract Revenue {
     {
         require(msg.sender == revenue_contract_owner, "Owner error");
         _;
+    }
+
+    bool public reentrancy_lock = false;
+
+    modifier nonReentrant
+    {
+        require(!reentrancy_lock, "Reentrancy error.");
+        reentrancy_lock = true;
+        _;
+        reentrancy_lock = false;
     }
 
     struct Token
@@ -84,6 +95,7 @@ contract Revenue {
 
     address public staking_token_erc20;
     address public staking_token_erc223;
+    address public factory;
 
     event Staked(address indexed user, uint256 amount);
     event Withdrawn(address indexed user, uint256 amount);
@@ -96,19 +108,19 @@ contract Revenue {
         staking_token_erc223 = _staking_token223;
     }
 
-    function stake(address _token, uint256 _amount) public {
-        require(_token == staking_token_erc20 || _token == staking_token_erc20, "Trying to stake a wrong token");
+    function stake(address _token, uint256 _amount) public nonReentrant {
+        require(_token == staking_token_erc20 || _token == staking_token_erc223, "Trying to stake a wrong token");
         _update(msg.sender);
-        staked[msg.sender] += _amount;
         receiveToken(_token, _amount);
+        staked[msg.sender] += _amount;
         staking_timestamp[msg.sender] = block.timestamp;
 
         emit Staked(msg.sender, _amount);
     }
 
-    function withdraw(address _token, uint256 amount) public {
+    function withdraw(address _token, uint256 amount) public nonReentrant {
         require(staking_timestamp[msg.sender] + claim_delay <= block.timestamp, "Tokens are frozen for a specified duration after the last staking");
-        require(_token == staking_token_erc20 || _token == staking_token_erc20, "Trying to stake a wrong token");
+        require(_token == staking_token_erc20 || _token == staking_token_erc223, "Trying to stake a wrong token");
         _update(msg.sender);
         staked[msg.sender] -= amount;
         sendToken(_token, amount);
@@ -119,16 +131,20 @@ contract Revenue {
     // Processes protocol fees from multiple pools.
     // This contract must be established as the owner of the Factory
     // to have permission to call "collectProtocol"
-    function delivery(address[] calldata pools) public {
+    function delivery(address[] calldata pools) public nonReentrant {
+        require(factory != address(0), "Factory is not configured");
         for (uint256 i = 0; i < pools.length; i++) {
             address p = pools[i];
-            //Token memory t0 = Dex223PoolMinimal(p).token0();
             (address t0_20, address t0_223) = Dex223PoolMinimal(p).token0();
+            (address t1_20, address t1_223) = Dex223PoolMinimal(p).token1();
+            require(
+                IDex223Factory(factory).getPool(t0_20, t1_20, Dex223PoolMinimal(p).fee()) == p,
+                "Pool is not registered in the factory"
+            );
             if (get20[t0_223] == address(0)) {
                 get223[t0_20] = t0_223;
                 get20[t0_223] = t0_20;
             }
-            (address t1_20, address t1_223) = Dex223PoolMinimal(p).token1();
             if (get20[t1_223] == address(0)) {
                 get223[t1_20] = t1_223;
                 get20[t1_223] = t1_20;
@@ -144,23 +160,31 @@ contract Revenue {
         }
     }
 
-    function claim(address[] memory tokens) public {
+    function claim(address[] memory tokens) public nonReentrant {
         _update(msg.sender);
 
         for (uint256 i = 0; i < tokens.length; i++) {
-            uint256 tokenUnpaidContribution = totalContribution - spentTotalContribution[tokens[i]];
-            uint256 unpaidUserContribution = contribution[msg.sender] - spentContribution[msg.sender][tokens[i]];
+            address token = tokens[i];
+            require(token != staking_token_erc20 && token != staking_token_erc223, "Cannot claim staking token");
+            uint256 tokenUnpaidContribution = totalContribution - spentTotalContribution[token];
+            uint256 unpaidUserContribution = contribution[msg.sender] - spentContribution[msg.sender][token];
             require(unpaidUserContribution <= tokenUnpaidContribution);
+            if (unpaidUserContribution == 0 || tokenUnpaidContribution == 0) continue;
 
-            uint256 balance = IERC20Minimal(tokens[i]).balanceOf(address(this));
+            uint256 balance = IERC20Minimal(token).balanceOf(address(this));
             uint256 dividends = balance * unpaidUserContribution / tokenUnpaidContribution;
 
-            spentContribution[msg.sender][tokens[i]] += unpaidUserContribution;
-            spentTotalContribution[tokens[i]] += unpaidUserContribution;
+            spentContribution[msg.sender][token] += unpaidUserContribution;
+            spentTotalContribution[token] += unpaidUserContribution;
+            address second = get223[token] != address(0) ? get223[token] : get20[token];
+            if (second != address(0)) {
+                spentContribution[msg.sender][second] = spentContribution[msg.sender][token];
+                spentTotalContribution[second] = spentTotalContribution[token];
+            }
 
-            sendToken(tokens[i], dividends);
+            sendToken(token, dividends);
 
-            emit Claimed(msg.sender, tokens[i], dividends);
+            emit Claimed(msg.sender, token, dividends);
         }
     }
 
@@ -210,9 +234,18 @@ contract Revenue {
     // view functions //
 
     function getContributionValue(address staker) public view returns(uint256 value) {
+        if (lastUpdate[staker] == 0) {
+            return contribution[staker];
+        }
         uint256 duration = block.timestamp - lastUpdate[staker];
         value = staked[staker] * duration + contribution[staker];
         return value;
+    }
+
+    function set_factory(address _factory) public onlyOwner
+    {
+        require(_factory != address(0), "Zero factory");
+        factory = _factory;
     }
 
     function give_owner(address _factory) public onlyOwner
@@ -231,7 +264,7 @@ contract Revenue {
         default_fee_token1 = _token1;
     }
 
-    function enable_fees_in_pools(address[] calldata pools) public 
+    function enable_fees_in_pools(address[] calldata pools) public onlyOwner
     {
         for(uint256 i = 0; i < pools.length; i++)
         {

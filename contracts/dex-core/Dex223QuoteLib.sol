@@ -378,13 +378,14 @@ contract Dex223QuoteLib {
         // enough tokens of the given standard to cover the cost of the transfer.
         (bool success, bytes memory data) =
                             _token.call(abi.encodeWithSelector(IERC20Minimal.transfer.selector, _recipient, _amount));
+        bool transferOk = success && (data.length == 0 || abi.decode(data, (bool)));
 
         // Check whether the _token exists or is an empty address.
         uint256 _tokenCodeSize;
         assembly { _tokenCodeSize := extcodesize(_token) }
         bool tokenNotExist = (_tokenCodeSize == 0); // Token doesn't exist if its code size is 0.
 
-        if(!success || tokenNotExist)
+        if(!transferOk || tokenNotExist)
         {
             // NOTE can not get balance if no contract deployed
             uint _balance = tokenNotExist ? 0 : IERC20Minimal(_token).balanceOf(address(this));
