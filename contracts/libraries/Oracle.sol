@@ -84,6 +84,7 @@ library Oracle {
         uint16 cardinality,
         uint16 cardinalityNext
     ) internal returns (uint16 indexUpdated, uint16 cardinalityUpdated) {
+        require(cardinality > 0, 'I');
         Observation memory last = self[index];
 
         // early return if we've already written an observation this block
@@ -251,6 +252,7 @@ library Oracle {
         uint128 liquidity,
         uint16 cardinality
     ) internal view returns (int56 tickCumulative, uint160 secondsPerLiquidityCumulativeX128) {
+        require(cardinality > 0, 'I');
         if (secondsAgo == 0) {
             Observation memory last = self[index];
             if (last.blockTimestamp != time) last = transform(last, time, tick, liquidity);

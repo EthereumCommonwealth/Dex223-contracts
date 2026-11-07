@@ -117,20 +117,12 @@ IERC223Recipient
     ERC223TransferInfo private tkn;
     function tokenReceived(address _from, uint _value, bytes memory _data) public override returns (bytes4)
     {
-        /**
-         * @dev Note that inside of the token transaction handler the actual sender of token transfer is accessible via the tkn.sender variable
-         * (analogue of msg.sender for Ether transfers)
-         *
-         * tkn.value - is the amount of transferred tokens
-         * tkn.data  - is the "metadata" of token transfer
-         * tkn.token_contract is most likely equal to msg.sender because the token contract typically invokes this function
-        */
+        address depositor = tkn.sender != address(0) ? tkn.sender : _from;
         tkn.token_contract = msg.sender;
-        tkn.sender         = _from;
         tkn.value          = _value;
         tkn.data           = _data;
 
-        depositERC223(_from, msg.sender, _value);
+        depositERC223(depositor, msg.sender, _value);
 
         return 0x8943ec02;
     }
@@ -428,6 +420,7 @@ IERC223Recipient
         // 3 = both ERC-223.
 
         // the actual amounts collected are returned
+        if (params.recipient == address(0) && tokensOut != 0) tkn.sender = msg.sender;
         (amount0, amount1) = IDex223PoolActions(params.pool).collect(
             params.recipient == address(0) ? address(this) : params.recipient,
             position.tickLower,
@@ -437,6 +430,7 @@ IERC223Recipient
             tokensOut == 3 || tokensOut == 2, // True = request ERC-223 token0
             tokensOut == 3 || tokensOut == 1  // True = request ERC-223 token1
         );
+        if (params.recipient == address(0) && tokensOut != 0) tkn.sender = address(0);
 
         // sometimes there will be a few less wei than expected due to rounding down in core, but we just subtract the full amount expected
         // instead of the actual amount so we can burn the token
