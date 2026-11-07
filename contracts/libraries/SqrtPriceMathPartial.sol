@@ -28,7 +28,7 @@ library SqrtPriceMathPartial {
         uint256 numerator1 = uint256(liquidity) << FixedPoint96.RESOLUTION;
         uint256 numerator2 = sqrtRatioBX96 - sqrtRatioAX96;
 
-        require(sqrtRatioAX96 > 0);
+        require(sqrtRatioAX96 > 0 && liquidity > 0);
 
         return
             roundUp
@@ -53,6 +53,7 @@ library SqrtPriceMathPartial {
         bool roundUp
     ) internal pure returns (uint256 amount1) {
         if (sqrtRatioAX96 > sqrtRatioBX96) (sqrtRatioAX96, sqrtRatioBX96) = (sqrtRatioBX96, sqrtRatioAX96);
+        require(liquidity > 0);
 
         return
             roundUp

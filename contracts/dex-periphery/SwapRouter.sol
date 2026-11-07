@@ -21,6 +21,9 @@ import './base/CallbackValidation.sol';
 interface IERC7417TokenConverter
 {
     function getERC223WrapperFor(address _token) external view returns (address);
+    function getERC20WrapperFor(address _token) external view returns (address);
+    function getERC20OriginFor(address _token) external view returns (address);
+    function getERC223OriginFor(address _token) external view returns (address);
 }
 
 interface IDex223Pool {
@@ -178,6 +181,24 @@ IERC223Recipient
         return IDex223Pool(PoolAddress.computeAddress(factory, PoolAddress.getPoolKey(tokenA, tokenB, fee)));
     }
 
+    function _toErc20(address token) private view returns (address) {
+        if (address(ERC7417TokenConverter) != address(0)) {
+            address origin20 = ERC7417TokenConverter.getERC20OriginFor(token);
+            if (origin20 != address(0)) return origin20;
+            address wrapper20 = ERC7417TokenConverter.getERC20WrapperFor(token);
+            if (wrapper20 != address(0)) return wrapper20;
+        }
+        return token;
+    }
+
+    function _matchesDepositedToken(address tokenIn, address depositedToken) private view returns (bool) {
+        if (tokenIn == depositedToken) return true;
+        if (address(ERC7417TokenConverter) == address(0)) return false;
+        return
+            ERC7417TokenConverter.getERC223WrapperFor(tokenIn) == depositedToken ||
+            ERC7417TokenConverter.getERC223OriginFor(tokenIn) == depositedToken;
+    }
+
     struct SwapCallbackData {
         bytes path;
         address payer;
@@ -204,6 +225,8 @@ IERC223Recipient
         expectedCallbackPool = NO_CALLBACK_POOL;            // one callback per swap
         SwapCallbackData memory data = abi.decode(_data, (SwapCallbackData));
         (address tokenIn, address tokenOut, uint24 fee) = data.path.decodeFirstPool();
+        tokenIn = _toErc20(tokenIn);
+        tokenOut = _toErc20(tokenOut);
         CallbackValidation.verifyCallback(factory, tokenIn, tokenOut, fee);
 
         (bool isExactInput, uint256 amountToPay) =
@@ -236,6 +259,8 @@ IERC223Recipient
         if (recipient == address(0)) recipient = address(this);
 
         (address tokenIn, address tokenOut, uint24 fee) = data.path.decodeFirstPool();
+        tokenIn = _toErc20(tokenIn);
+        tokenOut = _toErc20(tokenOut);
         bool zeroForOne = tokenIn < tokenOut;
         address pool = address(getPool(tokenIn, tokenOut, fee));
 
@@ -374,8 +399,7 @@ IERC223Recipient
             // `msg.sender` here is the ERC-223 token that invoked `tokenReceived`, while callers pass the
             // ERC-20 address as `tokenIn`. Accept either, exactly as `exactInput` below already does.
             require(
-                params.tokenIn == msg.sender ||
-                    ERC7417TokenConverter.getERC223WrapperFor(params.tokenIn) == msg.sender,
+                _matchesDepositedToken(params.tokenIn, msg.sender),
                 "Wrong token swap requested"
             );
         }
@@ -418,7 +442,7 @@ IERC223Recipient
             // Swappable token has to be either
             // the token which is being deposited
             // or its ERC-223 version.
-            require(tokenA == msg.sender || ERC7417TokenConverter.getERC223WrapperFor(tokenA) == msg.sender, "Token doesnt match ERC223 versions");
+            require(_matchesDepositedToken(tokenA, msg.sender), "Token doesnt match ERC223 versions");
         }
         address payer = call_sender; //msg.sender; // msg.sender pays for the first hop
 
@@ -462,6 +486,8 @@ IERC223Recipient
         if (recipient == address(0)) recipient = address(this);
 
         (address tokenOut, address tokenIn, uint24 fee) = data.path.decodeFirstPool();
+        tokenIn = _toErc20(tokenIn);
+        tokenOut = _toErc20(tokenOut);
 
         bool zeroForOne = tokenIn < tokenOut;
 

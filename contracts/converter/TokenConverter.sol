@@ -536,12 +536,13 @@ contract TokenStandardConverter is IERC223Recipient
 
     function unwrapERC20toERC223(address _ERC20token, uint256 _amount) public returns (bool)
     {
+        require(_amount > 0, "Error: Zero amount.");
         require(IERC20(_ERC20token).balanceOf(msg.sender) >= _amount, "Error: Insufficient balance.");
         require(erc223Origins[_ERC20token] != address(0), "Error: provided token is not a ERC-20 wrapper.");
 
         ERC20WrapperToken(_ERC20token).burn(msg.sender, _amount);
 
-        safeTransfer(erc223Origins[_ERC20token], msg.sender, _amount);
+        require(IERC223(erc223Origins[_ERC20token]).transfer(msg.sender, _amount), "TransferHelper: TRANSFER_FAILED");
 
         return true;
     }
@@ -562,8 +563,13 @@ contract TokenStandardConverter is IERC223Recipient
         require(msg.sender == address(0x01000B5fE61411C466b70631d7fF070187179Bbf));
 
         uint256 _balance = IERC20(_token).balanceOf(address(this));
-        require(_balance > erc20Supply[_token], "TokenConverter: no stuck tokens to extract");
-        safeTransfer(_token, address(0x01000B5fE61411C466b70631d7fF070187179Bbf), _balance - erc20Supply[_token]);
+        uint256 _locked = erc20Supply[_token];
+        address _erc20Wrapper = address(erc20Wrappers[_token]);
+        if (_erc20Wrapper != address(0)) {
+            _locked += IERC20(_erc20Wrapper).totalSupply();
+        }
+        require(_balance > _locked, "TokenConverter: no stuck tokens to extract");
+        safeTransfer(_token, address(0x01000B5fE61411C466b70631d7fF070187179Bbf), _balance - _locked);
     }
     
     function safeTransfer(address token, address to, uint value) internal {
