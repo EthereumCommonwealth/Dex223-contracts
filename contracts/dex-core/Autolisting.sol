@@ -214,6 +214,7 @@ contract Dex223AutoListing {
     // NOTE add storing paymentTokens & prices (map)
     address[] private paymentTokens;
     mapping(address => uint) private paymentPrices;
+    bool private paidListingConfigured;
 
     struct TokenPrice
     {
@@ -319,6 +320,7 @@ contract Dex223AutoListing {
 
     function checkListing(address _token_erc20, address _token_erc223) internal
     {
+        require(_token_erc20 != _token_erc223, "Identical token addresses");
 
         // There are two possible scenarios here:
         // 1. We are listing a new token on Dex223.
@@ -354,8 +356,8 @@ contract Dex223AutoListing {
             require(
                 (!isListed(_token_erc20)  || listed_tokens[_token_erc20]  == _id) &&
                 (!isListed(_token_erc223) || listed_tokens[_token_erc223] == _id) &&
-                (_token_erc20  == address(0) || _listed.erc20  == address(0) || _listed.erc20  == _token_erc20) &&
-                (_token_erc223 == address(0) || _listed.erc223 == address(0) || _listed.erc223 == _token_erc223),
+                (_token_erc20  == address(0) || ((_listed.erc20  == address(0) || _listed.erc20  == _token_erc20)  && _listed.erc223 != _token_erc20)) &&
+                (_token_erc223 == address(0) || ((_listed.erc223 == address(0) || _listed.erc223 == _token_erc223) && _listed.erc20  != _token_erc223)),
                 "Listing pair mismatch"
             );
             if (_token_erc20 != address(0)) {
@@ -380,7 +382,10 @@ contract Dex223AutoListing {
         // It may require payments or some liquidity criteria.
 
         // Free-listing contract does not require anything so it will automatically pass.
-        if (paymentTokens.length == 0) return 0; // no prices set == free listing
+        if (paymentTokens.length == 0) {
+            require(!paidListingConfigured, "Payment token not accepted");
+            return 0; // no prices set == free listing
+        }
 
         // get price for passed token address
         uint price = paymentPrices[paymentToken];
@@ -406,6 +411,7 @@ contract Dex223AutoListing {
         // If the token is being set to a non-zero price for the first time, add it to paymentTokens
         if (price > 0 && paymentPrices[paymentToken] == 0) {
             paymentTokens.push(paymentToken);
+            paidListingConfigured = true;
         }
 
         // If the token price is being set to zero, remove it from the list
@@ -531,6 +537,7 @@ contract Dex223CoreAutoListing {
     // NOTE add storing paymentTokens & prices (map)
     address[] private paymentTokens;
     mapping(address => uint) private paymentPrices;
+    bool private paidListingConfigured;
 
     struct TokenPrice
     {
@@ -671,6 +678,7 @@ contract Dex223CoreAutoListing {
 
     function checkListing(address _token_erc20, address _token_erc223) internal
     {
+        require(_token_erc20 != _token_erc223, "Identical token addresses");
 
         // There are two possible scenarios here:
         // 1. We are listing a new token on Dex223.
@@ -706,8 +714,8 @@ contract Dex223CoreAutoListing {
             require(
                 (!isListed(_token_erc20)  || listed_tokens[_token_erc20]  == _id) &&
                 (!isListed(_token_erc223) || listed_tokens[_token_erc223] == _id) &&
-                (_token_erc20  == address(0) || _listed.erc20  == address(0) || _listed.erc20  == _token_erc20) &&
-                (_token_erc223 == address(0) || _listed.erc223 == address(0) || _listed.erc223 == _token_erc223),
+                (_token_erc20  == address(0) || ((_listed.erc20  == address(0) || _listed.erc20  == _token_erc20)  && _listed.erc223 != _token_erc20)) &&
+                (_token_erc223 == address(0) || ((_listed.erc223 == address(0) || _listed.erc223 == _token_erc223) && _listed.erc20  != _token_erc223)),
                 "Listing pair mismatch"
             );
             if (_token_erc20 != address(0)) {
@@ -727,7 +735,10 @@ contract Dex223CoreAutoListing {
 
     function checkListingCriteria(address paymentToken) internal view returns (uint)
     {
-        if (paymentTokens.length == 0) return 0; // no prices set == free listing
+        if (paymentTokens.length == 0) {
+            require(!paidListingConfigured, "Payment token not accepted");
+            return 0; // no prices set == free listing
+        }
 
         // get price for passed token address
         uint price = paymentPrices[paymentToken];
@@ -753,6 +764,7 @@ contract Dex223CoreAutoListing {
         // If the token is being set to a non-zero price for the first time, add it to paymentTokens
         if (price > 0 && paymentPrices[paymentToken] == 0) {
             paymentTokens.push(paymentToken);
+            paidListingConfigured = true;
         }
 
         // If the token price is being set to zero, remove it from the list
@@ -875,6 +887,7 @@ contract Dex223OwnableListing {
     // NOTE add storing paymentTokens & prices (map)
     address[] private paymentTokens;
     mapping(address => uint) private paymentPrices;
+    bool private paidListingConfigured;
 
     modifier onlyOwner
     {
@@ -1016,6 +1029,7 @@ contract Dex223OwnableListing {
 
     function checkListing(address _token_erc20, address _token_erc223) internal
     {
+        require(_token_erc20 != _token_erc223, "Identical token addresses");
 
         // There are two possible scenarios here:
         // 1. We are listing a new token on Dex223.
@@ -1051,8 +1065,8 @@ contract Dex223OwnableListing {
             require(
                 (!isListed(_token_erc20)  || listed_tokens[_token_erc20]  == _id) &&
                 (!isListed(_token_erc223) || listed_tokens[_token_erc223] == _id) &&
-                (_token_erc20  == address(0) || _listed.erc20  == address(0) || _listed.erc20  == _token_erc20) &&
-                (_token_erc223 == address(0) || _listed.erc223 == address(0) || _listed.erc223 == _token_erc223),
+                (_token_erc20  == address(0) || ((_listed.erc20  == address(0) || _listed.erc20  == _token_erc20)  && _listed.erc223 != _token_erc20)) &&
+                (_token_erc223 == address(0) || ((_listed.erc223 == address(0) || _listed.erc223 == _token_erc223) && _listed.erc20  != _token_erc223)),
                 "Listing pair mismatch"
             );
             if (_token_erc20 != address(0)) {
@@ -1077,7 +1091,10 @@ contract Dex223OwnableListing {
         // It may require payments or some liquidity criteria.
 
         // Free-listing contract does not require anything so it will automatically pass.
-        if (paymentTokens.length == 0) return 0; // no prices set == free listing
+        if (paymentTokens.length == 0) {
+            require(!paidListingConfigured, "Payment token not accepted");
+            return 0; // no prices set == free listing
+        }
 
         // get price for passed token address
         uint price = paymentPrices[paymentToken];
@@ -1103,6 +1120,7 @@ contract Dex223OwnableListing {
         // If the token is being set to a non-zero price for the first time, add it to paymentTokens
         if (price > 0 && paymentPrices[paymentToken] == 0) {
             paymentTokens.push(paymentToken);
+            paidListingConfigured = true;
         }
 
         // If the token price is being set to zero, remove it from the list

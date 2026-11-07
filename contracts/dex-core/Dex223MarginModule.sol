@@ -8,6 +8,7 @@ import '../interfaces/ITokenConverter.sol';
 import '../interfaces/IERC20Minimal.sol';
 import '../interfaces/ISwapRouter.sol';
 import '../libraries/TickMath.sol';
+import '../libraries/FullMath.sol';
 import '../tokens/interfaces/IERC223.sol';
 import './Dex223Oracle.sol';
 
@@ -54,6 +55,11 @@ interface IWETH9
     function balanceOf(address) external view returns (uint256);
     function deposit() external payable;
     function withdraw(uint wad) external;
+}
+
+interface IPeripheryWETH9
+{
+    function WETH9() external view returns (address);
 }
 
 contract MarginModule is IOrderParams
@@ -355,12 +361,11 @@ contract MarginModule is IOrderParams
         require(_oracle == priceOracle, "MM03");
     }
 
-    // NOTE: deliberately no `receive()`. Every ETH inflow already arrives through a payable entry
-    // point that credits an order or position - orderDepositEth and orderDepositWETH9 - and nothing
-    // here unwraps WETH back into bare ETH (orderDepositWETH9 only ever calls deposit()). A bare
-    // `receive()` would accept ETH that no order or position is credited for, leaving it stranded,
-    // and it also makes `MarginModule(address)` a compile error at every call site in this file
-    // because the type gains a payable fallback.
+    // Only WETH9 may send ETH here (during withdraw() when unwrapping WETH9 proceeds back into
+    // native ETH for an order/position that holds address(0)).
+    receive() external payable {
+        require(msg.sender == _weth9());
+    }
 
     // getPositionActualPools(positionId, feeTiers) used to live here. It was removed to keep the
     // module under EIP-170 once liquidateStep()/unfreeze() were added, and it was wrong anyway: it
@@ -489,6 +494,7 @@ contract MarginModule is IOrderParams
     {
         Order storage order = orders[_orderId];
         require(order_status[_orderId].positions == 0, "MM04");
+        require(_leverage > 1 && _deadline > block.timestamp);
         _requirePriceOracle(_oracle);
 
         order.whitelist     = _whitelist;
@@ -586,14 +592,22 @@ contract MarginModule is IOrderParams
     }
 
     // TODO: Anyone can deposit funds to a position, not only the owner of the position.
-    function positionDeposit(uint256 positionId, address asset, uint256 idInWhitelist,  uint256 amount) public nonReentrant {
+    function positionDeposit(uint256 positionId, address asset, uint256 idInWhitelist,  uint256 amount) public payable nonReentrant {
         _requirePositionOwner(positionId);
         require(amount > 0, "MM09");
 
         _validateAsset(positionId, asset, idInWhitelist);
-        _receiveAsset(asset, amount);
+        if (asset == address(0)) {
+            require(msg.value == amount);
+        } else {
+            require(msg.value == 0);
+            _receiveAsset(asset, amount);
+        }
 
         addAsset(positionId, asset, amount);
+        if (asset != positions[positionId].assets[0]) {
+            require(_getEquivalentInBaseAsset(asset, amount, positions[positionId].assets[0], positions[positionId].orderId) > 0);
+        }
         emit PositionDeposit(positionId, asset, amount);
     }
 
@@ -810,8 +824,17 @@ contract MarginModule is IOrderParams
         // amountOutMinimum: that let them sell the position's assets into a pool they had skewed and
         // keep the difference. Liquidation now always sells through _swapToBaseAsset and its floor.
         _requirePositionOwner(_positionId);
+        _requireTradablePosition(_positionId);
         _marginSwapInternal(_positionId, _assetId1, _whitelistId1, _whitelistId2, _amount, _asset2, _feeTier, _minAmountOut, _priceLimitX96);
         _requireSolventAfterSwap(_positionId);
+    }
+
+    function _requireTradablePosition(uint256 _positionId) internal view {
+        Position storage position = positions[_positionId];
+        require(
+            block.timestamp < position.deadline &&
+                (position.frozenTime == 0 || block.timestamp - position.frozenTime > MAX_FREEZE_DURATION)
+        );
     }
 
     /// @dev An owner's swap must not leave the position liquidatable. Otherwise the owner could sell
@@ -819,6 +842,14 @@ contract MarginModule is IOrderParams
     /// the lender with only the collateral.
     function _requireSolventAfterSwap(uint256 _positionId) internal view {
         require(!subjectToLiquidation(_positionId), "MM20");
+    }
+
+    function _weth9() private view returns (address) {
+        return IPeripheryWETH9(address(router)).WETH9();
+    }
+
+    function _toPoolAsset(address asset) private view returns (address) {
+        return asset == address(0) ? _weth9() : asset;
     }
 
     function _marginSwapInternal(
@@ -844,17 +875,27 @@ contract MarginModule is IOrderParams
         // Perform the swap operation.
         // We only allow direct swaps for security reasons currently.
 
-        uint256 balInBefore = IERC20Minimal(_asset1).balanceOf(address(this));
+        address tokenIn = _toPoolAsset(_asset1);
+        address tokenOut = _toPoolAsset(_asset2);
+        if (_asset1 == address(0)) {
+            IWETH9(tokenIn).deposit{value: _amount}();
+        }
+
+        uint256 balInBefore = IERC20Minimal(tokenIn).balanceOf(address(this));
         uint256 amountOut;
         {
-            address pool = factory.getPool(_asset1, _asset2, _feeTier);
+            address pool = factory.getPool(tokenIn, tokenOut, _feeTier);
             require(pool != address(0));
-            require(!_isErc223SideOf(pool, _asset1));
-            (, address tokenOut20) = _poolErc20Pair(pool, _asset1);
+            require(!_isErc223SideOf(pool, tokenIn));
+            if (factory.getPool(tokenIn, _toPoolAsset(positions[_positionId].assets[0]), _feeTier) == pool) {
+                _asset2 = positions[_positionId].assets[0];
+                tokenOut = _toPoolAsset(_asset2);
+            }
+            (, address tokenOut20) = _poolErc20Pair(pool, tokenIn);
 
-            IERC20Minimal(_asset1).approve(address(router), _amount);
+            IERC20Minimal(tokenIn).approve(address(router), _amount);
             amountOut = ISwapRouter(router).exactInputSingle(ISwapRouter.ExactInputSingleParams({
-                tokenIn: _asset1,
+                tokenIn: tokenIn,
                 tokenOut: tokenOut20,
                 fee: _feeTier,
                 recipient: address(this),
@@ -862,11 +903,20 @@ contract MarginModule is IOrderParams
                 amountIn: _amount,
                 amountOutMinimum: _minAmountOut,
                 sqrtPriceLimitX96: _priceLimitX96,
-                prefer223Out: _isErc223SideOf(pool, _asset2)
+                prefer223Out: _isErc223SideOf(pool, tokenOut)
             }));
         }
         require(amountOut > 0);
-        uint256 amountInUsed = balInBefore - IERC20Minimal(_asset1).balanceOf(address(this));
+        uint256 amountInUsed = balInBefore - IERC20Minimal(tokenIn).balanceOf(address(this));
+        if (amountInUsed < _amount) {
+            IERC20Minimal(tokenIn).approve(address(router), 0);
+            if (_asset1 == address(0)) {
+                IWETH9(tokenIn).withdraw(_amount - amountInUsed);
+            }
+        }
+        if (_asset2 == address(0)) {
+            IWETH9(tokenOut).withdraw(amountOut);
+        }
 
         // add new (received) asset to Position
         addAsset(_positionId, _asset2, amountOut);
@@ -892,6 +942,7 @@ contract MarginModule is IOrderParams
         uint24 _feeTier) public nonReentrant {
         // Only allow the owner of the position to perform trading operations with it.
         _requirePositionOwner(_positionId);
+        _requireTradablePosition(_positionId);
 
         _marginSwap223Internal(_positionId, _assetId1, _whitelistId1, _whitelistId2, _amount, _asset2, _feeTier, 0);
         _requireSolventAfterSwap(_positionId);
@@ -916,15 +967,23 @@ contract MarginModule is IOrderParams
         // Perform the swap operation.
         // We only allow direct swaps for security reasons currently.
 
-        address pool = factory.getPool(_asset1, _asset2, _feeTier);
+        address tokenOut = _toPoolAsset(_asset2);
+        address pool = factory.getPool(_asset1, tokenOut, _feeTier);
         require(pool != address(0));
         require(_isErc223SideOf(pool, _asset1));
+        if (factory.getPool(_asset1, _toPoolAsset(positions[_positionId].assets[0]), _feeTier) == pool) {
+            _asset2 = positions[_positionId].assets[0];
+            tokenOut = _toPoolAsset(_asset2);
+        }
 
         uint256 balInBefore = IERC20Minimal(_asset1).balanceOf(address(this));
-        uint256 amountOut = _execute223Swap(pool, _asset1, _asset2, _feeTier, _amount);
+        uint256 amountOut = _execute223Swap(pool, _asset1, tokenOut, _feeTier, _amount);
         require(amountOut > 0);
         require(amountOut >= _minAmountOut, "MM21");
         uint256 amountInUsed = balInBefore - IERC20Minimal(_asset1).balanceOf(address(this));
+        if (_asset2 == address(0)) {
+            IWETH9(tokenOut).withdraw(amountOut);
+        }
 
         // add new (received) asset to Position
         addAsset(_positionId, _asset2, amountOut);
@@ -947,7 +1006,9 @@ contract MarginModule is IOrderParams
             _isErc223SideOf(pool, _asset2),
             SwapCallbackData({path: abi.encodePacked(a1_20, _feeTier, a2_20), payer: address(this)})
         );
-        uint256 balanceBefore = IERC20Minimal(_asset2).balanceOf(address(this));
+        uint256 _codeSize;
+        assembly { _codeSize := extcodesize(_asset2) }
+        uint256 balanceBefore = _codeSize > 0 ? IERC20Minimal(_asset2).balanceOf(address(this)) : 0;
         require(IERC223(_asset1).transfer(pool, _amount, _data));
         return IERC20Minimal(_asset2).balanceOf(address(this)) - balanceBefore;
     }
@@ -958,7 +1019,6 @@ contract MarginModule is IOrderParams
     /// exists in one place.
     function _positionValue(uint256 positionId) internal view returns (uint256 requiredAmount, uint256 totalValueInBaseAsset) {
         Position storage position = positions[positionId];
-        Oracle oracle = Oracle(orders[position.orderId].oracle);
 
         requiredAmount = calculateDebtAmount(position);
         // base asset is always at index 0
@@ -966,7 +1026,7 @@ contract MarginModule is IOrderParams
         address baseAsset = position.assets[0];
 
         for (uint256 i = 1; i < position.assets.length; i++) {
-            totalValueInBaseAsset += oracle.getAmountOut(baseAsset, position.assets[i], position.balances[i]);
+            totalValueInBaseAsset += _getEquivalentInBaseAsset(position.assets[i], position.balances[i], baseAsset, position.orderId);
         }
     }
 
@@ -1007,7 +1067,11 @@ contract MarginModule is IOrderParams
         // The threshold grows (10000 + MAINTENANCE_MARGIN_BPS) / 10000 times as fast as the debt.
         if(totalValueInBaseAsset > threshold && position.interest > 0 && position.initialBalance > 0)
         {
-            uint256 _insolvency_time_delta = ((totalValueInBaseAsset - threshold) * 10000 * 10000 * 30 days) / (position.interest * position.initialBalance * (10000 + _maintenanceMarginBps(position.orderId)));
+            uint256 _insolvency_time_delta = FullMath.mulDiv(
+                totalValueInBaseAsset - threshold,
+                10000 * 10000 * 30 days,
+                position.interest * position.initialBalance * (10000 + _maintenanceMarginBps(position.orderId))
+            );
             insolvensy_expected_time = _insolvency_time_delta + block.timestamp;
         }
         return (totalValueInBaseAsset < threshold, position.liquidator, position.frozenTime, !position.open, insolvensy_expected_time);
@@ -1021,11 +1085,8 @@ contract MarginModule is IOrderParams
     function calculateDebtAmount(Position storage position) internal view returns (uint256) {
         uint256 elapsedSecs = block.timestamp - position.createdAt;
 
-        // Reorder: divide by precision early to reduce intermediate overflow risk
-        // interest_per_period = initialBalance * interest / INTEREST_RATE_PRECISION
-        // requiredAmount = interest_per_period * elapsedSecs / 30 days + initialBalance
         uint256 interestComponent = position.initialBalance * position.interest;
-        uint256 requiredAmount = (interestComponent / INTEREST_RATE_PRECISION) * elapsedSecs / 30 days;
+        uint256 requiredAmount = (interestComponent * elapsedSecs) / (INTEREST_RATE_PRECISION * 30 days);
         requiredAmount += position.initialBalance;
 
         return requiredAmount;
@@ -1065,6 +1126,7 @@ contract MarginModule is IOrderParams
         if (position.frozenTime > 0 && block.timestamp - position.frozenTime <= MAX_FREEZE_DURATION)
         {
             require(block.timestamp > position.frozenTime, "MM24");
+            require(msg.sender == position.liquidator, "MM26");
             _requireMayRealizeLoss(positionId);
             _liquidate(positionId, receiver);
             emit Liquidation(positionId, position.orderId, msg.sender, receiver);
@@ -1233,7 +1295,15 @@ contract MarginModule is IOrderParams
             i--;
             uint256 balance = position.balances[i];
             if (balance == 0) continue;
-            _swapToBaseAsset(positionId, position.assets[i], balance);
+            address asset = position.assets[i];
+            if (!sellAll) {
+                uint256 needed = debt - position.balances[0];
+                uint256 floorOut = _getEquivalentInBaseAsset(asset, balance, position.assets[0], position.orderId) * FORCED_SWAP_MIN_OUT_BPS / 10000;
+                if (floorOut > needed) {
+                    balance = (balance * needed) / floorOut + 1;
+                }
+            }
+            _swapToBaseAsset(positionId, asset, balance);
         }
         shortfall = _paybackBaseAsset(position);
 
@@ -1272,14 +1342,15 @@ contract MarginModule is IOrderParams
     }
 
     function _getEquivalentInBaseAsset(address asset, uint256 amount, address baseAsset, uint256 orderId) internal view returns(uint256 baseAmount) {
-        if (asset == baseAsset) {
+        if (amount == 0) return 0;
+        address poolAsset = _toPoolAsset(asset);
+        address poolBase = _toPoolAsset(baseAsset);
+        if (poolAsset == poolBase) {
             baseAmount = amount;
         } else {
             Order storage order = orders[orderId];
             Oracle oracle = Oracle(order.oracle);
-            //(address poolAddress,,) = oracle.findPoolWithHighestLiquidity(asset, baseAsset);
-            //uint256 estimatedAsBase = oracle.getAmountOut(poolAddress, baseAsset, asset, amount);
-            uint256 _estimatedAsBase = oracle.getAmountOut(baseAsset, asset, amount);
+            uint256 _estimatedAsBase = oracle.getAmountOut(poolBase, poolAsset, amount);
             baseAmount = _estimatedAsBase;
         }
 
@@ -1290,14 +1361,17 @@ contract MarginModule is IOrderParams
     function _validateAsset(uint256 positionId, address asset, uint256 idInWhitelist) internal view {
         Position storage position = positions[positionId];
         Order storage order = orders[position.orderId];
+        if (order.baseAsset == asset || positionInitialCollateral[positionId] == asset) {
+            return;
+        }
         Tokenlist storage whitelist = tokenlists[order.whitelist];
 
         if (whitelist.isContract == true) {
             // Optimization: contract address stored as first element instead of separate var
             address _contract = whitelist.tokens[0];
-            require(IDex223Autolisting(_contract).isListed(asset) || order.baseAsset == asset || positionInitialCollateral[positionId] == asset);
+            require(IDex223Autolisting(_contract).isListed(asset));
         } else {
-            require(whitelist.tokens[idInWhitelist] == asset || order.baseAsset == asset || positionInitialCollateral[positionId] == asset);
+            require(idInWhitelist < whitelist.tokens.length && whitelist.tokens[idInWhitelist] == asset);
         }
     }
 
@@ -1339,10 +1413,10 @@ contract MarginModule is IOrderParams
 
     function _receiveAsset(address asset, uint256 amount) internal {
         require(asset != address(0));
+        if (amount == 0) return;
         
         // erc223
-        if (erc223deposit[msg.sender][asset] > 0) {
-            require(erc223deposit[msg.sender][asset] >= amount);
+        if (erc223deposit[msg.sender][asset] >= amount) {
             erc223deposit[msg.sender][asset] -= amount;
 
         // erc20
@@ -1393,16 +1467,24 @@ contract MarginModule is IOrderParams
         Order storage order = orders[position.orderId];
         Oracle oracle = Oracle(order.oracle);
 
+        address poolAsset = _toPoolAsset(asset);
+        address poolBase = _toPoolAsset(order.baseAsset);
+
         // findPoolWithHighestLiquidity reverts with "Oracle: no pool found" when nothing is eligible.
-        (address pool,, uint24 fee) = oracle.findPoolWithHighestLiquidity(asset, order.baseAsset);
+        (address pool,, uint24 fee) = oracle.findPoolWithHighestLiquidity(poolAsset, poolBase);
 
         // Floor the output at FORCED_SWAP_MIN_OUT_BPS of the oracle's TWAP quote for this amount.
-        uint256 minOut = oracle.getAmountOut(order.baseAsset, asset, amount) * FORCED_SWAP_MIN_OUT_BPS / 10000;
+        uint256 minOut = oracle.getAmountOut(poolBase, poolAsset, amount) * FORCED_SWAP_MIN_OUT_BPS / 10000;
 
-        if (_isErc223SideOf(pool, asset)) {
-            _marginSwap223Internal(positionId, getAssetId(positionId, asset), getIdFromTokenlist(order.whitelist, asset), getIdFromTokenlist(order.whitelist, order.baseAsset), amount, order.baseAsset, fee, minOut);
+        uint256 assetId = getAssetId(positionId, asset);
+        uint256 whitelistId = (asset == order.baseAsset || asset == positionInitialCollateral[positionId])
+            ? 0
+            : getIdFromTokenlist(order.whitelist, asset);
+
+        if (_isErc223SideOf(pool, poolAsset)) {
+            _marginSwap223Internal(positionId, assetId, whitelistId, 0, amount, order.baseAsset, fee, minOut);
         } else {
-            _marginSwapInternal(positionId, getAssetId(positionId, asset), getIdFromTokenlist(order.whitelist, asset), getIdFromTokenlist(order.whitelist, order.baseAsset), amount, order.baseAsset, fee, minOut, 0);
+            _marginSwapInternal(positionId, assetId, whitelistId, 0, amount, order.baseAsset, fee, minOut, 0);
         }
 
         // Return new base asset balance
