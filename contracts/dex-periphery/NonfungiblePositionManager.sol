@@ -174,10 +174,15 @@ IERC223Recipient
         );
     }
 
-    /// @dev Caches a pool key
+    /// @dev Caches a pool key (normalized to canonical ERC-20 addresses from the pool)
     function cachePoolKey(address pool, PoolAddress.PoolKey memory poolKey) private returns (uint80 poolId) {
         poolId = _poolIds[pool];
         if (poolId == 0) {
+            (address t0_20, ) = IDex223Pool(pool).token0();
+            (address t1_20, ) = IDex223Pool(pool).token1();
+            if (t0_20 != address(0) && t1_20 != address(0)) {
+                poolKey = PoolAddress.PoolKey({token0: t0_20, token1: t1_20, fee: poolKey.fee});
+            }
             _poolIds[pool] = (poolId = _nextPoolId++);
             _poolIdToPoolKey[poolId] = poolKey;
         }
