@@ -290,6 +290,7 @@ contract ERC223WrapperToken is IERC223, ERC165, ERC20Rescue
 
     function transferFrom(address _from, address _to, uint _value) public returns (bool) {
 
+        require(_from != address(0), "ERC223: transfer from the zero address");
         require(_to != address(0), "ERC223: transfer to the zero address");
         require(allowances[_from][msg.sender] >= _value, "ERC223: Insufficient allowance.");
 
@@ -381,6 +382,7 @@ contract ERC20WrapperToken is IERC20, ERC165, ERC20Rescue
 
     function transferFrom(address _from, address _to, uint _value) public returns (bool) {
 
+        require(_from != address(0), "ERC20: transfer from the zero address");
         require(_to != address(0), "ERC20: transfer to the zero address");
         require(allowances[_from][msg.sender] >= _value, "ERC20: Insufficient allowance.");
 
@@ -454,6 +456,9 @@ contract TokenStandardConverter is IERC223Recipient
 
     function tokenReceived(address _from, uint _value, bytes memory /* _data */) public override returns (bytes4)
     {
+        require(Address.isContract(msg.sender), "Error: caller is not a contract.");
+        require(_value > 0, "Error: zero value.");
+        require(_from != address(0) && _from != address(this), "Error: invalid sender.");
         require(erc223Origins[msg.sender] == address(0), "Error: creating wrapper for a wrapper token.");
         // There are two possible cases:
         // 1. A user deposited ERC223 origin token to convert it to ERC20 wrapper
@@ -484,6 +489,10 @@ contract TokenStandardConverter is IERC223Recipient
         // Mint ERC-20 wrapper tokens for the deposited ERC-223 token
         // if the ERC-20 wrapper didn't exist then it was just created in the above statement.
         erc20Wrappers[msg.sender].mint(_from, _value);
+        require(
+            IERC223(msg.sender).balanceOf(address(this)) >= erc20Wrappers[msg.sender].totalSupply(),
+            "Error: insufficient origin balance."
+        );
         return this.tokenReceived.selector;
     }
 
