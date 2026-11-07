@@ -400,7 +400,7 @@ contract RevenueV2 {
     ///         the staking token only the surplus above all stakes and unstaked deposits. Listed reward
     ///         tokens can never be swept, so revenue owed to stakers is out of reach.
     function sweep(address token, address to, uint256 amount) external onlyOwner nonReentrant {
-        require(to != address(0), 'Zero recipient');
+        require(to != address(0) && to != address(this), 'Zero recipient');
         require(!reward_data[token].listed, 'Reward tokens cannot be swept');
         if (_isStakingToken(token)) {
             uint256 liabilities = total_staked_by_version[token];

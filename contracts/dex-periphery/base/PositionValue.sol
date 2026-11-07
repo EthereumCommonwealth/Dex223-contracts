@@ -13,6 +13,14 @@ import '../interfaces/INonfungiblePositionManager.sol';
 import './LiquidityAmounts.sol';
 import './PoolAddress.sol';
 
+interface IDex223FactoryForPositionValue {
+    function getPool(
+        address tokenA,
+        address tokenB,
+        uint24 fee
+    ) external view returns (address pool);
+}
+
 /// @title Returns information about the token value held in a Uniswap V3 NFT
 library PositionValue {
     using LowGasSafeMath for uint256;
@@ -118,14 +126,20 @@ library PositionValue {
         view
         returns (uint256 amount0, uint256 amount1)
     {
+        address poolAddr = IDex223FactoryForPositionValue(positionManager.factory()).getPool(
+            feeParams.token0,
+            feeParams.token1,
+            feeParams.fee
+        );
+        if (poolAddr == address(0)) {
+            poolAddr = PoolAddress.computeAddress(
+                positionManager.factory(),
+                PoolAddress.PoolKey({token0: feeParams.token0, token1: feeParams.token1, fee: feeParams.fee})
+            );
+        }
         (uint256 poolFeeGrowthInside0LastX128, uint256 poolFeeGrowthInside1LastX128) =
             _getFeeGrowthInside(
-                IUniswapV3Pool(
-                    PoolAddress.computeAddress(
-                        positionManager.factory(),
-                        PoolAddress.PoolKey({token0: feeParams.token0, token1: feeParams.token1, fee: feeParams.fee})
-                    )
-                ),
+                IUniswapV3Pool(poolAddr),
                 feeParams.tickLower,
                 feeParams.tickUpper
             );
