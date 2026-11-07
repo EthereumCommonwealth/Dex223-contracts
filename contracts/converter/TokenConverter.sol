@@ -406,6 +406,15 @@ contract TokenStandardConverter is IERC223Recipient
     mapping (address => address)            public erc20Origins;
     mapping (address => uint256)            public erc20Supply; // Token => how much was deposited.
 
+    bool private _locked;
+
+    modifier nonReentrant() {
+        require(!_locked, "ReentrancyGuard: reentrant call");
+        _locked = true;
+        _;
+        _locked = false;
+    }
+
     function getERC20WrapperFor(address _token) public view returns (address)
     {
         return address(erc20Wrappers[_token]);
@@ -452,7 +461,7 @@ contract TokenStandardConverter is IERC223Recipient
         return address(uint160(uint(hash)));
     }
 
-    function tokenReceived(address _from, uint _value, bytes memory /* _data */) public override returns (bytes4)
+    function tokenReceived(address _from, uint _value, bytes memory /* _data */) public override nonReentrant returns (bytes4)
     {
         require(erc223Origins[msg.sender] == address(0), "Error: creating wrapper for a wrapper token.");
         // There are two possible cases:
@@ -462,12 +471,11 @@ contract TokenStandardConverter is IERC223Recipient
         if(erc20Origins[msg.sender] != address(0))
         {
             // Origin for deposited token exists.
-            // Unwrap ERC-223 wrapper.
-
+            // Unwrap ERC-223 wrapper: burn the wrapper tokens before transferring the underlying
+            // ERC-20 origin to preserve totalSupply / reserve invariants across any recipient hooks.
             erc20Supply[erc20Origins[msg.sender]] -= _value;
-            safeTransfer(erc20Origins[msg.sender], _from, _value);
-
             ERC223WrapperToken(msg.sender).burn(_value);
+            safeTransfer(erc20Origins[msg.sender], _from, _value);
 
             return this.tokenReceived.selector;
         }
@@ -489,6 +497,7 @@ contract TokenStandardConverter is IERC223Recipient
 
     function createERC223Wrapper(address _token) public returns (address)
     {
+        require(Address.isContract(_token), "Error: Origin is not a contract");
         require(address(erc223Wrappers[_token]) == address(0), "ERROR: Wrapper exists");
         require(!isWrapper(_token), "Error: Creating wrapper for a wrapper token");
         
@@ -503,6 +512,7 @@ contract TokenStandardConverter is IERC223Recipient
 
     function createERC20Wrapper(address _token) public returns (address)
     {
+        require(Address.isContract(_token), "Error: Origin is not a contract");
         require(address(erc20Wrappers[_token]) == address(0), "ERROR: Wrapper already exists.");
         require(!isWrapper(_token), "Error: Creating wrapper for a wrapper token");
 
@@ -515,7 +525,7 @@ contract TokenStandardConverter is IERC223Recipient
         return address(_newERC20Wrapper);
     }
 
-    function wrapERC20toERC223(address _ERC20token, uint256 _amount) public returns (bool)
+    function wrapERC20toERC223(address _ERC20token, uint256 _amount) public nonReentrant returns (bool)
     {
         // If there is no active wrapper for a token that user wants to wrap
         // then create it.
@@ -534,7 +544,7 @@ contract TokenStandardConverter is IERC223Recipient
         return true;
     }
 
-    function unwrapERC20toERC223(address _ERC20token, uint256 _amount) public returns (bool)
+    function unwrapERC20toERC223(address _ERC20token, uint256 _amount) public nonReentrant returns (bool)
     {
         require(IERC20(_ERC20token).balanceOf(msg.sender) >= _amount, "Error: Insufficient balance.");
         require(erc223Origins[_ERC20token] != address(0), "Error: provided token is not a ERC-20 wrapper.");

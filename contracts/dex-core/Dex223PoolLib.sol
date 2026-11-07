@@ -508,6 +508,7 @@ contract Dex223PoolLib {
         bool token0_223,
         bool token1_223
     ) external returns (uint128 amount0, uint128 amount1) {
+        require(recipient != address(this), "LIB: SELF_RECIPIENT");
         // we don't need to checkTicks here, because invalid positions will never have non-zero tokensOwed{0,1}
         Position.Info storage position = positions.get(msg.sender, tickLower, tickUpper);
 
@@ -539,6 +540,7 @@ contract Dex223PoolLib {
         bool token0_223,
         bool token1_223
     ) external returns (uint128 amount0, uint128 amount1) {
+        require(recipient != address(this), "LIB: SELF_RECIPIENT");
         amount0 = amount0Requested > protocolFees.token0 ? protocolFees.token0 : amount0Requested;
         amount1 = amount1Requested > protocolFees.token1 ? protocolFees.token1 : amount1Requested;
 
