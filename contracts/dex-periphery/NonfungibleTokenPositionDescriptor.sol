@@ -13,6 +13,15 @@ import './interfaces/INonfungibleTokenPositionDescriptor.sol';
 import './base/PoolAddress.sol';
 import './base/NFTDescriptor.sol';
 
+interface IDex223FactoryPoolLookup {
+    function getPool(address tokenA, address tokenB, uint24 fee) external view returns (address pool);
+}
+
+interface IDex223PoolTokens {
+    function token0() external view returns (address, address);
+    function token1() external view returns (address, address);
+}
+
 /// @title Describes NFT token positions
 /// @notice Produces a string containing the data URI for a JSON metadata string
 contract NonfungibleTokenPositionDescriptor is INonfungibleTokenPositionDescriptor {
@@ -54,13 +63,17 @@ contract NonfungibleTokenPositionDescriptor is INonfungibleTokenPositionDescript
         (, , address token0, address token1, uint24 fee, int24 tickLower, int24 tickUpper, , , , , ) =
             positionManager.positions(tokenId);
 
-        IUniswapV3Pool pool =
-            IUniswapV3Pool(
-                PoolAddress.computeAddress(
-                    positionManager.factory(),
-                    PoolAddress.PoolKey({token0: token0, token1: token1, fee: fee})
-                )
+        address poolAddr = IDex223FactoryPoolLookup(positionManager.factory()).getPool(token0, token1, fee);
+        if (poolAddr != address(0)) {
+            (token0, ) = IDex223PoolTokens(poolAddr).token0();
+            (token1, ) = IDex223PoolTokens(poolAddr).token1();
+        } else {
+            poolAddr = PoolAddress.computeAddress(
+                positionManager.factory(),
+                PoolAddress.getPoolKey(token0, token1, fee)
             );
+        }
+        IUniswapV3Pool pool = IUniswapV3Pool(poolAddr);
 
         bool _flipRatio = flipRatio(token0, token1, ChainId.get());
         address quoteTokenAddress = !_flipRatio ? token1 : token0;
