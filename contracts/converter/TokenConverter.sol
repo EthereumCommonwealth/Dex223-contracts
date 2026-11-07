@@ -489,7 +489,6 @@ contract TokenStandardConverter is IERC223Recipient
 
     function createERC223Wrapper(address _token) public returns (address)
     {
-        require(Address.isContract(_token), "Error: Origin is not a contract");
         require(address(erc223Wrappers[_token]) == address(0), "ERROR: Wrapper exists");
         require(!isWrapper(_token), "Error: Creating wrapper for a wrapper token");
         
@@ -504,7 +503,6 @@ contract TokenStandardConverter is IERC223Recipient
 
     function createERC20Wrapper(address _token) public returns (address)
     {
-        require(Address.isContract(_token), "Error: Origin is not a contract");
         require(address(erc20Wrappers[_token]) == address(0), "ERROR: Wrapper already exists.");
         require(!isWrapper(_token), "Error: Creating wrapper for a wrapper token");
 

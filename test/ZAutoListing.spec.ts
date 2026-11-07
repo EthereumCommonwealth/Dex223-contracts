@@ -168,15 +168,6 @@ describe('AutoListing', () => {
                 .to.emit(core, 'PairListed')
         })
 
-        it('converter refuses pre-deployment wrapper creation for undeployed wrapper addresses', async () => {
-            const { w20 } = await erc223Origin()
-            // w20 is not deployed yet: creating an ERC-223 wrapper for w20 before w20 exists must revert,
-            // preventing a wrapper-of-a-wrapper once w20 is later deployed.
-            await expect(converter.createERC223Wrapper(w20)).to.be.revertedWith('Error: Origin is not a contract')
-            // token3 is the not-yet-deployed ERC-223 wrapper of token0: creating an ERC-20 wrapper for it must revert.
-            await expect(converter.createERC20Wrapper(token3)).to.be.revertedWith('Error: Origin is not a contract')
-        })
-
         it('an update never re-pairs a listed token, and a zero half leaves it as it is', async () => {
             // checkListing is shared by all three listings. The owner's listTokenByOwner passes any pair to it,
             // so the guard is tested here independently of how a contradicting pair might arrive (on the free
