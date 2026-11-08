@@ -10,7 +10,10 @@
  * Every call it makes is permissionless, so the keeper wallet needs gas and nothing else; the RevenueV2
  * and collector owner keys are never used here. It sends nothing when there is nothing to do.
  *
- * Secret `dex223/fee-keeper` (Secrets Manager): {"privateKey": "0x...", "etherscanApiKey": "..."}.
+ * Secret `dex223/fee-keeper` (Secrets Manager): {"privateKey": "0x...", "etherscanApiKey": "...",
+ *   "rpcUrls": {"mainnet": "https://...", "sepolia": "https://..."}}. rpcUrls is optional; keyed RPC URLs
+ *   live there rather than in the Lambda's environment, which deploy.sh rewrites and anyone with read
+ *   access to the function configuration can see. Without it: MAINNET_RPC_URL / SEPOLIA_RPC_URL, then publicnode.
  * Event: {"dryRun": true} reports without sending; {"networks": ["sepolia"]} limits the run.
  * Metrics (namespace DEX223/FeeKeeper, dimension Network): KeeperBalanceEth, Actions, Failures.
  * A run that fails on any network throws, so the Lambda Errors alarm fires.
@@ -32,11 +35,11 @@ const NETWORKS = {
   sepolia: {
     chainId: 11155111,
     rpc: process.env.SEPOLIA_RPC_URL || 'https://ethereum-sepolia-rpc.publicnode.com',
-    // Sepolia v4 (2026-10-30, deployments/sepolia-v4.json). The collector only acts on its own factory's pools,
+    // Sepolia v6 (2026-11-07, deployments/sepolia-v6.json). The collector only acts on its own factory's pools,
     // so the two must move together.
-    factory: '0x4EC06106Cf666A817586563ae042ffF8B76e3460',
-    collector: '0x77Ff8BC37218362efa7b088a6f0D70fE90b74555',
-    fromBlock: 12026940,
+    factory: '0xbdC7986B4C46F3629948f78a8F9942A88c111A86',
+    collector: '0x44f9b4Dfa9AAF2F94C373b4B1d8fb356937b5C90',
+    fromBlock: 12085842,
     // Sepolia's suggested fee is thousands of times the real one; pin it.
     fixedFeeGwei: '0.001',
   },
@@ -70,6 +73,11 @@ const BATCH = 50
 const MIN_WEI = 1n // collectProtocol always leaves 1 behind
 
 const cloudwatch = new CloudWatchClient({})
+
+// Keyed RPC URLs carry their key in the path or query; strip it from anything that reaches the logs.
+const redact = (s) => String(s)
+  .replace(/(\/v[23]\/)[A-Za-z0-9_-]{16,}/g, '$1[key]')
+  .replace(/([?&](?:apikey|api_key|key)=)[^&\s"']+/gi, '$1[key]')
 
 async function loadSecret() {
   // Local testing only (see README): never set in the Lambda's configuration.
@@ -118,7 +126,8 @@ async function metric(network, values) {
 }
 
 async function runNetwork(name, cfg, secret, dryRun) {
-  const provider = new ethers.JsonRpcProvider(cfg.rpc, cfg.chainId, { staticNetwork: true })
+  const rpc = secret.rpcUrls?.[name] || cfg.rpc
+  const provider = new ethers.JsonRpcProvider(rpc, cfg.chainId, { staticNetwork: true })
   const wallet = new ethers.Wallet(secret.privateKey, provider)
   // Public RPCs are load-balanced and can answer from a node a block behind, so asking for the nonce
   // before each transaction can reuse one ("nonce has already been used"). Count them here instead.
@@ -179,8 +188,8 @@ async function runNetwork(name, cfg, secret, dryRun) {
       }
     } catch (e) {
       signer.reset() // re-read the nonce from the chain before anything else is sent
-      failures.push(`${label}: ${e.shortMessage ?? e.message}`)
-      log(`FAILED ${label}: ${e.shortMessage ?? e.message}`)
+      failures.push(`${label}: ${redact(e.shortMessage ?? e.message)}`)
+      log(`FAILED ${label}: ${redact(e.shortMessage ?? e.message)}`)
     }
   }
   for (let i = 0; i < toEnable.length; i += BATCH) {
@@ -230,8 +239,8 @@ export async function handler(event = {}) {
     try {
       results.push(await runNetwork(name, cfg, secret, dryRun))
     } catch (e) {
-      console.error(`[${name}] ${e.message}`)
-      errors.push(`${name}: ${e.message}`)
+      console.error(`[${name}] ${redact(e.message)}`)
+      errors.push(`${name}: ${redact(e.message)}`)
       await metric(name, { Failures: 1 })
     }
   }
