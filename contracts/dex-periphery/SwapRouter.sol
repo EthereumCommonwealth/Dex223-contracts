@@ -95,6 +95,11 @@ IERC223Recipient
     // the router afterwards.
     bool public erc223CallPermit = false;
 
+    // True while `tokenReceived` runs. The call it dispatches through `erc223CallPermit` (directly, or nested inside
+    // a multicall) must not reach `tokenReceived` again: its body credits `_from` with `_value` under the same
+    // token, so a nested call would record a second deposit that no transfer backs (bounty #23).
+    bool private inTokenReceived;
+
     // The one pool allowed to call `uniswapV3SwapCallback` right now: set immediately before the router hands
     // a swap to a pool, cleared as the callback is entered and again once the swap returns. The callback pays
     // from `data.payer`, so without this binding any canonical pool could invoke it while the router is idle
@@ -140,6 +145,8 @@ IERC223Recipient
 
     function tokenReceived(address _from, uint _value, bytes memory _data) public override lock returns (bytes4)
     {
+        require(!inTokenReceived, "NTR");
+        inTokenReceived = true;
         depositERC223(_from, msg.sender, _value);
         call_sender = _from;
         token_sender = msg.sender;
@@ -166,6 +173,7 @@ IERC223Recipient
         }
         delete(call_sender);
         delete(token_sender);
+        inTokenReceived = false;
         return 0x8943ec02;
     }
 
