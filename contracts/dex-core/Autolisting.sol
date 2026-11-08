@@ -932,31 +932,38 @@ contract Dex223OwnableListing {
 
     function listTokenByOwner(address _token20, address _token223) public onlyOwner
     {
+        // checkListing records the pair in the registry; recording each half again with a zero
+        // counterpart only produced duplicate, half-empty registry entries.
         checkListing(_token20, _token223);
-
-        if(_token20 != address(0))
-        {
-            registry.recordListing(_token20, address(0));
-        }
-        if(_token223 != address(0))
-        {
-            registry.recordListing(address(0), _token223);
-        }
         last_update = block.timestamp;
     }
 
+    /// @notice Ban a token: both halves stop being listed (isListed is false, so margin orders using
+    /// this listing refuse them) and can never be listed here again.
     function banToken(address _token20, address _token223) public onlyOwner
     {
         registry.tokenBanned(_token20, _token223);
 
         if(_token20 != address(0))
         {
+            _ban(_token20);
             emit TokenBanned(_token20);
         }
         if(_token223 != address(0))
         {
+            _ban(_token223);
             emit TokenBanned(_token223);
         }
+        last_update = block.timestamp;
+    }
+
+    function _ban(address _token) internal
+    {
+        if (banned_tokens[_token] == 0) {
+            num_banned_tokens++;
+            banned_tokens[_token] = num_banned_tokens;
+        }
+        listed_tokens[_token] = 0;
     }
 
     function _isFullyListed(address _erc20, address _erc223) internal view returns (bool)
@@ -1021,6 +1028,8 @@ contract Dex223OwnableListing {
     {
         // One address cannot be both versions of a token (from PR #190 by cyczzhao-lab).
         require(_token_erc20 != _token_erc223, "Identical token addresses");
+        // A banned token stays out, whichever path tries to list it again.
+        require(banned_tokens[_token_erc20] == 0 && banned_tokens[_token_erc223] == 0, "Token is banned");
 
         // There are two possible scenarios here:
         // 1. We are listing a new token on Dex223.

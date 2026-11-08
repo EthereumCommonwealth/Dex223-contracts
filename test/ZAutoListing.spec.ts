@@ -186,6 +186,37 @@ describe('AutoListing', () => {
             expect(await ownable.isListed(wrapperOfWrapper)).to.eq(false)
         })
 
+        it('a banned token is delisted in both standards and cannot be listed again (bounty #29)', async () => {
+            const ownable = await (await ethers.getContractFactory('Dex223OwnableListing'))
+                .deploy(factory.target, registry.target, 'ownable', 'https://ownable')
+            const t20 = token0.target.toString()
+            await ownable.listTokenByOwner(t20, token3)
+            expect(await ownable.isListed(t20)).to.eq(true)
+            expect(await ownable.isListed(token3)).to.eq(true)
+
+            await expect(ownable.banToken(t20, token3)).to.emit(ownable, 'TokenBanned')
+            expect(await ownable.isListed(t20)).to.eq(false)
+            expect(await ownable.isListed(token3)).to.eq(false)
+            expect(await ownable.num_banned_tokens()).to.eq(2n)
+
+            await expect(ownable.listTokenByOwner(t20, token3)).to.be.revertedWith('Token is banned')
+            await expect(ownable.listTokenByOwner(t20, ethers.ZeroAddress)).to.be.revertedWith('Token is banned')
+            await expect(ownable.listTokenByOwner(ethers.ZeroAddress, token3)).to.be.revertedWith('Token is banned')
+        })
+
+        it('listTokenByOwner records the pair in the registry once, without half-empty entries', async () => {
+            const ownable = await (await ethers.getContractFactory('Dex223OwnableListing'))
+                .deploy(factory.target, registry.target, 'ownable', 'https://ownable')
+            const t20 = token1.target.toString()
+            const receipt = await (await ownable.listTokenByOwner(t20, token4)).wait()
+            const listed = receipt!.logs
+                .filter((l: any) => l.address.toLowerCase() === registry.target.toString().toLowerCase())
+                .map((l: any) => registry.interface.parseLog(l))
+                .filter((e: any) => e?.name === 'TokenListed')
+            expect(listed.length).to.eq(1)
+            expect([listed[0]!.args[1], listed[0]!.args[2]]).to.deep.eq([t20, token4])
+        })
+
         it('one address is never both versions of a token, directly or by filling the missing half', async () => {
             const ownable = await (await ethers.getContractFactory('Dex223OwnableListing'))
                 .deploy(factory.target, registry.target, 'ownable', 'https://ownable')
