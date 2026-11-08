@@ -95,7 +95,8 @@ async function main() {
     await mm.createOrder.staticCall({ ...params, oracle: st.marginModule }, { from: DEPLOYER })
     fail('an order with a foreign oracle was accepted')
   } catch (e: any) {
-    if (!/Unsupported oracle/.test(e.shortMessage ?? e.message)) throw e
+    // Revert reasons are codes since #182 (docs/margin-revert-codes.md): MM03 = Unsupported oracle.
+    if (!/"MM03"|Unsupported oracle/.test(e.shortMessage ?? e.message)) throw e
     console.log('  ok    an order naming another oracle is refused ("MM03")')
   }
   const orderId = await mm.orderIndex()
