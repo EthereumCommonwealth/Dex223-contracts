@@ -64,6 +64,45 @@ describe('ERC-223 origin delivery through the converter', () => {
     expect(await d223.balanceOf(pool)).to.eq(0)
   })
 
+  // Bounty #28: an ERC-223 origin (D223) deposited into the router swaps through its pool, whose canonical key is
+  // the origin's ERC-20 wrapper. tokenIn names that wrapper, as the app does for every token's ERC-20 address.
+  it('swaps deposited D223 (an ERC-223 origin) naming its ERC-20 wrapper as tokenIn', async () => {
+    const { wallet, router, d223, w20, tokenB } = await loadFixture(fixture)
+    const amountIn = 1000n
+    const data = router.interface.encodeFunctionData('exactInputSingle', [{
+      tokenIn: w20.target.toString(), tokenOut: tokenB.target.toString(), fee: FeeAmount.MEDIUM, sqrtPriceLimitX96: 0,
+      recipient: wallet.address, deadline: 2n ** 40n, amountIn, amountOutMinimum: 1, prefer223Out: false,
+    }])
+    const before = await tokenB.balanceOf(wallet.address)
+    const d223Before = await d223.balanceOf(wallet.address)
+    await d223['transfer(address,uint256,bytes)'](router.target, amountIn, data)
+    expect((await tokenB.balanceOf(wallet.address)) - before).to.be.gt(0)
+    expect(d223Before - (await d223.balanceOf(wallet.address))).to.eq(amountIn)
+    // Nothing is left credited in the router: the whole deposit went into the swap.
+    expect(await router.depositedTokens(wallet.address, d223.target)).to.eq(0n)
+  })
+
+  it('the same holds for exactInput with a path starting at the wrapper', async () => {
+    const { wallet, router, d223, w20, tokenB } = await loadFixture(fixture)
+    const path = ethers.solidityPacked(['address', 'uint24', 'address'], [w20.target.toString(), FeeAmount.MEDIUM, tokenB.target.toString()])
+    const data = router.interface.encodeFunctionData('exactInput', [{
+      path, recipient: wallet.address, deadline: 2n ** 40n, amountIn: 1000n, amountOutMinimum: 1, prefer223Out: false,
+    }])
+    const before = await tokenB.balanceOf(wallet.address)
+    await d223['transfer(address,uint256,bytes)'](router.target, 1000n, data)
+    expect((await tokenB.balanceOf(wallet.address)) - before).to.be.gt(0)
+    expect(await router.depositedTokens(wallet.address, d223.target)).to.eq(0n)
+  })
+
+  it('a deposited origin still cannot name an unrelated token as tokenIn', async () => {
+    const { wallet, router, d223, tokenB } = await loadFixture(fixture)
+    const data = router.interface.encodeFunctionData('exactInputSingle', [{
+      tokenIn: tokenB.target.toString(), tokenOut: tokenB.target.toString(), fee: FeeAmount.MEDIUM, sqrtPriceLimitX96: 0,
+      recipient: wallet.address, deadline: 2n ** 40n, amountIn: 1000n, amountOutMinimum: 1, prefer223Out: false,
+    }])
+    await expect(d223['transfer(address,uint256,bytes)'](router.target, 1000n, data)).to.be.reverted
+  })
+
   it('still pays the wrapper when the wrapper is asked for', async () => {
     const { wallet, router, w20, tokenB } = await loadFixture(fixture)
     const params = swapParams(tokenB.target.toString(), w20.target.toString(), wallet.address, false)
