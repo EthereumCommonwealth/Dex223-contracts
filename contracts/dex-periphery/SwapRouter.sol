@@ -21,6 +21,7 @@ import './base/CallbackValidation.sol';
 interface IERC7417TokenConverter
 {
     function getERC223WrapperFor(address _token) external view returns (address);
+    function getERC20WrapperFor(address _token) external view returns (address);
 }
 
 interface IDex223Pool {
@@ -380,10 +381,12 @@ IERC223Recipient
             // Allow only swaps of a token that was deposited in this transaction
 
             // `msg.sender` here is the ERC-223 token that invoked `tokenReceived`, while callers pass the
-            // ERC-20 address as `tokenIn`. Accept either, exactly as `exactInput` below already does.
+            // ERC-20 address as `tokenIn`: an ERC-20 origin whose ERC-223 wrapper was deposited, or the ERC-20
+            // wrapper of a deposited ERC-223 origin such as D223 (whose pools are keyed by that wrapper).
             require(
                 params.tokenIn == msg.sender ||
-                    ERC7417TokenConverter.getERC223WrapperFor(params.tokenIn) == msg.sender,
+                    ERC7417TokenConverter.getERC223WrapperFor(params.tokenIn) == msg.sender ||
+                    (params.tokenIn != address(0) && ERC7417TokenConverter.getERC20WrapperFor(msg.sender) == params.tokenIn),
                 "Wrong token swap requested"
             );
         }
@@ -426,7 +429,8 @@ IERC223Recipient
             // Swappable token has to be either
             // the token which is being deposited
             // or its ERC-223 version.
-            require(tokenA == msg.sender || ERC7417TokenConverter.getERC223WrapperFor(tokenA) == msg.sender, "Token doesnt match ERC223 versions");
+            require(tokenA == msg.sender || ERC7417TokenConverter.getERC223WrapperFor(tokenA) == msg.sender ||
+                (tokenA != address(0) && ERC7417TokenConverter.getERC20WrapperFor(msg.sender) == tokenA), "Token doesnt match ERC223 versions");
         }
         address payer = call_sender; //msg.sender; // msg.sender pays for the first hop
 
