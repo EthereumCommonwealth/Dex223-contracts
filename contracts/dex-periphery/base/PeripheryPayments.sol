@@ -88,9 +88,10 @@ abstract contract PeripheryPayments is IPeripheryPayments, PeripheryImmutableSta
         // Effects before interactions (CEI pattern)
         debitERC223(msg.sender, _token, _quantity);
 
-        // Interaction: transfer tokens to recipient
-        bool success = IERC223(_token).transfer(_recipient, _quantity);
-        require(success, "WT");
+        // Interaction: transfer tokens to recipient. Through TransferHelper, as pay() does: a typed
+        // IERC223.transfer call decodes a bool, so a token whose transfer returns nothing (as USDT's
+        // ERC-20 functions do) reverted here and its deposit could never be withdrawn.
+        TransferHelper.safeTransfer(_token, _recipient, _quantity);
 
         emit ERC223Withdrawal(_token, msg.sender, _recipient, _quantity);
     }

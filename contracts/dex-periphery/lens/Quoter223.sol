@@ -24,6 +24,15 @@ interface IDex223Pool {
     ) external returns (int256 amount0, int256 amount1);
 }
 
+interface IQuoterFactoryLookup {
+    function getPool(address tokenA, address tokenB, uint24 fee) external view returns (address pool);
+}
+
+interface IQuoterPoolTokens {
+    function token0() external view returns (address erc20, address erc223);
+    function token1() external view returns (address erc20, address erc223);
+}
+
 abstract contract IERC223Recipient {
 
 
@@ -67,26 +76,28 @@ contract ERC223Quoter is IQuoter, IUniswapV3SwapCallback, PeripheryImmutableStat
 
     constructor(address _factory, address _WETH9) PeripheryImmutableState(_factory, _WETH9) {}
 
-    function tokenReceived(address _from, uint _value, bytes memory _data) public override returns (bytes4)
+    /// @dev The quoter only simulates swaps and keeps no deposits, so an ERC-223 transfer to it is refused
+    /// instead of being accepted and left stranded (it used to accept it and delegatecall the data).
+    function tokenReceived(address, uint, bytes memory) public pure override returns (bytes4)
     {
-        // depositERC223(_from, msg.sender, _value);
-        call_sender = _from;
-        if (_data.length != 0)
-        {
-            // Standard ERC-223 swapping via ERC-20 pattern
-            (bool success, bytes memory _data_) = address(this).delegatecall(_data);
-            // require(success, "23F");
-        }
-        call_sender = address(0);
-        return 0x8943ec02;
+        revert('Quoter: deposits not supported');
     }
 
-    function getPool(
-        address tokenA,
-        address tokenB,
+    /// @dev The pool for `tokenIn`/`tokenOut`, given as either version of each token, and the pair's ERC-20
+    /// addresses in swap order. The factory maps every 20/223 combination to the same pool, but the pool's
+    /// CREATE2 address, the swap direction and the callback check all use the ERC-20 addresses; computing
+    /// the address from ERC-223 addresses pointed at an address with no code.
+    function resolvePool(
+        address tokenIn,
+        address tokenOut,
         uint24 fee
-    ) private view returns (IDex223Pool) {
-        return IDex223Pool(PoolAddress.computeAddress(factory, PoolAddress.getPoolKey(tokenA, tokenB, fee)));
+    ) private view returns (IDex223Pool pool, address in20, address out20) {
+        address p = IQuoterFactoryLookup(factory).getPool(tokenIn, tokenOut, fee);
+        require(p != address(0), 'Quoter: pool does not exist');
+        (address t0_20, address t0_223) = IQuoterPoolTokens(p).token0();
+        (address t1_20, ) = IQuoterPoolTokens(p).token1();
+        (in20, out20) = (tokenIn == t0_20 || tokenIn == t0_223) ? (t0_20, t1_20) : (t1_20, t0_20);
+        pool = IDex223Pool(p);
     }
 
     /// @inheritdoc IUniswapV3SwapCallback
@@ -140,10 +151,11 @@ contract ERC223Quoter is IQuoter, IUniswapV3SwapCallback, PeripheryImmutableStat
         uint256 amountIn,
         uint160 sqrtPriceLimitX96
     ) public override returns (uint256 amountOut) {
-        bool zeroForOne = tokenIn < tokenOut;
+        (IDex223Pool pool, address in20, address out20) = resolvePool(tokenIn, tokenOut, fee);
+        bool zeroForOne = in20 < out20;
 
         try
-        getPool(tokenIn, tokenOut, fee).swap(
+        pool.swap(
             address(this), // address(0) might cause issues with some tokens
             zeroForOne,
             amountIn.toInt256(),
@@ -151,7 +163,7 @@ contract ERC223Quoter is IQuoter, IUniswapV3SwapCallback, PeripheryImmutableStat
                 ? (zeroForOne ? TickMath.MIN_SQRT_RATIO + 1 : TickMath.MAX_SQRT_RATIO - 1)
                 : sqrtPriceLimitX96,
             false, // bool prefer223Out
-            abi.encodePacked(tokenIn, fee, tokenOut)
+            abi.encodePacked(in20, fee, out20)
         )
         {} catch (bytes memory reason) {
             return parseRevertReason(reason);
@@ -185,12 +197,13 @@ contract ERC223Quoter is IQuoter, IUniswapV3SwapCallback, PeripheryImmutableStat
         uint256 amountOut,
         uint160 sqrtPriceLimitX96
     ) public override returns (uint256 amountIn) {
-        bool zeroForOne = tokenIn < tokenOut;
+        (IDex223Pool pool, address in20, address out20) = resolvePool(tokenIn, tokenOut, fee);
+        bool zeroForOne = in20 < out20;
 
         // if no price limit has been specified, cache the output amount for comparison in the swap callback
         if (sqrtPriceLimitX96 == 0) amountOutCached = amountOut;
         try
-        getPool(tokenIn, tokenOut, fee).swap(
+        pool.swap(
             address(this), // address(0) might cause issues with some tokens
             zeroForOne,
             -amountOut.toInt256(),
@@ -198,7 +211,7 @@ contract ERC223Quoter is IQuoter, IUniswapV3SwapCallback, PeripheryImmutableStat
                 ? (zeroForOne ? TickMath.MIN_SQRT_RATIO + 1 : TickMath.MAX_SQRT_RATIO - 1)
                 : sqrtPriceLimitX96,
             false, // bool prefer223Out
-            abi.encodePacked(tokenOut, fee, tokenIn)
+            abi.encodePacked(out20, fee, in20)
         )
         {} catch (bytes memory reason) {
             if (sqrtPriceLimitX96 == 0) delete amountOutCached; // clear cache
