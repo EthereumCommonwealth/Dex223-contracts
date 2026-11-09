@@ -223,6 +223,15 @@ const config: HardhatUserConfig = {
         version: "0.8.19",
         settings: { optimizer: { enabled: true, runs: 5000 } }
       },
+      // Same compiler and optimizer as TokenConverter.sol, whose wrapper tokens it reuses.
+      "contracts/converter/TokenConverterV2.sol": {
+        version: "0.8.19",
+        settings: { optimizer: { enabled: true, runs: 5000 } }
+      },
+      "contracts/test/ConverterDirectCaller.sol": {
+        version: "0.8.19",
+        settings: { optimizer: { enabled: true, runs: 5000 } }
+      },
       // Byte-identical to mainnet D223 0x0908078Da2935A14BC7a17770292818C85b580dd (0.8.19, 5000 runs, paris).
       "contracts/tokens/D223Token.sol": {
         version: "0.8.19",
