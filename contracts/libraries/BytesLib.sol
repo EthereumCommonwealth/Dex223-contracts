@@ -57,6 +57,14 @@ library BytesLib {
 
                     mstore(tempBytes, _length)
 
+                    // zero out trailing bytes in the last word beyond _length
+                    let tail := and(_length, 31)
+                    if gt(tail, 0) {
+                        let lastWordAddr := add(add(tempBytes, 0x20), and(_length, not(31)))
+                        let mask := not(sub(shl(mul(8, sub(32, tail)), 1), 1))
+                        mstore(lastWordAddr, and(mload(lastWordAddr), mask))
+                    }
+
                     //update free-memory pointer
                     //allocating the array padded to 32 bytes like the compiler does now
                     mstore(0x40, and(add(mc, 31), not(31)))

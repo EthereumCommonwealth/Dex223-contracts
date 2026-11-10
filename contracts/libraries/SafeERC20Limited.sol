@@ -38,7 +38,12 @@ library SafeERC20 {
         address spender,
         uint256 value
     ) internal {
-        uint256 newAllowance = token.allowance(address(this), spender) + value;
+        uint256 currentAllowance = token.allowance(address(this), spender);
+        uint256 newAllowance = currentAllowance + value;
+        require(newAllowance >= currentAllowance, "S2A");
+        if (currentAllowance > 0) {
+            _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, 0));
+        }
         _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
     }
 
@@ -56,7 +61,7 @@ library SafeERC20 {
         bytes memory returndata = address(token).functionCall(data, "S2F");
         if (returndata.length > 0) {
             // Return data is optional
-            require(abi.decode(returndata, (bool)), "S2O");
+            require(returndata.length >= 32 && abi.decode(returndata, (bool)), "S2O");
         }
     }
 }
