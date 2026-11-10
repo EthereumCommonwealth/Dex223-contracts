@@ -204,6 +204,37 @@ describe('AutoListing', () => {
             await expect(ownable.listTokenByOwner(ethers.ZeroAddress, token3)).to.be.revertedWith('Token is banned')
         })
 
+        it('banToken with one half resolves and bans its listed counterpart, clears tokens[id], and updateMe forwards metadata', async () => {
+            const ownable = await (await ethers.getContractFactory('Dex223OwnableListing'))
+                .deploy(factory.target, registry.target, 'ownable', 'https://ownable')
+            const t20 = token0.target.toString()
+            await ownable.listTokenByOwner(t20, token3)
+            const id = await ownable.listed_tokens(t20)
+            expect(await ownable.getToken(id)).to.deep.eq([t20, token3])
+
+            await expect(ownable.banToken(ethers.ZeroAddress, ethers.ZeroAddress)).to.be.revertedWith('Zero token address')
+            await expect(ownable.banToken(t20, t20)).to.be.revertedWith('Identical token addresses')
+            await expect(ownable.banToken(t20, token4)).to.be.revertedWith('Listing pair mismatch')
+
+            // Banning by passing only the ERC-20 half also bans and delists the paired ERC-223 half and clears tokens[id]
+            await expect(ownable.banToken(t20, ethers.ZeroAddress))
+                .to.emit(registry, 'TokenBanned')
+                .withArgs(ownable.target.toString(), t20, token3)
+                .to.emit(ownable, 'TokenBanned')
+                .withArgs(t20)
+                .to.emit(ownable, 'TokenBanned')
+                .withArgs(token3)
+
+            expect(await ownable.isListed(t20)).to.eq(false)
+            expect(await ownable.isListed(token3)).to.eq(false)
+            expect(await ownable.getToken(id)).to.deep.eq([ethers.ZeroAddress, ethers.ZeroAddress])
+            await expect(ownable.listTokenByOwner(ethers.ZeroAddress, token3)).to.be.revertedWith('Token is banned')
+
+            await expect(ownable.updateMe('https://ownable-v2', '{"tier":"verified"}'))
+                .to.emit(registry, 'ListingContractUpdated')
+                .withArgs(ownable.target.toString(), wallet.address, 'https://ownable-v2', ethers.toUtf8Bytes('{"tier":"verified"}'))
+        })
+
         it('listTokenByOwner records the pair in the registry once, without half-empty entries', async () => {
             const ownable = await (await ethers.getContractFactory('Dex223OwnableListing'))
                 .deploy(factory.target, registry.target, 'ownable', 'https://ownable')
