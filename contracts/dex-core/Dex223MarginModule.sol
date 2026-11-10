@@ -1137,6 +1137,11 @@ contract MarginModule is IOrderParams
         require(id > 0 && id < position.assets.length, "MM25");
 
         _swapToBaseAsset(positionId, asset, amount);
+        (uint256 debtAfter, uint256 valueAfter) = _positionValue(positionId);
+        if (valueAfter < debtAfter) {
+            if (positionUnderwaterSince[positionId] == 0) positionUnderwaterSince[positionId] = block.timestamp;
+            _requireMayRealizeLoss(positionId);
+        }
     }
 
     /// @notice Lift a freeze from a position that is no longer liquidatable. A freeze was never
@@ -1231,6 +1236,8 @@ contract MarginModule is IOrderParams
         // Every non-base holding is sold; whatever the sale does not recover is the lender's loss.
         uint256 shortfall = _settle(positionId, _receiver, true);
         if (shortfall > 0) {
+            if (positionUnderwaterSince[positionId] == 0) positionUnderwaterSince[positionId] = block.timestamp;
+            _requireMayRealizeLoss(positionId);
             orderShortfall[positions[positionId].orderId] += shortfall;
             emit LiquidationShortfall(positionId, positions[positionId].orderId, shortfall);
         }
