@@ -129,15 +129,18 @@ IERC223Recipient
     }
 
     modifier adjustableSender() {
-        
-        if (call_sender == address(0))
+        bool _set = (call_sender == address(0));
+        if (_set)
         {
             call_sender = msg.sender;
         }
 
         _;
 
-        delete(call_sender);
+        if (_set)
+        {
+            delete(call_sender);
+        }
     }
 
     constructor(address _factory, address _WETH9, address _converter) PeripheryImmutableState(_factory, _WETH9) {
@@ -299,7 +302,7 @@ IERC223Recipient
                 ? (swapData.zeroForOne ? TickMath.MIN_SQRT_RATIO + 1 : TickMath.MAX_SQRT_RATIO - 1)
                 : swapData.sqrtPriceLimitX96,
             swapData.prefer223Out,
-            data
+            abi.encode(data)
         );
 
         address _tokenOut = resolveTokenOut(swapData.prefer223Out, swapData.pool, swapData.tokenIn, swapData.tokenOut);

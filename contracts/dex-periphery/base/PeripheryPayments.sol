@@ -158,13 +158,24 @@ abstract contract PeripheryPayments is IPeripheryPayments, PeripheryImmutableSta
             // Paying in an ERC-223 token.
             debitERC223(payer, token, value);
 
-            if(IERC20(token).allowance(address(this), address(this)) < value)
+            (bool hasAllowance, bytes memory allowanceData) =
+                token.staticcall(abi.encodeWithSelector(IERC20.allowance.selector, address(this), address(this)));
+            if (hasAllowance && allowanceData.length >= 32)
             {
-                TransferHelper.safeApprove(token, address(this), type(uint256).max);
-            }
+                if(abi.decode(allowanceData, (uint256)) < value)
+                {
+                    TransferHelper.safeApprove(token, address(this), 0);
+                    TransferHelper.safeApprove(token, address(this), type(uint256).max);
+                }
 
-            // Use safe wrapper to handle non-standard return values
-            TransferHelper.safeTransferFrom(token, address(this), recipient, value);
+                // Use safe wrapper to handle non-standard return values
+                TransferHelper.safeTransferFrom(token, address(this), recipient, value);
+            }
+            else
+            {
+                // Pure IERC223 tokens do not implement ERC-20 allowance/transferFrom
+                TransferHelper.safeTransfer(token, recipient, value);
+            }
         }
         else if (payer == address(this)) {
             // pay with tokens already in the contract (for the exact input multihop case)
