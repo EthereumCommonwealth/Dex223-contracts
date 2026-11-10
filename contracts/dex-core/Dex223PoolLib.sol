@@ -384,15 +384,29 @@ contract Dex223PoolLib {
         amount0 = uint256(amount0Int);
         amount1 = uint256(amount1Int);
 
+        address caller = swap_sender != address(0) ? swap_sender : msg.sender;
+        uint256 amount0Callback = amount0;
+        uint256 amount1Callback = amount1;
+        if (amount0 > 0 && erc223deposit[caller][token0.erc223] >= amount0) {
+            erc223deposit[caller][token0.erc223] -= amount0;
+            amount0Callback = 0;
+        }
+        if (amount1 > 0 && erc223deposit[caller][token1.erc223] >= amount1) {
+            erc223deposit[caller][token1.erc223] -= amount1;
+            amount1Callback = 0;
+        }
+
         uint256 balance0Before;
         uint256 balance1Before;
-        if (amount0 > 0) balance0Before = balance0();
-        if (amount1 > 0) balance1Before = balance1();
-        IUniswapV3MintCallback(msg.sender).uniswapV3MintCallback(amount0, amount1, data);
-        if (amount0 > 0) require(balance0Before.add(amount0) <= balance0(), 'M0');
-        if (amount1 > 0) require(balance1Before.add(amount1) <= balance1(), 'M1');
+        if (amount0Callback > 0) balance0Before = balance0();
+        if (amount1Callback > 0) balance1Before = balance1();
+        if (amount0Callback > 0 || amount1Callback > 0) {
+            IUniswapV3MintCallback(caller).uniswapV3MintCallback(amount0Callback, amount1Callback, data);
+        }
+        if (amount0Callback > 0) require(balance0Before.add(amount0Callback) <= balance0(), 'M0');
+        if (amount1Callback > 0) require(balance1Before.add(amount1Callback) <= balance1(), 'M1');
 
-        emit Mint(msg.sender, recipient, tickLower, tickUpper, amount, amount0, amount1);
+        emit Mint(caller, recipient, tickLower, tickUpper, amount, amount0, amount1);
     }
 
     // @audit-fix V-LIB-03: Added underflow protection in conversion path.

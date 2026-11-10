@@ -219,8 +219,12 @@ IERC223Recipient
             amount0Delta > 0
                 ? (tokenIn < tokenOut, uint256(amount0Delta))
                 : (tokenOut < tokenIn, uint256(amount1Delta));
+        (, address _tokenIn223) = amount0Delta > 0
+            ? IDex223Pool(msg.sender).token0()
+            : IDex223Pool(msg.sender).token1();
         if (isExactInput) {
-            pay(tokenIn, data.payer, msg.sender, amountToPay);
+            address payToken = _erc223Deposits[data.payer][_tokenIn223] >= amountToPay ? _tokenIn223 : tokenIn;
+            pay(payToken, data.payer, msg.sender, amountToPay);
         } else {
             // either initiate the next swap or pay
             if (data.path.hasMultiplePools()) {
@@ -229,7 +233,8 @@ IERC223Recipient
             } else {
                 amountInCached = amountToPay;
                 tokenIn = tokenOut; // swap in/out because exact output swaps are reversed
-                pay(tokenIn, data.payer, msg.sender, amountToPay);
+                address payToken = _erc223Deposits[data.payer][_tokenIn223] >= amountToPay ? _tokenIn223 : tokenIn;
+                pay(payToken, data.payer, msg.sender, amountToPay);
             }
         }
     }
@@ -506,15 +511,23 @@ IERC223Recipient
     payable
     override
     lock
+    adjustableSender
     checkDeadline(params.deadline)
     returns (uint256 amountIn)
     {
+        if (token_sender != address(0)) {
+            require(
+                params.tokenIn == msg.sender ||
+                    ERC7417TokenConverter.getERC223WrapperFor(params.tokenIn) == msg.sender,
+                "Wrong token swap requested"
+            );
+        }
         // avoid an SLOAD by using the swap return data
         amountIn = exactOutputInternal(
             params.amountOut,
             params.recipient,
             params.sqrtPriceLimitX96,
-            SwapCallbackData({path: abi.encodePacked(params.tokenOut, params.fee, params.tokenIn), payer: msg.sender})
+            SwapCallbackData({path: abi.encodePacked(params.tokenOut, params.fee, params.tokenIn), payer: call_sender})
         );
 
         require(amountIn <= params.amountInMaximum, 'Too much requested');
@@ -528,16 +541,17 @@ IERC223Recipient
     payable
     override
     lock
+    adjustableSender
     checkDeadline(params.deadline)
     returns (uint256 amountIn)
     {
-        // it's okay that the payer is fixed to msg.sender here, as they're only paying for the "final" exact output
+        // it's okay that the payer is fixed to call_sender here, as they're only paying for the "final" exact output
         // swap, which happens first, and subsequent swaps are paid for within nested callback frames
         exactOutputInternal(
             params.amountOut,
             params.recipient,
             0,
-            SwapCallbackData({path: params.path, payer: msg.sender})
+            SwapCallbackData({path: params.path, payer: call_sender})
         );
 
         amountIn = amountInCached;
