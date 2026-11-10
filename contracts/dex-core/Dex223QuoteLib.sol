@@ -8,6 +8,7 @@ import '../interfaces/IERC20Minimal.sol';
 import './interfaces/callback/IUniswapV3SwapCallback.sol';
 import '../interfaces/ITokenConverter.sol';
 import './interfaces/IUniswapV3Pool.sol';
+import './NoDelegateCall.sol';
 
 import '../libraries/SqrtPriceMath.sol';
 import '../libraries/Position.sol';
@@ -22,7 +23,7 @@ import '../libraries/Oracle.sol';
 import '../libraries/TransferHelper.sol';
 import '../libraries/SwapMath.sol';
 
-contract Dex223QuoteLib {
+contract Dex223QuoteLib is NoDelegateCall {
     using LowGasSafeMath for uint256;
     using LowGasSafeMath for int256;
     using SafeCast for uint256;
@@ -496,7 +497,7 @@ contract Dex223QuoteLib {
         uint160 sqrtPriceLimitX96,
         bool prefer223Out,
         bytes memory data
-    ) external returns (int256 amount0, int256 amount1) {
+    ) external onlyDelegateCall returns (int256 amount0, int256 amount1) {
 
         require(amountSpecified != 0, 'AS');
 

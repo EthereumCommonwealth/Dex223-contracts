@@ -106,7 +106,12 @@ contract Dex223Factory is IDex223Factory, Dex223PoolDeployer, NoDelegateCall {
         require(tickSpacing != 0, "FACTORY: INVALID_FEE");
         require(getPool[tokenA_erc20][tokenB_erc20][fee] == address(0), "FACTORY: POOL_EXISTS");
         // The ERC-223 keys are written below too; never let a new pool overwrite another pool's entry.
-        require(getPool[tokenA_erc223][tokenB_erc223][fee] == address(0), "FACTORY: POOL_EXISTS");
+        require(
+            getPool[tokenA_erc223][tokenB_erc223][fee] == address(0) &&
+            getPool[tokenA_erc20][tokenB_erc223][fee] == address(0) &&
+            getPool[tokenA_erc223][tokenB_erc20][fee] == address(0),
+            "FACTORY: POOL_EXISTS"
+        );
         pool = payable(deploy(address(this), tokenA_erc20, tokenB_erc20, fee, tickSpacing));
         Dex223Pool(pool).set(tokenA_erc223, tokenB_erc223, pool_lib, quote_lib, address(converter));
         getPool[tokenA_erc20][tokenB_erc20][fee] = pool;
@@ -167,6 +172,7 @@ contract PoolAddressHelper
                             uint24 fee)
                             external pure returns (address _pool)
     {
+        require(factory != address(0) && tokenA != address(0));
         require(tokenA < tokenB, "token1 > token0");
         //---------------- calculate pool address
             bytes32 _POOL_INIT_CODE_HASH  = hashPoolCode(getPoolCreationCode());
