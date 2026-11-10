@@ -453,6 +453,9 @@ contract Dex223PoolLib {
             {
                 // take ERC20 version of token
                 address _token20 = (_token == token0.erc223) ? token0.erc20 : token1.erc20;
+                uint256 _token20CodeSize;
+                assembly { _token20CodeSize := extcodesize(_token20) }
+                require(_token20CodeSize > 0, "LIB: NO_TOKEN20");
                 // Approve the converter if the current allowance is insufficient.
                 if(IERC20Minimal(_token20).allowance(address(this), address(converter)) < _amount)
                 {
@@ -508,8 +511,9 @@ contract Dex223PoolLib {
         bool token0_223,
         bool token1_223
     ) external returns (uint128 amount0, uint128 amount1) {
+        address owner = swap_sender != address(0) ? swap_sender : msg.sender;
         // we don't need to checkTicks here, because invalid positions will never have non-zero tokensOwed{0,1}
-        Position.Info storage position = positions.get(msg.sender, tickLower, tickUpper);
+        Position.Info storage position = positions.get(owner, tickLower, tickUpper);
 
         amount0 = amount0Requested > position.tokensOwed0 ? position.tokensOwed0 : amount0Requested;
         amount1 = amount1Requested > position.tokensOwed1 ? position.tokensOwed1 : amount1Requested;
@@ -527,7 +531,7 @@ contract Dex223PoolLib {
             else optimisticDelivery(token1.erc20, recipient, amount1);
         }
 
-        emit Collect(msg.sender, recipient, tickLower, tickUpper, amount0, amount1);
+        emit Collect(owner, recipient, tickLower, tickUpper, amount0, amount1);
     }
 
     // @audit-note V-LIB-05b: Reentrancy for collectProtocol is guarded by Pool's `lock` modifier.
@@ -571,10 +575,11 @@ contract Dex223PoolLib {
         int24 tickUpper,
         uint128 amount
     ) external returns (uint256 amount0, uint256 amount1) {
+        address owner = swap_sender != address(0) ? swap_sender : msg.sender;
         (Position.Info storage position, int256 amount0Int, int256 amount1Int) =
                         _modifyPosition(
                 ModifyPositionParams({
-                    owner: msg.sender,
+                    owner: owner,
                     tickLower: tickLower,
                     tickUpper: tickUpper,
                     liquidityDelta: -int256(amount).toInt128()
@@ -591,7 +596,7 @@ contract Dex223PoolLib {
             );
         }
 
-        emit Burn(msg.sender, tickLower, tickUpper, amount, amount0, amount1);
+        emit Burn(owner, tickLower, tickUpper, amount, amount0, amount1);
     }
 
 
@@ -837,7 +842,7 @@ contract Dex223PoolLib {
             // then deliver the swapped amount.
 
             // ERC-223 depositing logic
-            if (erc223deposit[swap_sender][token0.erc223] >= uint256(amount0))
+            if (amount0 > 0 && erc223deposit[swap_sender][token0.erc223] >= uint256(amount0))
             {
                 erc223deposit[swap_sender][token0.erc223] -= uint256(amount0);
             }
@@ -860,7 +865,7 @@ contract Dex223PoolLib {
             // We don't want to be hacked as TheDAO was.
 
             // ERC-223 depositing logic
-            if (erc223deposit[swap_sender][token1.erc223] >= uint256(amount1))
+            if (amount1 > 0 && erc223deposit[swap_sender][token1.erc223] >= uint256(amount1))
             {
                 erc223deposit[swap_sender][token1.erc223] -= uint256(amount1);
             }
