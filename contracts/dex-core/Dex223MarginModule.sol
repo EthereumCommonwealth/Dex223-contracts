@@ -48,6 +48,11 @@ interface IDex223Pool
     ) external returns (uint256 amountOut);
 }
 
+interface IDex223FactoryConverter
+{
+    function converter() external view returns (ITokenStandardConverter);
+}
+
 // WETH9 surface used by orderDepositWETH9: https://etherscan.io/address/0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2
 interface IWETH9
 {
@@ -542,7 +547,7 @@ contract MarginModule is IOrderParams
 
         orders[_orderId].balance += _balanceDelta;
         //orders[_orderId].balance += msg.value;
-        emit OrderDeposit(_orderId, address(0), _balanceDelta);
+        emit OrderDeposit(_orderId, _WETH9, _balanceDelta);
     }
 
     function orderDepositToken(uint256 _orderId, uint256 amount) public nonReentrant onlyOrderOwner(_orderId) {
@@ -1326,10 +1331,16 @@ contract MarginModule is IOrderParams
         if (whitelist.isContract == true) {
             // Optimization: contract address stored as first element instead of separate var
             address _contract = whitelist.tokens[0];
-            require(IDex223Autolisting(_contract).isListed(asset) || order.baseAsset == asset || positionInitialCollateral[positionId] == asset);
+            require(IDex223Autolisting(_contract).isListed(asset) || order.baseAsset == asset || positionInitialCollateral[positionId] == asset || _isSameToken(asset, order.baseAsset) || _isSameToken(asset, positionInitialCollateral[positionId]));
         } else {
-            require(whitelist.tokens[idInWhitelist] == asset || order.baseAsset == asset || positionInitialCollateral[positionId] == asset);
+            require(whitelist.tokens[idInWhitelist] == asset || order.baseAsset == asset || positionInitialCollateral[positionId] == asset || _isSameToken(asset, order.baseAsset) || _isSameToken(asset, positionInitialCollateral[positionId]));
         }
+    }
+
+    function _isSameToken(address a, address b) private view returns (bool) {
+        if (a == address(0) || b == address(0)) return false;
+        ITokenStandardConverter conv = IDex223FactoryConverter(address(factory)).converter();
+        return conv.getERC223WrapperFor(a) == b || conv.getERC20WrapperFor(a) == b || conv.getERC20OriginFor(a) == b || conv.getERC223OriginFor(a) == b;
     }
 
     // @audit-fix V2: Check ERC-20 transfer return value to prevent silent failures.
@@ -1385,7 +1396,8 @@ contract MarginModule is IOrderParams
     }
 
     function checkCurrencyLimit(uint256 _positionId) internal view returns (bool) {
-        return positions[_positionId].assets.length + 1 <= orders[positions[_positionId].orderId].currencyLimit;
+        uint256 limit = orders[positions[_positionId].orderId].currencyLimit;
+        return limit == 0 || positions[_positionId].assets.length + 1 <= limit;
     }
 
     function tokenReceived(address user, uint256 value, bytes memory /*data*/) public returns (bytes4) {
