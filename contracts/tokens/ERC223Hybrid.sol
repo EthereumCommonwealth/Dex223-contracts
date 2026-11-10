@@ -1,6 +1,7 @@
 pragma solidity ^0.7.0;
 
 import "../libraries/Address.sol";
+import "../libraries/SafeMath.sol";
 
 import "./interfaces/IERC223.sol";
 import "./interfaces/IERC223Recipient.sol";
@@ -25,6 +26,7 @@ interface standardERC20
  * @title Reference implementation of the ERC223 standard token.
  */
 contract ERC223HybridToken is IERC223, ERC165 {
+    using SafeMath for uint256;
 
     string  private _name;
     string  private _symbol;
@@ -131,6 +133,7 @@ contract ERC223HybridToken is IERC223, ERC165 {
      */
     function transfer(address _to, uint _value, bytes calldata _data) public payable override returns (bool success)
     {
+        require(_to != address(0), "ERC-223: transfer to the zero address.");
         // As per ERC-223 description transfer the ether first https://eips.ethereum.org/EIPS/eip-223.
 
         if(msg.value != 0)
@@ -139,8 +142,8 @@ contract ERC223HybridToken is IERC223, ERC165 {
         }
 
         // Then process the token transfer.
-        balances[msg.sender] = balances[msg.sender] - _value;
-        balances[_to] = balances[_to] + _value;
+        balances[msg.sender] = balances[msg.sender].sub(_value, "ERC-223: transfer amount exceeds balance");
+        balances[_to] = balances[_to].add(_value);
         if(Address.isContract(_to)) {
             // It is subjective if the contract call must fail or not
             // when ERC-223 token transfer does not trigger the `tokenReceived` function
@@ -165,10 +168,11 @@ contract ERC223HybridToken is IERC223, ERC165 {
     {
         // Standard function transfer similar to ERC20 transfer with no _data.
         // Added due to backwards compatibility reasons.
+        require(_to != address(0), "ERC-223: transfer to the zero address.");
 
         bytes memory _empty = hex"00000000";
-        balances[msg.sender] = balances[msg.sender] - _value;
-        balances[_to] = balances[_to] + _value;
+        balances[msg.sender] = balances[msg.sender].sub(_value, "ERC-223: transfer amount exceeds balance");
+        balances[_to] = balances[_to].add(_value);
         if(Address.isContract(_to)) {
             IERC223Recipient(_to).tokenReceived(msg.sender, _value, _empty);
         }
@@ -178,9 +182,11 @@ contract ERC223HybridToken is IERC223, ERC165 {
 
     function mint(address _to, uint256 _amount) public returns (bool)
     {
-        balances[_to] += _amount;
-        _totalSupply  += _amount;
+        require(_to != address(0), "ERC-223: mint to the zero address.");
+        balances[_to] = balances[_to].add(_amount);
+        _totalSupply  = _totalSupply.add(_amount);
         emit Transfer(address(0), _to, _amount, hex"00000000");
+        return true;
     }
 
     function allowance(address owner, address spender) public view virtual returns (uint256) {
@@ -200,11 +206,13 @@ contract ERC223HybridToken is IERC223, ERC165 {
 
     function transferFrom(address _from, address _to, uint _value) public returns (bool) {
 
+        require(_from != address(0), "ERC-223: transfer from the zero address.");
+        require(_to != address(0), "ERC-223: transfer to the zero address.");
         require(allowances[_from][msg.sender] >= _value, "ERC-223: Insufficient allowance.");
 
-        balances[_from] -= _value;
-        allowances[_from][msg.sender] -= _value;
-        balances[_to] += _value;
+        balances[_from] = balances[_from].sub(_value, "ERC-223: transfer amount exceeds balance");
+        allowances[_from][msg.sender] = allowances[_from][msg.sender].sub(_value);
+        balances[_to] = balances[_to].add(_value);
 
         emit Transfer(_from, _to, _value);
 
