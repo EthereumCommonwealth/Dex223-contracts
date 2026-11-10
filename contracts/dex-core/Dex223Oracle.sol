@@ -261,7 +261,7 @@ contract Oracle {
     // sell token1, buy token0
     function getPrice(address poolAddress, address buy, address sell) public view returns(uint256, bool) {
         uint160 sqrtPriceX96 = getSqrtPriceX96(poolAddress);
-        uint256 priceX96 = uint256(sqrtPriceX96) * uint256(sqrtPriceX96);
+        uint256 priceX96 = FullMath.mulDiv(sqrtPriceX96, sqrtPriceX96, 1 << 96);
 
         // if buy token0 rather than token1, need to invert the price
         bool needToInverse = !_isToken0(poolAddress, sell);
@@ -321,9 +321,7 @@ contract Oracle {
         secondsAgos[1] = 0;
         (, uint160[] memory secondsPerLiquidityCumulativeX128s) = IUniswapV3Pool(poolAddress).observe(secondsAgos);
         uint160 delta = secondsPerLiquidityCumulativeX128s[1] - secondsPerLiquidityCumulativeX128s[0];
-        if (delta == 0) return 0;
-        uint192 secondsAgoX160 = uint192(twapWindow) * type(uint160).max;
-        return uint128(secondsAgoX160 / (uint192(delta) << 32));
+        return _harmonic(twapWindow, delta);
     }
 
     function findPoolWithHighestLiquidity(

@@ -193,6 +193,7 @@ contract D223Token {
     {
         // Standard function transfer similar to ERC20 transfer with no _data .
         // Added due to backwards compatibility reasons.
+        require(_to != address(0), "ERC-223: transfer to the zero address.");
         if(msg.value > 0) payable(_to).transfer(msg.value);
         balances[msg.sender] = balances[msg.sender] - _value;
         balances[_to] = balances[_to] + _value;
@@ -215,6 +216,7 @@ contract D223Token {
      */
     function transfer(address _to, uint _value) public payable returns (bool success)
     {
+        require(_to != address(0), "ERC-223: transfer to the zero address.");
         if(msg.value > 0) payable(_to).transfer(msg.value);
         bytes memory _empty = hex"00000000";
         balances[msg.sender] = balances[msg.sender] - _value;
@@ -261,6 +263,7 @@ contract D223Token {
 
     function transferFrom(address _from, address _to, uint _value) public returns (bool) {
         
+        require(_to != address(0), "ERC-223: transfer to the zero address.");
         require(allowances[_from][msg.sender] >= _value, "ERC-223: Insufficient allowance.");
         
         balances[_from] -= _value;
@@ -297,6 +300,7 @@ contract D223Token {
     function newOwner(address _owner) external
     {
         require(msg.sender == owner);
+        require(_owner != address(0));
         pending_owner = _owner;
     }
 
@@ -304,5 +308,6 @@ contract D223Token {
     {
         require(msg.sender == pending_owner);
         owner = pending_owner;
+        pending_owner = address(0);
     }
 }
