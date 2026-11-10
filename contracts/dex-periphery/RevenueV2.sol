@@ -371,6 +371,7 @@ contract RevenueV2 {
 
     /// @notice Revenue of `token` that has arrived but has not been synced yet.
     function unsynced(address token) external view returns (uint256) {
+        if (!reward_data[token].listed) return 0;
         uint256 bal = IERC20Minimal(token).balanceOf(address(this));
         uint256 accounted = reward_data[token].accounted;
         return bal > accounted ? bal - accounted : 0;
@@ -434,6 +435,7 @@ contract RevenueV2 {
     }
 
     function transfer_ownership(address new_owner) external onlyOwner {
+        require(new_owner != address(0), 'Zero owner');
         pending_owner = new_owner;
         emit OwnershipTransferStarted(owner, new_owner);
     }
