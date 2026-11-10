@@ -209,7 +209,9 @@ contract Dex223AutoListing {
 
     uint256 public last_update;
     uint256 public num_listed_tokens;
+    uint256 public num_listed_pairs;
     mapping(uint256 => TradeablePair) public pairs; // index => pair
+    mapping(address => mapping(address => uint256)) public pair_indices;
 
     // NOTE add storing paymentTokens & prices (map)
     address[] private paymentTokens;
@@ -312,6 +314,21 @@ contract Dex223AutoListing {
         } else {
             require(msg.value == 0, "No payment required");
         }
+
+        uint256 pairIdx = pair_indices[_token0_erc20][_token1_erc20];
+        if (pairIdx == 0) {
+            num_listed_pairs++;
+            pairIdx = num_listed_pairs;
+            pair_indices[_token0_erc20][_token1_erc20] = pairIdx;
+            pair_indices[_token1_erc20][_token0_erc20] = pairIdx;
+            TradeablePair storage p = pairs[pairIdx];
+            p.token1_erc20 = _token0_erc20;
+            p.token2_erc20 = _token1_erc20;
+            p.token1_erc223 = _token0_erc223;
+            p.token2_erc223 = _token1_erc223;
+        }
+        require(pairs[pairIdx].pools[feeTier] == address(0), "Pool already listed");
+        pairs[pairIdx].pools[feeTier] = pool;
 
         emit PairListed(_token0_erc20, _token0_erc223, _token1_erc20, _token1_erc223, pool, feeTier);
         last_update = block.timestamp;
@@ -523,7 +540,9 @@ contract Dex223CoreAutoListing {
 
     uint256 public last_update;
     uint256 public num_listed_tokens;
+    uint256 public num_listed_pairs;
     mapping(uint256 => TradeablePair) public pairs; // index => pair
+    mapping(address => mapping(address => uint256)) public pair_indices;
 
     // NOTE add storing paymentTokens & prices (map)
     address[] private paymentTokens;
@@ -626,6 +645,21 @@ contract Dex223CoreAutoListing {
         } else {
             require(msg.value == 0, "No payment required");
         }
+
+        uint256 pairIdx = pair_indices[_token0_erc20][_token1_erc20];
+        if (pairIdx == 0) {
+            num_listed_pairs++;
+            pairIdx = num_listed_pairs;
+            pair_indices[_token0_erc20][_token1_erc20] = pairIdx;
+            pair_indices[_token1_erc20][_token0_erc20] = pairIdx;
+            TradeablePair storage p = pairs[pairIdx];
+            p.token1_erc20 = _token0_erc20;
+            p.token2_erc20 = _token1_erc20;
+            p.token1_erc223 = _token0_erc223;
+            p.token2_erc223 = _token1_erc223;
+        }
+        require(pairs[pairIdx].pools[feeTier] == address(0), "Pool already listed");
+        pairs[pairIdx].pools[feeTier] = pool;
 
         emit PairListed(_token0_erc20, _token0_erc223, _token1_erc20, _token1_erc223, pool, feeTier);
         last_update = block.timestamp;
@@ -873,7 +907,9 @@ contract Dex223OwnableListing {
 
     uint256 public last_update;
     uint256 public num_listed_tokens;
+    uint256 public num_listed_pairs;
     mapping(uint256 => TradeablePair) public pairs; // index => pair
+    mapping(address => mapping(address => uint256)) public pair_indices;
 
     // NOTE add storing paymentTokens & prices (map)
     address[] private paymentTokens;
@@ -1019,6 +1055,21 @@ contract Dex223OwnableListing {
         } else {
             require(msg.value == 0, "No payment required");
         }
+
+        uint256 pairIdx = pair_indices[_token0_erc20][_token1_erc20];
+        if (pairIdx == 0) {
+            num_listed_pairs++;
+            pairIdx = num_listed_pairs;
+            pair_indices[_token0_erc20][_token1_erc20] = pairIdx;
+            pair_indices[_token1_erc20][_token0_erc20] = pairIdx;
+            TradeablePair storage p = pairs[pairIdx];
+            p.token1_erc20 = _token0_erc20;
+            p.token2_erc20 = _token1_erc20;
+            p.token1_erc223 = _token0_erc223;
+            p.token2_erc223 = _token1_erc223;
+        }
+        require(pairs[pairIdx].pools[feeTier] == address(0), "Pool already listed");
+        pairs[pairIdx].pools[feeTier] = pool;
 
         emit PairListed(_token0_erc20, _token0_erc223, _token1_erc20, _token1_erc223, pool, feeTier);
         last_update = block.timestamp;

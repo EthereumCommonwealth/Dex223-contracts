@@ -123,21 +123,30 @@ contract Revenue {
     function stake(address _token, uint256 _amount) public nonReentrant {
         require(_token == staking_token_erc20 || _token == staking_token_erc223, "Trying to stake a wrong token");
         _update(msg.sender);
-        staked[msg.sender] += _amount;
-        total_staked += _amount;
-        receiveToken(_token, _amount);
+        uint256 received = receiveToken(_token, _amount);
+        staked[msg.sender] += received;
+        staked_by_version[msg.sender][_token] += received;
+        total_staked += received;
         staking_timestamp[msg.sender] = block.timestamp;
 
-        emit Staked(msg.sender, _amount);
+        emit Staked(msg.sender, received);
     }
 
+    /// @notice Withdraws staked tokens once the claim delay has elapsed.
+    /// @dev    Tracks per-standard stake balances so a user cannot deposit one version and drain the other,
+    ///         or have `sendToken` fail with `"No counterpart token to cover the shortfall"` before `delivery()`
+    ///         populates `get223`/`get20` for a pool containing the staking token.
+    mapping (address => mapping(address => uint256)) public staked_by_version;
+
     function withdraw(address _token, uint256 amount) public nonReentrant {
+        require(amount > 0, "Zero amount");
         require(staking_timestamp[msg.sender] + claim_delay <= block.timestamp, "Tokens are frozen for a specified duration after the last staking");
         require(_token == staking_token_erc20 || _token == staking_token_erc223, "Trying to stake a wrong token");
-        //_update(msg.sender);
+        require(staked_by_version[msg.sender][_token] >= amount, "Insufficient staked balance in this version");
+        staked_by_version[msg.sender][_token] -= amount;
         staked[msg.sender] -= amount;
         total_staked -= amount;
-        sendToken(_token, amount);
+        TransferHelper.safeTransfer(_token, msg.sender, amount);
 
         emit Withdrawn(msg.sender, amount);
     }
@@ -274,11 +283,19 @@ contract Revenue {
 
     // Handles ERC223 tokens by checking the balance updated in `tokenReceived` callback.
     // If no ERC223 tokens were received, it indicates an ERC20 token transfer attempt.
-    function receiveToken(address token,  uint256 amount) internal {
+    function receiveToken(address token,  uint256 amount) internal returns (uint256 received) {
         if (erc223deposit[msg.sender][token] >= amount) {
             erc223deposit[msg.sender][token] -= amount;
+            received = amount;
         } else {
+            uint256 beforeBal = IERC20Minimal(token).balanceOf(address(this));
+            uint256 prevDeposit = erc223deposit[msg.sender][token];
             TransferHelper.safeTransferFrom(token, msg.sender, address(this), amount);
+            if (erc223deposit[msg.sender][token] > prevDeposit) {
+                erc223deposit[msg.sender][token] = prevDeposit;
+            }
+            received = IERC20Minimal(token).balanceOf(address(this)) - beforeBal;
+            require(received > 0, "Nothing received");
         }
     }
 
