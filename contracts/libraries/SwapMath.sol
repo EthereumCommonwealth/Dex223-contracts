@@ -34,6 +34,7 @@ library SwapMath {
             uint256 feeAmount
         )
     {
+        require(feePips < 1e6);
         bool zeroForOne = sqrtRatioCurrentX96 >= sqrtRatioTargetX96;
         bool exactIn = amountRemaining >= 0;
 

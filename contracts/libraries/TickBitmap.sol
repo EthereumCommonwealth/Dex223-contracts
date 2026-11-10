@@ -25,7 +25,7 @@ library TickBitmap {
         int24 tick,
         int24 tickSpacing
     ) internal {
-        require(tick % tickSpacing == 0); // ensure that the tick is spaced
+        require(tickSpacing > 0 && tick % tickSpacing == 0); // ensure that the tick is spaced
         (int16 wordPos, uint8 bitPos) = position(tick / tickSpacing);
         uint256 mask = 1 << bitPos;
         self[wordPos] ^= mask;
@@ -45,6 +45,7 @@ library TickBitmap {
         int24 tickSpacing,
         bool lte
     ) internal view returns (int24 next, bool initialized) {
+        require(tickSpacing > 0);
         int24 compressed = tick / tickSpacing;
         if (tick < 0 && tick % tickSpacing != 0) compressed--; // round towards negative infinity
 
