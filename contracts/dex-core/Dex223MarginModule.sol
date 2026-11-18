@@ -1067,13 +1067,24 @@ contract MarginModule is IOrderParams
 
     /// @dev Selling a position worth less than its debt realizes a loss for the lender. During
     /// LENDER_WINDOW only the lender or its keeper may do it; inside the buffer (value still above
-    /// the debt) and after the window, anyone may.
+    /// the debt) and after the window, anyone may, unless the sale itself leaves the lender short
+    /// (_requireMayRealizeSaleLoss).
     function _requireMayRealizeLoss(uint256 positionId) internal view returns (bool inWindow) {
         uint256 since = positionUnderwaterSince[positionId];
         inWindow = since != 0 && block.timestamp < since + LENDER_WINDOW;
         if (inWindow) {
             require(_isLossLiquidator(positions[positionId].orderId, msg.sender), "MM38");
         }
+    }
+
+    /// @dev A forced sale may fill up to FORCED_SWAP_MIN_OUT_BPS below the TWAP, so a position valued
+    /// just above its debt can still leave the lender short once its holdings are sold. That sale
+    /// realizes a loss as surely as one under water, so it starts the spell here and LENDER_WINDOW
+    /// applies (bounty #94). A third party's attempt reverts, so the timestamp is kept only when the
+    /// lender or its keeper goes ahead.
+    function _requireMayRealizeSaleLoss(uint256 positionId) internal {
+        if (positionUnderwaterSince[positionId] == 0) positionUnderwaterSince[positionId] = block.timestamp;
+        _requireMayRealizeLoss(positionId);
     }
 
     function liquidate(uint256 positionId, address receiver) public nonReentrant {
@@ -1137,6 +1148,8 @@ contract MarginModule is IOrderParams
         require(id > 0 && id < position.assets.length, "MM25");
 
         _swapToBaseAsset(positionId, asset, amount);
+        (uint256 debt, uint256 value) = _positionValue(positionId);
+        if (value < debt) _requireMayRealizeSaleLoss(positionId);
     }
 
     /// @notice Lift a freeze from a position that is no longer liquidatable. A freeze was never
@@ -1231,6 +1244,7 @@ contract MarginModule is IOrderParams
         // Every non-base holding is sold; whatever the sale does not recover is the lender's loss.
         uint256 shortfall = _settle(positionId, _receiver, true);
         if (shortfall > 0) {
+            _requireMayRealizeSaleLoss(positionId);
             orderShortfall[positions[positionId].orderId] += shortfall;
             emit LiquidationShortfall(positionId, positions[positionId].orderId, shortfall);
         }
