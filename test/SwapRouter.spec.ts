@@ -292,6 +292,85 @@ describe('SwapRouter', function () {
       })
     })
 
+    describe('a contract that names another address as the ERC-223 sender (bounty #104)', () => {
+      // tokenReceived is public, so any contract can call it and name any `_from`, which becomes `call_sender`
+      // for the dispatched call. That call must never be paid from the named address's ERC-20 approval:
+      // exactInput and exactInputSingle pay from `call_sender` only for the token that called tokenReceived, and
+      // exactOutput and exactOutputSingle pay from msg.sender, which inside the dispatch is the calling contract.
+      const amount = 1000
+
+      async function setup() {
+        const rogue = await (await ethers.getContractFactory('RogueERC223')).deploy()
+        await tokens[0].connect(trader).approve(router.target.toString(), ethers.MaxUint256)
+        return { rogue, before: await tokens[0].balanceOf(trader.address) }
+      }
+
+      const inputSingle = () => ({
+        tokenIn: tokens[0].target.toString(),
+        tokenOut: tokens[1].target.toString(),
+        fee: FeeAmount.MEDIUM,
+        recipient: wallet.address,
+        deadline: 1,
+        amountIn: amount,
+        amountOutMinimum: 0,
+        sqrtPriceLimitX96: 0,
+        prefer223Out: false,
+      })
+
+      async function expectRefused(payload: string) {
+        const { rogue, before } = await setup()
+        await expect(
+          rogue.attackDeposit(router.target.toString(), trader.address, 0, ethers.getBytes(payload))
+        ).to.be.revertedWith('23F')
+        expect(await tokens[0].balanceOf(trader.address)).to.eq(before)
+        expect(await tokens[0].allowance(trader.address, router.target.toString())).to.eq(ethers.MaxUint256)
+      }
+
+      it('exactInputSingle does not spend the named address\'s approval', async () => {
+        await expectRefused(router.interface.encodeFunctionData('exactInputSingle', [inputSingle()]))
+      })
+
+      it('exactInput does not spend the named address\'s approval', async () => {
+        await expectRefused(router.interface.encodeFunctionData('exactInput', [{
+          path: encodePath([tokens[0].target.toString(), tokens[1].target.toString()], [FeeAmount.MEDIUM]),
+          recipient: wallet.address,
+          deadline: 1,
+          amountIn: amount,
+          amountOutMinimum: 0,
+          prefer223Out: false,
+        }]))
+      })
+
+      it('exactOutputSingle does not spend the named address\'s approval', async () => {
+        await expectRefused(router.interface.encodeFunctionData('exactOutputSingle', [{
+          tokenIn: tokens[0].target.toString(),
+          tokenOut: tokens[1].target.toString(),
+          fee: FeeAmount.MEDIUM,
+          recipient: wallet.address,
+          deadline: 1,
+          amountOut: amount,
+          amountInMaximum: ethers.MaxUint256,
+          sqrtPriceLimitX96: 0,
+        }]))
+      })
+
+      it('exactOutput does not spend the named address\'s approval', async () => {
+        await expectRefused(router.interface.encodeFunctionData('exactOutput', [{
+          path: encodePath([tokens[1].target.toString(), tokens[0].target.toString()], [FeeAmount.MEDIUM]),
+          recipient: wallet.address,
+          deadline: 1,
+          amountOut: amount,
+          amountInMaximum: ethers.MaxUint256,
+        }]))
+      })
+
+      it('control: the same exactInputSingle sent by the approver does spend the approval', async () => {
+        const { before } = await setup()
+        await router.connect(trader).exactInputSingle(inputSingle())
+        expect(await tokens[0].balanceOf(trader.address)).to.eq(before - BigInt(amount))
+      })
+    })
+
     describe('#exactInput', () => {
       async function exactInput(
         tokens: string[],

@@ -1735,6 +1735,86 @@ describe('MarginModule', () => {
       // The lender now holds the freeze: the third party cannot take it back.
       await expect(c.mm.connect(c.other).liquidateStep(0, c.collat.target, expandTo18Decimals(1))).to.be.revertedWith('MM38')
     })
+
+    // Bounty #94: a position valued just above its debt is inside the buffer, so LENDER_WINDOW did
+    // not apply, yet the forced sale (up to 5% under the TWAP, plus the pool fee) can leave the
+    // lender short. Any third party could realize that loss.
+    async function justAboveDebt() {
+      // 10 base against 10 collat on the ~1000/1000 pool: selling the 10 collat loses about 1.3% to
+      // price impact and the 0.3% fee, well inside the 95% floor.
+      const loan = expandTo18Decimals(10)
+      const c = await pooledPosition(10000n, loan, loan)
+      const [, value] = await c.mm.getPositionStatus(0)
+      // Let interest carry the debt (loan + loan * t / 30 days) to 0.25% under the holdings' value.
+      const opened = (await c.mm.positions(0)).createdAt
+      await time.increaseTo(opened + (value * 9975n / 10000n - loan) * BigInt(30 * DAY) / loan)
+      const [debt, val] = await c.mm.getPositionStatus(0)
+      expect(val, 'valued above the debt').to.be.gt(debt)
+      expect(await c.mm.subjectToLiquidation(0)).to.eq(true)
+      await c.mm.connect(c.other).liquidate(0, c.other.address)   // freeze inside the buffer
+      expect(await c.mm.positionUnderwaterSince(0)).to.eq(0n)
+      await time.increase(60)
+      return c
+    }
+
+    it('a third party cannot finish a buffer liquidation whose sale leaves the lender short (bounty #94)', async () => {
+      const c = await justAboveDebt()
+      await expect(c.mm.connect(c.other).liquidate(0, c.other.address)).to.be.revertedWith('MM38')
+      expect((await c.mm.positions(0)).open).to.eq(true)
+      expect(await c.mm.positionUnderwaterSince(0), 'a refused attempt records nothing').to.eq(0n)
+      // The lender may realize its own loss: it completes the live freeze and books the shortfall.
+      await expect(c.mm.liquidate(0, c.wallet.address)).to.emit(c.mm, 'LiquidationShortfall')
+      expect((await c.mm.positions(0)).open).to.eq(false)
+      expect(await c.mm.orderShortfall(0)).to.be.gt(0n)
+    })
+
+    it('a third-party step may not sell the position under its debt either (bounty #94)', async () => {
+      const c = await justAboveDebt()
+      // Selling all 10 collat at once costs more than the 0.25% the value has over the debt.
+      await expect(c.mm.connect(c.other).liquidateStep(0, c.collat.target, expandTo18Decimals(10))).to.be.revertedWith('MM38')
+      // A step small enough to keep the value above the debt is still the freezer's to take.
+      await c.mm.connect(c.other).liquidateStep(0, c.collat.target, ONE)
+      const [debt, value] = await c.mm.getPositionStatus(0)
+      expect(value).to.be.gte(debt)
+      expect(await c.mm.positionUnderwaterSince(0)).to.eq(0n)
+    })
+
+    it("the lender's keeper may finish it (bounty #94)", async () => {
+      const c = await justAboveDebt()
+      const [, , keeper] = await ethers.getSigners()
+      await c.mm.orderSetLenderProtection(0, 0, keeper.address)
+      // An address that is neither lender nor keeper is still refused.
+      await expect(c.mm.connect(c.other).liquidate(0, c.other.address)).to.be.revertedWith('MM38')
+      await expect(c.mm.connect(keeper).liquidate(0, keeper.address)).to.emit(c.mm, 'LiquidationShortfall')
+    })
+
+    it('once the position has been under water for LENDER_WINDOW, anyone may finish it (bounty #94)', async () => {
+      const c = await justAboveDebt()
+      await expect(c.mm.connect(c.other).liquidate(0, c.other.address)).to.be.revertedWith('MM38')
+      // A day of interest takes the position under water; a day after that the window is over.
+      await time.increase(DAY)
+      await c.mm.connect(c.other).liquidate(0, c.other.address)   // renews the lapsed freeze
+      const since = await c.mm.positionUnderwaterSince(0)
+      expect(since).to.be.gt(0n)
+      await time.increase(DAY + 60)
+      await expect(c.mm.connect(c.other).liquidate(0, c.other.address)).to.emit(c.mm, 'PositionFrozen')
+      await time.increase(60)
+      await expect(c.mm.connect(c.other).liquidate(0, c.other.address)).to.emit(c.mm, 'LiquidationShortfall')
+    })
+
+    it('a sale that still covers the debt stays open to anyone inside the buffer (bounty #94)', async () => {
+      // 1 base + 1 collat with the debt 2% under their value: selling 1 collat costs about 0.4% of
+      // it, so the sale covers the debt and the buffer rule is unchanged.
+      const c = await pooledPosition(10000n)
+      const [, value] = await c.mm.getPositionStatus(0)
+      const opened = (await c.mm.positions(0)).createdAt
+      await time.increaseTo(opened + (value * 98n / 100n - ONE) * BigInt(30 * DAY) / ONE)
+      expect(await c.mm.subjectToLiquidation(0)).to.eq(true)
+      await c.mm.connect(c.other).liquidate(0, c.other.address)   // freeze
+      await time.increase(60)
+      await expect(c.mm.connect(c.other).liquidate(0, c.other.address))
+        .to.emit(c.mm, 'Liquidation').and.not.to.emit(c.mm, 'LiquidationShortfall')
+    })
   })
   describe('lender protection', () => {
     // Same malicious-token setup as liquidatable(): base, collateral and reward are one token, so
