@@ -1,7 +1,7 @@
 # DEX223 fee keeper (AWS Lambda)
 
 Runs daily in the RORO AWS account (680302448261, us-east-1). For mainnet and Sepolia it:
-1. switches protocol fees on in new pools;
+1. switches protocol fees on in pools whose fee differs from what `enableFees` would set. With a collector from Dex223-contracts#220 on, that is per side: a side pays a protocol fee only while its token is a listed RevenueV2 reward token, so pools of unlisted tokens stay at 0 and a side turns on once its token is listed. With an older collector, both defaults on pools still at 0. The keeper detects which collector it talks to;
 2. collects accrued protocol fees into RevenueV2;
 3. calls `syncAll()` so collected fees start streaming to stakers.
 

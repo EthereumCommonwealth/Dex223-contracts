@@ -4,7 +4,10 @@
  * The Lambda version of scripts/fee-keeper.ts, per network:
  *   1. lists every pool from the factory's PoolCreated events (Etherscan logs API: no free RPC serves
  *      eth_getLogs back to the factory block),
- *   2. ProtocolFeeCollector.enableFees for pools whose protocol fee is still off and not set by hand,
+ *   2. ProtocolFeeCollector.enableFees for pools not set by hand whose protocol fee differs from what
+ *      enableFees would set (`needsEnableFees`): per side for collectors since Dex223-contracts#220
+ *      (a side's default only while its token is a listed RevenueV2 reward token, bounty #111), both
+ *      defaults for older ones. The collector is detected, not configured,
  *   3. ProtocolFeeCollector.collect for pools with protocol fees to collect (they go to RevenueV2),
  *   4. RevenueV2.syncAll when fees arrived or queued revenue can start a stream.
  * Every call it makes is permissionless, so the keeper wallet needs gas and nothing else; the RevenueV2
@@ -68,6 +71,21 @@ const REVENUE_ABI = [
   'function reward_data(address) view returns (bool listed, uint64 period_finish, uint64 last_update, uint256 rate, uint256 reward_per_token, uint256 queued, uint256 accounted)',
   'function syncAll()',
 ]
+// Only collectors with the per-side rule (Dex223-contracts#220) have this getter.
+const PER_SIDE_PROBE_ABI = ['function REWARD_CHECK_GAS() view returns (uint256)']
+
+/**
+ * Whether enableFees would change this pool; mirrors scripts/fee-keeper.ts. `current` is slot0.feeProtocol
+ * (token0 in the low four bits, token1 in the high four); `listed0`/`listed1` say whether each side's ERC-20
+ * is a listed reward token on the collector's revenue.
+ */
+export function needsEnableFees(perSide, current, fp0, fp1, listed0, listed1, custom) {
+  if (custom) return false
+  if (!perSide) return current === 0 && (fp0 !== 0 || fp1 !== 0)
+  const want = (listed0 ? fp0 : 0) + ((listed1 ? fp1 : 0) << 4)
+  return current !== want
+}
+
 const STREAM_SCALE = 10n ** 18n
 const BATCH = 50
 const MIN_WEI = 1n // collectProtocol always leaves 1 behind
@@ -106,9 +124,13 @@ async function etherscanPoolLogs(chainId, factory, fromBlock, toBlock, apiKey, i
     from = parseInt(res.result[res.result.length - 1].blockNumber, 16)
     await new Promise((r) => setTimeout(r, 250))
   }
-  const pools = new Set()
-  for (const l of out) pools.add(iface.parseLog({ topics: l.topics, data: l.data }).args.pool)
-  return [...pools]
+  // Each pool once, with the ERC-20 versions of its tokens: the addresses the collector checks on Revenue.
+  const pools = new Map()
+  for (const l of out) {
+    const a = iface.parseLog({ topics: l.topics, data: l.data }).args
+    pools.set(a.pool.toLowerCase(), { pool: a.pool, token0: a.token0_erc20, token1: a.token1_erc20 })
+  }
+  return [...pools.values()]
 }
 
 async function metric(network, values) {
@@ -160,15 +182,33 @@ async function runNetwork(name, cfg, secret, dryRun) {
   const latest = await provider.getBlockNumber()
   const pools = await etherscanPoolLogs(cfg.chainId, cfg.factory, cfg.fromBlock, latest, secret.etherscanApiKey, factory.interface)
   const [fp0, fp1] = (await Promise.all([collector.defaultFeeProtocol0(), collector.defaultFeeProtocol1()])).map(Number)
+  const perSide = await new ethers.Contract(cfg.collector, PER_SIDE_PROBE_ABI, provider)
+    .REWARD_CHECK_GAS()
+    .then(() => true, () => false)
+  const revenueAddr = await collector.revenue()
+  const revenueReader = new ethers.Contract(revenueAddr, REVENUE_ABI, provider)
+  const listedCache = new Map()
+  // Same fail-safe as the collector: a revenue that is not a RevenueV2 lists nothing.
+  const listed = (token) => {
+    const k = token.toLowerCase()
+    if (!listedCache.has(k)) listedCache.set(k, revenueReader.reward_data(token).then((r) => r.listed === true, () => false))
+    return listedCache.get(k)
+  }
   const toEnable = []
   const toCollect = []
-  for (const addr of pools) {
+  for (const { pool: addr, token0, token1 } of pools) {
     const pool = new ethers.Contract(addr, POOL_ABI, provider)
-    const [slot0, accrued, custom] = await Promise.all([pool.slot0(), pool.protocolFees(), collector.customFeeProtocol(addr)])
-    if (Number(slot0.feeProtocol) === 0 && !custom && (fp0 !== 0 || fp1 !== 0)) toEnable.push(addr)
+    const [slot0, accrued, custom, listed0, listed1] = await Promise.all([
+      pool.slot0(),
+      pool.protocolFees(),
+      collector.customFeeProtocol(addr),
+      perSide ? listed(token0) : true,
+      perSide ? listed(token1) : true,
+    ])
+    if (needsEnableFees(perSide, Number(slot0.feeProtocol), fp0, fp1, listed0, listed1, custom)) toEnable.push(addr)
     if (accrued.token0 > MIN_WEI || accrued.token1 > MIN_WEI) toCollect.push(addr)
   }
-  log(`${pools.length} pools; enableFees ${toEnable.length}, collect ${toCollect.length}`)
+  log(`${pools.length} pools (enableFees rule: ${perSide ? 'per side' : 'both defaults'}); enableFees ${toEnable.length}, collect ${toCollect.length}`)
 
   const sent = []
   const failures = []
@@ -204,7 +244,7 @@ async function runNetwork(name, cfg, secret, dryRun) {
   // Fees reach RevenueV2 as plain transfers; syncAll turns them into reward streams. Mirrors
   // RevenueV2._startStream: start when none runs and at least one token unit is queued, or fold when
   // the queue is at least what the running stream has left.
-  const revenue = new ethers.Contract(await collector.revenue(), REVENUE_ABI, signer)
+  const revenue = new ethers.Contract(revenueAddr, REVENUE_ABI, signer)
   const now = BigInt((await provider.getBlock('latest')).timestamp)
   const pending = []
   for (const t of await revenue.get_reward_tokens()) {
