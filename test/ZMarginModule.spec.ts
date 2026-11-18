@@ -397,6 +397,105 @@ describe('MarginModule', () => {
     }
   })
 
+  describe('tokens that return no value, like mainnet USDT (bounty #56)', () => {
+    // USDT returns nothing from transfer, transferFrom and approve, and refuses to change a non-zero
+    // allowance to another non-zero value. The module called these through the bool-returning
+    // interface, so USDT that reached a position through a swap could not be traded back, sold by a
+    // liquidation, withdrawn or closed out: it stayed in the module for good.
+    const ONE = expandTo18Decimals(1)
+
+    async function usdtPosition() {
+      const c = await loadFixture(fx)
+      await c.seedPool()
+      const usdt = await (await ethers.getContractFactory('TestUSDTLike')).deploy(expandTo18Decimals(10_000_000))
+      const usdt223 = (await c.converter.predictWrapperAddress(usdt.target, true)).toString()
+      const base = c.base.target.toString(), u = usdt.target.toString(), base223 = c.tokens[3].target.toString()
+      const baseIs0 = base.toLowerCase() < u.toLowerCase()
+      const [t0, t1] = baseIs0 ? [base, u] : [u, base]
+      const [w0, w1] = baseIs0 ? [base223, usdt223] : [usdt223, base223]
+      await c.nft.createAndInitializePoolIfNecessary(t0, t1, w0, w1, FeeAmount.MEDIUM, encodePriceSqrt(1n, 1n))
+      await usdt.approve(c.nft.target, ethers.MaxUint256)
+      const TS = TICK_SPACINGS[FeeAmount.MEDIUM]
+      await c.nft.mint({
+        token0: t0, token1: t1, tickLower: getMinTick(TS), tickUpper: getMaxTick(TS),
+        amount0Desired: expandTo18Decimals(1000), amount1Desired: expandTo18Decimals(1000), amount0Min: 0, amount1Min: 0,
+        recipient: c.wallet.address, deadline: BigInt((await time.latest()) + 3600), fee: FeeAmount.MEDIUM,
+      })
+      const pool = await c.factory.getPool(t0, t1, FeeAmount.MEDIUM)
+      await (await ethers.getContractAt('contracts/interfaces/IUniswapV3Pool.sol:IUniswapV3Pool', pool)).increaseObservationCardinalityNext(16)
+      await time.increase(c.TWAP_WINDOW)
+
+      const list = [base, c.collat.target.toString(), u]
+      await c.mm.addTokenlist(list, false)
+      await c.mm.createOrder({ ...c.orderParams, whitelistId: predictTokenListsID(list, false), interestRate: 10000n, duration: BigInt(365 * DAY) })
+      await c.mm.setOrderStatus(0, true)
+      await c.base.approve(c.mm.target, ethers.MaxUint256)
+      await c.collat.approve(c.mm.target, ethers.MaxUint256)
+      await c.mm.orderDepositToken(0, expandTo18Decimals(100))
+      await c.mm.takeLoan(0, ONE, 0, ONE)
+      // The borrower trades half the loan into USDT.
+      await c.mm.marginSwap(0, 0, 0, 2, ONE / 2n, u, FeeAmount.MEDIUM, 0, 0)
+      const assets = await c.mm.getPositionAssets(0)
+      expect(assets[2]).to.eq(u)
+      return { ...c, usdt, pool, baseIs0 }
+    }
+
+    it('the owner can trade USDT back into the base asset', async () => {
+      const c = await usdtPosition()
+      const held = (await c.mm.getPositionBalances(0))[2]
+      await c.mm.marginSwap(0, 2, 2, 0, held, c.base.target, FeeAmount.MEDIUM, 0, 0)
+      expect((await c.mm.getPositionAssets(0)).length).to.eq(2)
+    })
+
+    it('a liquidation sells the USDT', async () => {
+      const c = await usdtPosition()
+      await time.increase(26 * DAY)                                 // inside the buffer
+      await c.mm.connect(c.other).liquidate(0, c.other.address)
+      await time.increase(60)
+      await expect(c.mm.connect(c.other).liquidate(0, c.other.address)).to.emit(c.mm, 'Liquidation')
+      expect(await c.usdt.balanceOf(c.mm.target)).to.eq(0n)
+    })
+
+    it('the owner can close the position and withdraw what is left', async () => {
+      const c = await usdtPosition()
+      await c.mm.positionClose(0, true)
+      expect((await c.mm.positions(0)).open).to.eq(false)
+      expect(await c.usdt.balanceOf(c.mm.target)).to.eq(0n)
+    })
+
+    it('USDT can be deposited into a position and lent', async () => {
+      const c = await usdtPosition()
+      await c.usdt.approve(c.mm.target, ethers.MaxUint256)
+      await c.mm.positionDeposit(0, c.usdt.target, 2, ONE / 10n)
+      // An order lending USDT itself.
+      const list = [c.usdt.target.toString(), c.base.target.toString()]
+      await c.mm.addTokenlist(list, false)
+      await c.mm.createOrder({ ...c.orderParams, whitelistId: predictTokenListsID(list, false), asset: c.usdt.target.toString(),
+        collateral: [c.base.target.toString()], liquidationRewardAsset: c.usdt.target.toString() })
+      await c.mm.setOrderStatus(1, true)
+      await c.mm.orderDepositToken(1, expandTo18Decimals(10))
+      await c.mm.orderWithdraw(1, expandTo18Decimals(1))
+      await c.mm.takeLoan(1, ONE, 0, ONE)
+      expect((await c.mm.getPositionAssets(1))[0]).to.eq(c.usdt.target)
+    })
+
+    it('a partial fill leaves no allowance that would block the next sale of the token', async () => {
+      const c = await usdtPosition()
+      const held = (await c.mm.getPositionBalances(0))[2]
+      // Selling USDT moves the price one way; stop it a hair from where it is so only part fills.
+      const pool = await ethers.getContractAt('contracts/interfaces/IUniswapV3Pool.sol:IUniswapV3Pool', c.pool)
+      const sqrtP = (await pool.slot0()).sqrtPriceX96
+      const usdtIs0 = !c.baseIs0
+      const limit = usdtIs0 ? sqrtP * 99999n / 100000n : sqrtP * 100001n / 100000n
+      await c.mm.marginSwap(0, 2, 2, 0, held, c.base.target, FeeAmount.MEDIUM, 0, limit)
+      const left = (await c.mm.getPositionBalances(0))[2]
+      expect(left, 'partially filled').to.be.gt(0n)
+      expect(await c.usdt.allowance(c.mm.target, c.router.target)).to.eq(0n)
+      // The next sale of the token still goes through.
+      await c.mm.marginSwap(0, 2, 2, 0, left, c.base.target, FeeAmount.MEDIUM, 0, 0)
+    })
+  })
+
   describe('takeLoan reentrancy (position id must be claimed before external calls)', () => {
     it('a re-entering collateral token gets a fresh position id, not a colliding one', async () => {
       const { mm, oracle, wallet, now } = await loadFixture(fx)
