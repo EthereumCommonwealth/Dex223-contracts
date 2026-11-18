@@ -671,7 +671,7 @@ contract Dex223CoreAutoListing {
             require(msg.value == 0, "No payment required");
         }
 
-        emit TokenListed(token20, token223);
+        // checkListing already emits TokenListed for this pair; a second emit counted one listing twice (bounty #131).
         last_update = block.timestamp;
     }
 
