@@ -1430,10 +1430,15 @@ contract MarginModule is IOrderParams
         // Floor the output at FORCED_SWAP_MIN_OUT_BPS of the oracle's TWAP quote for this amount.
         uint256 minOut = oracle.getAmountOut(order.baseAsset, asset, amount) * FORCED_SWAP_MIN_OUT_BPS / 10000;
 
+        // The base asset and the initial collateral need no list entry (_validateAsset accepts them at
+        // any index, and takeLoan refuses an empty list, so index 0 exists). Looking them up with
+        // getIdFromTokenlist reverted for a static list without them, and the position could then be
+        // neither liquidated nor closed (bounty #49).
+        uint256 listId = _listIndex(order.whitelist, asset);
         if (_isErc223SideOf(pool, asset)) {
-            _marginSwap223Internal(positionId, getAssetId(positionId, asset), getIdFromTokenlist(order.whitelist, asset), getIdFromTokenlist(order.whitelist, order.baseAsset), amount, order.baseAsset, fee, minOut);
+            _marginSwap223Internal(positionId, getAssetId(positionId, asset), listId, 0, amount, order.baseAsset, fee, minOut);
         } else {
-            _marginSwapInternal(positionId, getAssetId(positionId, asset), getIdFromTokenlist(order.whitelist, asset), getIdFromTokenlist(order.whitelist, order.baseAsset), amount, order.baseAsset, fee, minOut, 0);
+            _marginSwapInternal(positionId, getAssetId(positionId, asset), listId, 0, amount, order.baseAsset, fee, minOut, 0);
         }
 
         // Return new base asset balance
@@ -1480,14 +1485,18 @@ contract MarginModule is IOrderParams
             return 0;
         }
 
-        assetId = list.tokens.length;
-        for (uint256 i = 0; i < list.tokens.length; i++) {
-            if (list.tokens[i] == asset) {
-                assetId = i;
-                break;
-            }
+        assetId = _listIndex(_listId, asset);
+        require(list.tokens[assetId] == asset);
+    }
+
+    /// @dev Index of `asset` in the list's tokens, or 0 when it is not there (always 0 for an
+    /// autolisting list, whose only entry is the listing contract). _validateAsset still decides.
+    function _listIndex(bytes32 _listId, address asset) internal view returns (uint256) {
+        address[] storage tokens = tokenlists[_listId].tokens;
+        for (uint256 i = 0; i < tokens.length; i++) {
+            if (tokens[i] == asset) return i;
         }
-        require(assetId < list.tokens.length);
+        return 0;
     }
 
 
