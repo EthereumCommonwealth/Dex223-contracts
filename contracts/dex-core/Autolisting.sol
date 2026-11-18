@@ -902,7 +902,7 @@ contract Dex223OwnableListing {
     {
         url = _newURL;
         metadata = _metadata;
-        registry.updateContractInfo(owner, _newURL, "");
+        registry.updateContractInfo(owner, _newURL, bytes(_metadata));
     }
 
     function getRegistry() public view returns (address)
@@ -942,28 +942,77 @@ contract Dex223OwnableListing {
     /// this listing refuse them) and can never be listed here again.
     function banToken(address _token20, address _token223) public onlyOwner
     {
+        require(_token20 != address(0) || _token223 != address(0), "Zero token address");
+        require(_token20 != _token223, "Identical token addresses");
+
+        uint256 _id20  = _token20  != address(0) ? listed_tokens[_token20]  : 0;
+        uint256 _id223 = _token223 != address(0) ? listed_tokens[_token223] : 0;
+
+        if (_id20 != 0) {
+            Token memory _p20 = tokens[_id20];
+            require(_p20.erc223 != _token20, "Listing pair mismatch");
+            if (_token223 == address(0)) {
+                _token223 = _p20.erc223;
+            } else {
+                require(
+                    (_p20.erc20 == address(0) || _p20.erc20 == _token20) &&
+                    (_p20.erc223 == address(0) || _p20.erc223 == _token223),
+                    "Listing pair mismatch"
+                );
+            }
+        }
+        if (_id223 != 0) {
+            Token memory _p223 = tokens[_id223];
+            require(_p223.erc20 != _token223, "Listing pair mismatch");
+            if (_token20 == address(0)) {
+                _token20 = _p223.erc20;
+            } else {
+                require(
+                    (_p223.erc223 == address(0) || _p223.erc223 == _token223) &&
+                    (_p223.erc20 == address(0) || _p223.erc20 == _token20),
+                    "Listing pair mismatch"
+                );
+            }
+        }
+        require(_id20 == 0 || _id223 == 0 || _id20 == _id223, "Listing pair mismatch");
+
         registry.tokenBanned(_token20, _token223);
 
         if(_token20 != address(0))
         {
             _ban(_token20);
-            emit TokenBanned(_token20);
         }
         if(_token223 != address(0))
         {
             _ban(_token223);
-            emit TokenBanned(_token223);
         }
         last_update = block.timestamp;
     }
 
     function _ban(address _token) internal
     {
+        uint256 _id = listed_tokens[_token];
+        if (_id != 0) {
+            Token memory _paired = tokens[_id];
+            delete tokens[_id];
+            if (_paired.erc20 != address(0) && _paired.erc20 != _token) {
+                _banSingle(_paired.erc20);
+            }
+            if (_paired.erc223 != address(0) && _paired.erc223 != _token) {
+                _banSingle(_paired.erc223);
+            }
+        }
+        _banSingle(_token);
+    }
+
+    function _banSingle(address _token) internal
+    {
+        listed_tokens[_token] = 0;
         if (banned_tokens[_token] == 0) {
             num_banned_tokens++;
             banned_tokens[_token] = num_banned_tokens;
+            emit TokenBanned(_token);
         }
-        listed_tokens[_token] = 0;
     }
 
     function _isFullyListed(address _erc20, address _erc223) internal view returns (bool)
