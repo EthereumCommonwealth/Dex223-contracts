@@ -16,7 +16,7 @@
  *   FACTORY=0x4EC06106Cf666A817586563ae042ffF8B76e3460 FROM_BLOCK=12026940 \
  *     npx hardhat run scripts/observation-rings.ts --network sepolia
  *
- * Grow every pool whose next cardinality is below CARDINALITY (default 50), or only the pools in POOLS
+ * Grow every pool whose next cardinality is below CARDINALITY (default 160: more than the 150 observations 30 minutes of 12 s blocks can write), or only the pools in POOLS
  * (with POOLS the factory's logs are not scanned, so FACTORY and FROM_BLOCK may be omitted):
  *
  *   GROW=1 RING_KEY=... POOLS=0xabc...,0xdef... FACTORY=... FROM_BLOCK=... \
@@ -87,7 +87,7 @@ async function main() {
     process.env.FROM_BLOCK ||
       (only.length ? 0 : fail("set FROM_BLOCK (the factory deploy block)"))
   );
-  const target = Number(process.env.CARDINALITY || 50);
+  const target = Number(process.env.CARDINALITY || 160);
   const oracle = process.env.ORACLE
     ? new ethers.Contract(process.env.ORACLE, ORACLE_ABI, provider)
     : null;
