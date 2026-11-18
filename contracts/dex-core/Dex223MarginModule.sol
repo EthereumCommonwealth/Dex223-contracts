@@ -867,7 +867,7 @@ contract MarginModule is IOrderParams
             require(!_isErc223SideOf(pool, _asset1));
             (, address tokenOut20) = _poolErc20Pair(pool, _asset1);
 
-            IERC20Minimal(_asset1).approve(address(router), _amount);
+            _tokenCall(_asset1, abi.encodeWithSelector(IERC20Minimal.approve.selector, address(router), _amount));
             amountOut = ISwapRouter(router).exactInputSingle(ISwapRouter.ExactInputSingleParams({
                 tokenIn: _asset1,
                 tokenOut: tokenOut20,
@@ -882,6 +882,11 @@ contract MarginModule is IOrderParams
         }
         require(amountOut > 0);
         uint256 amountInUsed = balInBefore - IERC20Minimal(_asset1).balanceOf(address(this));
+        // A partial fill (owner's price limit) leaves the rest of the allowance standing, and a token
+        // like USDT then refuses the next approve, which would block every later sale of it.
+        if (amountInUsed < _amount) {
+            _tokenCall(_asset1, abi.encodeWithSelector(IERC20Minimal.approve.selector, address(router), 0));
+        }
 
         // add new (received) asset to Position
         addAsset(_positionId, _asset2, amountOut);
@@ -1343,8 +1348,16 @@ contract MarginModule is IOrderParams
     function _sendAsset(address asset, uint256 amount, address receiver) internal {
         require(asset != address(0)); // _transferOut routes address(0) to _sendEth
 
-        bool success = IERC20Minimal(asset).transfer(receiver, amount);
-        require(success, "MM34");
+        _tokenCall(asset, abi.encodeWithSelector(IERC20Minimal.transfer.selector, receiver, amount));
+    }
+
+    /// @dev Calls a token and accepts either answer an ERC-20 gives: true, or nothing at all (USDT and
+    /// other tokens that predate the standard's return value). A typed call reverted on the empty
+    /// answer, so such a token could be swapped into a position but never sold, liquidated, withdrawn
+    /// or closed out (bounty #56).
+    function _tokenCall(address token, bytes memory data) private {
+        (bool success, bytes memory ret) = token.call(data);
+        require(success && (ret.length == 0 || abi.decode(ret, (bool))), "MM34");
     }
 
     function _sendEth(uint256 amount, address receiver) internal {
@@ -1379,7 +1392,7 @@ contract MarginModule is IOrderParams
         // erc20
         } else {
             uint256 balance = IERC20Minimal(asset).balanceOf(address(this));
-            IERC20Minimal(asset).transferFrom(msg.sender, address(this), amount);
+            _tokenCall(asset, abi.encodeWithSelector(IERC20Minimal.transferFrom.selector, msg.sender, address(this), amount));
             require(IERC20Minimal(asset).balanceOf(address(this)) >= balance + amount);
         }
     }
