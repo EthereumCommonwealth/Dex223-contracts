@@ -365,24 +365,51 @@ async function main() {
     const pool = new ethers.Contract(redPool, ['function setFeeProtocol(uint8,uint8)'], s)
     await reverts(() => pool.setFeeProtocol.staticCall(FEE_PROTOCOL, FEE_PROTOCOL))
   })
-  await check(`enableFees sets the default protocol fee (${FEE_PROTOCOL}/${FEE_PROTOCOL})`, async () => {
+  // Collectors since Dex223-contracts#220 set each side's protocol fee only while that side's ERC-20 is a
+  // listed reward token on the revenue contract (bounty #111); older ones set the default on both sides.
+  const perSide: boolean = await new ethers.Contract(st.feeCollector, ['function REWARD_CHECK_GAS() view returns (uint256)'], s)
+    .REWARD_CHECK_GAS()
+    .then(() => true, () => false)
+  const rewardList = new ethers.Contract(await collector.revenue(), ['function reward_data(address) view returns (bool listed, uint64, uint64, uint256, uint256, uint256, uint256)'], s)
+  const isListed = (t: string): Promise<boolean> => rewardList.reward_data(t).then((r: any) => r.listed === true, () => false)
+  const poolTokens = async (p: string): Promise<[string, string]> => {
+    const pool = new ethers.Contract(p, ['function token0() view returns (address, address)', 'function token1() view returns (address, address)'], s)
+    return [(await pool.token0())[0], (await pool.token1())[0]]
+  }
+  await check(`enableFees sets the protocol fee (${FEE_PROTOCOL} on ${perSide ? 'each side whose token is a listed reward token' : 'both sides'})`, async () => {
     await send('collector.enableFees', collector.enableFees([redPool, dPool], await fees()))
+    const seen: string[] = []
     for (const p of [redPool, dPool]) {
+      const [t0, t1] = await poolTokens(p)
+      const want = perSide
+        ? ((await isListed(t0)) ? FEE_PROTOCOL : 0) + (((await isListed(t1)) ? FEE_PROTOCOL : 0) << 4)
+        : FEE_PROTOCOL + (FEE_PROTOCOL << 4)
       const fp = Number((await new ethers.Contract(p, POOL, s).slot0())[5])
-      if (fp !== FEE_PROTOCOL + (FEE_PROTOCOL << 4)) fail(`${p} feeProtocol ${fp}`)
+      if (fp !== want) fail(`${p} feeProtocol ${fp % 16}/${fp >> 4}, expected ${want % 16}/${want >> 4}`)
+      seen.push(`${fp % 16}/${fp >> 4}`)
     }
+    return `RED/TOT1 ${seen[0]}, D223/RED ${seen[1]}`
   })
   await check('collect pays accrued protocol fees to the revenue contract', async () => {
-    const p = { tokenIn: RED, tokenOut: TOT1, fee: FEE, recipient: DEPLOYER, deadline: await deadline(), amountIn: 10n * ONE, amountOutMinimum: 1n, sqrtPriceLimitX96: 0, prefer223Out: false }
-    await send('swap 10 RED -> TOT1 (accrues protocol fee)', router.exactInputSingle(p, await fees()))
+    // Swap in the token whose side takes a protocol fee: the fee accrues in the input token.
+    const [redOn, tot1On] = perSide ? [await isListed(RED), await isListed(TOT1)] : [true, false]
+    if (!redOn && !tot1On) fail('neither RED nor TOT1 is a listed reward token on the revenue contract: list one before running this check')
+    const tokenIn = redOn ? RED : TOT1
+    const tokenOut = redOn ? TOT1 : RED
+    const inToken = new ethers.Contract(tokenIn, ERC20, s)
+    if ((await inToken.allowance(DEPLOYER, st.router)) < ethers.MaxUint256 / 2n) await send('approve input -> router', inToken.approve(st.router, ethers.MaxUint256, await fees()))
+    const amountIn = redOn ? 10n * ONE : (await inToken.balanceOf(DEPLOYER)) / 2n
+    if (amountIn === 0n) fail('no TOT1 to swap')
+    const p = { tokenIn, tokenOut, fee: FEE, recipient: DEPLOYER, deadline: await deadline(), amountIn, amountOutMinimum: 1n, sqrtPriceLimitX96: 0, prefer223Out: false }
+    await send(`swap ${ethers.formatEther(amountIn)} ${redOn ? 'RED -> TOT1' : 'TOT1 -> RED'} (accrues protocol fee)`, router.exactInputSingle(p, await fees()))
     const pool = new ethers.Contract(redPool, POOL, s)
     const [f0, f1]: [bigint, bigint] = await pool.protocolFees()
     if (f0 + f1 === 0n) fail('no protocol fee accrued')
-    const before: bigint = await red.balanceOf(st.revenue)
+    const before: bigint = await inToken.balanceOf(st.revenue)
     await send('collector.collect', collector.collect([redPool, stranger], await fees()))
-    const got: bigint = (await red.balanceOf(st.revenue)) - before
-    if (got === 0n) fail('revenue received no RED')
-    return `${ethers.formatEther(got)} RED to revenue; keeper must syncAll`
+    const got: bigint = (await inToken.balanceOf(st.revenue)) - before
+    if (got === 0n) fail(`revenue received no ${redOn ? 'RED' : 'TOT1'}`)
+    return `${ethers.formatEther(got)} ${redOn ? 'RED' : 'TOT1'} to revenue; keeper must syncAll`
   })
 
   const failed = results.filter((r) => !r[1])
