@@ -1481,6 +1481,49 @@ describe('MarginModule', () => {
       return c
     }
 
+    // Bounty #49: the forced sale looked the sold asset and the base asset up in the order's static
+    // trading list and reverted when either was missing, although the module accepts the base asset
+    // and the position's initial collateral without a list entry. A lender who listed only the tokens
+    // to trade (the app does not add the loan token) got positions nobody could liquidate or close.
+    async function unlistedPosition() {
+      const c = await loadFixture(fx)
+      await c.seedPool()
+      const list = [c.third.target.toString()]   // neither the base asset nor the collateral
+      await c.mm.addTokenlist(list, false)
+      await c.mm.createOrder({ ...c.orderParams, whitelistId: predictTokenListsID(list, false), interestRate: 10000n, duration: BigInt(365 * DAY) })
+      await c.mm.setOrderStatus(0, true)
+      await c.base.approve(c.mm.target, ethers.MaxUint256)
+      await c.collat.approve(c.mm.target, ethers.MaxUint256)
+      await c.mm.orderDepositToken(0, expandTo18Decimals(100))
+      await c.mm.takeLoan(0, ONE, 0, ONE)
+      return c
+    }
+
+    it('liquidates a position whose order lists neither its base asset nor its collateral (bounty #49)', async () => {
+      const c = await unlistedPosition()
+      await time.increase(26 * DAY)                                 // inside the buffer: debt ~1.87, value ~2
+      await c.mm.connect(c.other).liquidate(0, c.other.address)   // freeze
+      await time.increase(60)
+      await expect(c.mm.connect(c.other).liquidate(0, c.other.address)).to.emit(c.mm, 'Liquidation')
+      expect((await c.mm.positions(0)).open).to.eq(false)
+    })
+
+    it('steps a liquidation of such a position (bounty #49)', async () => {
+      const c = await unlistedPosition()
+      await time.increase(26 * DAY)
+      await c.mm.connect(c.other).liquidate(0, c.other.address)
+      await time.increase(60)
+      await c.mm.connect(c.other).liquidateStep(0, c.collat.target, ONE / 2n)
+      expect((await c.mm.getPositionBalances(0))[1]).to.eq(ONE / 2n)
+    })
+
+    it('its owner can close it when the collateral has to be sold to repay (bounty #49)', async () => {
+      const c = await unlistedPosition()
+      await time.increase(DAY)                                      // debt ~1.03 > the 1 base held
+      await c.mm.positionClose(0, true)
+      expect((await c.mm.positions(0)).open).to.eq(false)
+    })
+
     it('liquidates while the holdings still cover the debt, once they are inside the 10% buffer', async () => {
       const c = await pooledPosition(10000n)
       expect(await c.mm.MAINTENANCE_MARGIN_BPS()).to.eq(1000n)

@@ -317,4 +317,38 @@ describe('AutoListing', () => {
             }
         })
     })
+
+    describe('TokenListed events (bounty #131)', () => {
+        function events(receipt: any, contract: any, name: string) {
+            return receipt!.logs
+                .filter((l: any) => l.address.toLowerCase() === contract.target.toString().toLowerCase())
+                .map((l: any) => contract.interface.parseLog(l))
+                .filter((e: any) => e?.name === name)
+        }
+
+        async function coreListing(): Promise<any> {
+            return (await ethers.getContractFactory('Dex223CoreAutoListing'))
+                .deploy(factory.target, registry.target, converter.target, 'core', 'https://core')
+        }
+
+        it('core listSingle emits TokenListed once for one listing', async () => {
+            const core = await coreListing()
+            const receipt = await (await core.listSingle(token0.target, token3, ethers.ZeroAddress)).wait()
+            const listed = events(receipt, core, 'TokenListed')
+            expect(listed.length).to.eq(1)
+            expect([listed[0].args[0], listed[0].args[1]]).to.deep.eq([token0.target.toString(), token3])
+            expect(events(receipt, registry, 'TokenListed').length).to.eq(1)
+        })
+
+        it('list still emits TokenListed once for each newly listed token, and none for listed ones', async () => {
+            const core = await coreListing()
+            const first = await (await core.list(pool0, feeAmount, ethers.ZeroAddress)).wait()
+            expect(events(first, core, 'TokenListed').length).to.eq(2)
+            expect(events(first, registry, 'TokenListed').length).to.eq(2)
+
+            const again = await (await core.list(pool0, feeAmount, ethers.ZeroAddress)).wait()
+            expect(events(again, core, 'TokenListed').length).to.eq(0)
+            expect(events(again, core, 'PairListed').length).to.eq(1)
+        })
+    })
 })
