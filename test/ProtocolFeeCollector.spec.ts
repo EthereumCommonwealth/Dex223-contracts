@@ -1,31 +1,54 @@
 import { ethers } from 'hardhat'
 import { expect } from 'chai'
 import { time, loadFixture } from '@nomicfoundation/hardhat-network-helpers'
+import { anyValue } from '@nomicfoundation/hardhat-chai-matchers/withArgs'
 import { poolFixture } from './shared/fixtures'
+import { useRealTimePoolLib } from './shared/realTimePoolLib'
 import {
-  encodePriceSqrt, expandTo18Decimals, FeeAmount, getMaxTick, getMinTick, MIN_SQRT_RATIO, TICK_SPACINGS,
+  encodePriceSqrt, expandTo18Decimals, FeeAmount, getMaxTick, getMinTick, MAX_SQRT_RATIO, MIN_SQRT_RATIO, TICK_SPACINGS,
 } from './shared/utilities'
 
 describe('ProtocolFeeCollector', () => {
   const TS = TICK_SPACINGS[FeeAmount.MEDIUM]
   const DAY = 24 * 60 * 60
+  const WEEK = 7 * DAY
+  const NOT_FACTORY_POOL = ethers.hexlify(ethers.toUtf8Bytes('NOT_FACTORY_POOL'))
+  const CUSTOM_FEE_PROTOCOL = ethers.hexlify(ethers.toUtf8Bytes('CUSTOM_FEE_PROTOCOL'))
+  const packed = (fp0: number, fp1: number) => fp0 + (fp1 << 4)
 
   async function fx() {
-    const { token0, token1, factory, createPool, swapTargetCallee } = await poolFixture()
+    const { token0, token1, token2, factory, converter, swapTargetCallee, createPool: createUnregisteredPool } =
+      await poolFixture()
     const [wallet, keeper, alice, multisig] = await ethers.getSigners()
 
-    const pool = await createPool(FeeAmount.MEDIUM, TS)
-    await pool.initialize(encodePriceSqrt(1n, 1n))
-    await pool.advanceTime(1)
-    await token0.approve(swapTargetCallee.target, ethers.MaxUint256)
-    await token1.approve(swapTargetCallee.target, ethers.MaxUint256)
-    await swapTargetCallee.mint(pool.target, wallet.address, getMinTick(TS), getMaxTick(TS), expandTo18Decimals(10))
+    // Pools come from factory.createPool, so the factory maps them: the collector accepts nothing else.
+    await useRealTimePoolLib(factory)
+    const createPool = async (a20: any, b20: any, a223?: string, b223?: string): Promise<any> => {
+      const a = a20.target ?? a20
+      const b = b20.target ?? b20
+      await factory.createPool(
+        a, b, a223 ?? (await converter.predictWrapperAddress(a, true)), b223 ?? (await converter.predictWrapperAddress(b, true)),
+        FeeAmount.MEDIUM,
+      )
+      const pool = await ethers.getContractAt('Dex223Pool', await factory.getPool(a, b, FeeAmount.MEDIUM))
+      await pool.initialize(encodePriceSqrt(1n, 1n))
+      return pool
+    }
+    const addLiquidity = (pool: any) =>
+      swapTargetCallee.mint(pool.target, wallet.address, getMinTick(TS), getMaxTick(TS), expandTo18Decimals(10))
 
-    const erc20 = await ethers.getContractFactory('TestERC20')
-    const stake20 = await erc20.deploy(0n)
-    const stake223 = await (await ethers.getContractFactory('MockERC223')).deploy()
-    const revenue = await (await ethers.getContractFactory('contracts/dex-periphery/RevenueV1.sol:Revenue'))
-      .deploy(stake20.target, stake223.target)
+    for (const t of [token0, token1, token2]) await t.approve(swapTargetCallee.target, ethers.MaxUint256)
+    const pool = await createPool(token0, token1)
+    await addLiquidity(pool)
+
+    // RevenueV2 as deployed: D223 is the ERC-223 origin and the converter's wrapper its ERC-20 version.
+    const d223 = await (await ethers.getContractFactory('D223Token')).deploy()
+    await converter.createERC20Wrapper(d223.target)
+    const d20 = await converter.predictWrapperAddress(d223.target, false)
+    const revenue = await (await ethers.getContractFactory('RevenueV2'))
+      .deploy(d20, d223.target, WEEK, 0n, expandTo18Decimals(1))
+    await revenue.add_reward_token(token0.target)
+    await revenue.add_reward_token(token1.target)
 
     const collector = await (await ethers.getContractFactory('ProtocolFeeCollector'))
       .deploy(factory.target, revenue.target, wallet.address, 4, 4)
@@ -33,7 +56,10 @@ describe('ProtocolFeeCollector', () => {
     const swap = (amount: bigint) =>
       swapTargetCallee.swapExact0For1(pool.target, amount, wallet.address, MIN_SQRT_RATIO + 1n)
 
-    return { token0, token1, factory, pool, revenue, collector, stake20, swap, wallet, keeper, alice, multisig }
+    return {
+      token0, token1, token2, factory, converter, swapTargetCallee, createPool, createUnregisteredPool, addLiquidity,
+      pool, revenue, collector, d223, d20, swap, wallet, keeper, alice, multisig,
+    }
   }
 
   async function handedOver() {
@@ -41,6 +67,17 @@ describe('ProtocolFeeCollector', () => {
     await f.factory.setOwner(f.collector.target)
     return f
   }
+
+  // Events of `name` in a mined transaction, decoded.
+  async function eventsOf(f: any, tx: any, name: string) {
+    const receipt = await (await tx).wait()
+    return receipt.logs
+      .filter((l: any) => l.address === f.collector.target)
+      .map((l: any) => f.collector.interface.parseLog(l))
+      .filter((e: any) => e?.name === name)
+  }
+
+  const feeProtocol = async (pool: any) => Number((await pool.slot0()).feeProtocol)
 
   describe('before the factory is handed over', () => {
     it('collect skips the pool instead of reverting', async () => {
@@ -54,7 +91,7 @@ describe('ProtocolFeeCollector', () => {
       const f = await handedOver()
       await expect(f.collector.connect(f.keeper).enableFees([f.pool.target]))
         .to.emit(f.collector, 'PoolFeeProtocolSet').withArgs(f.pool.target, 4, 4, false)
-      expect((await f.pool.slot0()).feeProtocol).to.eq(4 + (4 << 4))
+      expect(await feeProtocol(f.pool)).to.eq(packed(4, 4))
     })
 
     it('anyone can move accrued fees into Revenue, and nowhere else', async () => {
@@ -74,17 +111,18 @@ describe('ProtocolFeeCollector', () => {
 
     it('a staker can claim the collected fees from Revenue', async () => {
       const f = await handedOver()
-      await f.stake20.mint(f.alice.address, 1000n)
-      await f.stake20.connect(f.alice).approve(f.revenue.target, 1000n)
-      await f.revenue.connect(f.alice).stake(f.stake20.target, 1000n)
+      const stake = expandTo18Decimals(1000)
+      await f.d223['transfer(address,uint256)'](f.alice.address, stake)
+      await f.d223.connect(f.alice)['transfer(address,uint256)'](f.revenue.target, stake)
+      await f.revenue.connect(f.alice).stake(f.d223.target, stake)
 
       await f.collector.enableFees([f.pool.target])
       await f.swap(expandTo18Decimals(1))
       await f.collector.connect(f.keeper).collect([f.pool.target])
-      const held = await f.token0.balanceOf(f.revenue.target)
-      expect(held).to.be.gt(0n)
+      expect(await f.token0.balanceOf(f.revenue.target)).to.be.gt(0n)
+      await f.revenue.sync([f.token0.target])
 
-      await time.increase(10 * DAY + 1)
+      await time.increase(WEEK + 1)
       await f.revenue.connect(f.alice).claim([f.token0.target])
       expect(await f.token0.balanceOf(f.alice.address)).to.be.gt(0n)
     })
@@ -97,7 +135,8 @@ describe('ProtocolFeeCollector', () => {
       const other = await (await ethers.getContractFactory('ProtocolFeeCollector'))
         .deploy(f.alice.address, f.alice.address, f.alice.address, 0, 0)
       const tx = f.collector.connect(f.keeper).collect([f.alice.address, other.target, f.pool.target])
-      await expect(tx).to.emit(f.collector, 'PoolSkipped').withArgs(f.alice.address, ethers.hexlify(ethers.toUtf8Bytes('NOT_FACTORY_POOL')))
+      await expect(tx).to.emit(f.collector, 'PoolSkipped').withArgs(f.alice.address, NOT_FACTORY_POOL)
+      await expect(tx).to.emit(f.collector, 'PoolSkipped').withArgs(other.target, NOT_FACTORY_POOL)
       await expect(tx).to.emit(f.collector, 'Collected')
       expect(await f.token0.balanceOf(f.revenue.target)).to.be.gt(0n)
     })
@@ -106,28 +145,241 @@ describe('ProtocolFeeCollector', () => {
       const f = await handedOver()
       await f.collector.setPoolFeeProtocol(f.pool.target, 10, 0, true)
       await expect(f.collector.connect(f.keeper).enableFees([f.pool.target])).to.emit(f.collector, 'PoolSkipped')
-      expect((await f.pool.slot0()).feeProtocol).to.eq(10)
+      expect(await feeProtocol(f.pool)).to.eq(10)
 
       await f.collector.setPoolFeeProtocol(f.pool.target, 10, 0, false)
       await f.collector.connect(f.keeper).enableFees([f.pool.target])
-      expect((await f.pool.slot0()).feeProtocol).to.eq(4 + (4 << 4))
+      expect(await feeProtocol(f.pool)).to.eq(packed(4, 4))
+    })
+  })
+
+  // Bounty #105: a contract used to pass the check by returning this factory from its own factory().
+  describe('only pools the factory created (bounty #105)', () => {
+    async function withSpoof(shortAnswers = false) {
+      const f = await handedOver()
+      const spoof = await (await ethers.getContractFactory('SpoofedFactoryPool'))
+        .deploy(f.factory.target, f.pool.target, shortAnswers)
+      return { ...f, spoof }
+    }
+
+    it('the spoof answers like the real pool', async () => {
+      const f = await withSpoof()
+      expect(await f.spoof.factory()).to.eq(f.factory.target)
+      expect([...(await f.spoof.token0())]).to.deep.eq([...(await f.pool.token0())])
+      expect([...(await f.spoof.token1())]).to.deep.eq([...(await f.pool.token1())])
+      expect(await f.spoof.fee()).to.eq(await f.pool.fee())
+    })
+
+    it('collect skips a contract that copies a real pool and emits nothing for it; the real pool is collected', async () => {
+      const f = await withSpoof()
+      await f.collector.enableFees([f.pool.target])
+      await f.swap(expandTo18Decimals(1))
+      const accrued = (await f.pool.protocolFees()).token0
+
+      const tx = f.collector.connect(f.keeper).collect([f.spoof.target, f.pool.target])
+      await expect(tx).to.emit(f.collector, 'PoolSkipped').withArgs(f.spoof.target, NOT_FACTORY_POOL)
+      await expect(tx).to.emit(f.collector, 'Collected').withArgs(f.pool.target, f.revenue.target, accrued - 1n, 0n)
+      const collected = await eventsOf(f, tx, 'Collected')
+      expect(collected.map((e: any) => e.args.pool)).to.deep.eq([f.pool.target])
+    })
+
+    it('enableFees skips the copy and never calls it; the real pool is enabled', async () => {
+      const f = await withSpoof()
+      const tx = f.collector.connect(f.keeper).enableFees([f.spoof.target, f.pool.target])
+      await expect(tx).to.emit(f.collector, 'PoolSkipped').withArgs(f.spoof.target, NOT_FACTORY_POOL)
+      await expect(tx).to.emit(f.collector, 'PoolFeeProtocolSet').withArgs(f.pool.target, 4, 4, false)
+      const set = await eventsOf(f, tx, 'PoolFeeProtocolSet')
+      expect(set.map((e: any) => e.args.pool)).to.deep.eq([f.pool.target])
+      expect(await f.spoof.setFeeProtocolCalls()).to.eq(0n)
+      expect(await feeProtocol(f.pool)).to.eq(packed(4, 4))
+    })
+
+    it('real pool code deployed outside the factory is skipped even though it names the factory', async () => {
+      const f = await handedOver()
+      const stray = await f.createUnregisteredPool(FeeAmount.MEDIUM, TS)
+      expect(await stray.factory()).to.eq(f.factory.target)
+      expect(await f.factory.getPool(f.token0.target, f.token1.target, FeeAmount.MEDIUM)).to.not.eq(stray.target)
+
+      const enable = f.collector.connect(f.keeper).enableFees([stray.target, f.pool.target])
+      await expect(enable).to.emit(f.collector, 'PoolSkipped').withArgs(stray.target, NOT_FACTORY_POOL)
+      await expect(enable).to.emit(f.collector, 'PoolFeeProtocolSet').withArgs(f.pool.target, 4, 4, false)
+      const collect = f.collector.connect(f.keeper).collect([stray.target, f.pool.target])
+      await expect(collect).to.emit(f.collector, 'PoolSkipped').withArgs(stray.target, NOT_FACTORY_POOL)
+      await expect(collect).to.emit(f.collector, 'Collected').withArgs(f.pool.target, f.revenue.target, 0n, 0n)
+    })
+
+    it('a contract whose answers are too short to decode is skipped instead of reverting the batch', async () => {
+      const f = await withSpoof(true)
+      await f.collector.enableFees([f.pool.target])
+      await f.swap(expandTo18Decimals(1))
+      const accrued = (await f.pool.protocolFees()).token0
+
+      const collect = f.collector.connect(f.keeper).collect([f.spoof.target, f.pool.target])
+      await expect(collect).to.emit(f.collector, 'PoolSkipped').withArgs(f.spoof.target, NOT_FACTORY_POOL)
+      await expect(collect).to.emit(f.collector, 'Collected').withArgs(f.pool.target, f.revenue.target, accrued - 1n, 0n)
+      const enable = f.collector.connect(f.keeper).enableFees([f.spoof.target, f.pool.target])
+      await expect(enable).to.emit(f.collector, 'PoolSkipped').withArgs(f.spoof.target, NOT_FACTORY_POOL)
+      await expect(enable).to.emit(f.collector, 'PoolFeeProtocolSet').withArgs(f.pool.target, 4, 4, false)
+    })
+  })
+
+  // Bounty #111: RevenueV2 pays stakers only in listed reward tokens, and the staking token can never be listed.
+  describe('protocol fee only in tokens stakers can be paid in (bounty #111)', () => {
+    // [feeProtocol0, feeProtocol1] with `fp` on the side whose ERC-20 version is `listed`, 0 on the other.
+    async function sides(pool: any, listed: string, fp: number) {
+      const [t0] = await pool.token0()
+      return t0 === listed ? [fp, 0] : [0, fp]
+    }
+
+    it('in a D223 pool the staking token side keeps its whole swap fee and the listed side pays stakers', async () => {
+      const f = await handedOver()
+      const [, token0_223] = await f.pool.token0()
+      const dPool = await f.createPool(f.d20, f.token0, f.d223.target, token0_223)
+      const [a, b] = await sides(dPool, f.token0.target as string, 4)
+      expect(a + b).to.eq(4)
+
+      const tx = f.collector.connect(f.keeper).enableFees([dPool.target, f.pool.target])
+      await expect(tx).to.emit(f.collector, 'PoolFeeProtocolSet').withArgs(dPool.target, a, b, false)
+      await expect(tx).to.emit(f.collector, 'PoolFeeProtocolSet').withArgs(f.pool.target, 4, 4, false)
+      expect(await feeProtocol(dPool)).to.eq(packed(a, b))
+      expect(await feeProtocol(f.pool)).to.eq(packed(4, 4))
+      await expect(f.revenue.add_reward_token(f.d20)).to.be.revertedWith('Staking token cannot be a reward token')
+    })
+
+    it('an unlisted token side gets 0 until the token is listed; enableFees then turns it on', async () => {
+      const f = await handedOver()
+      const uPool = await f.createPool(f.token0, f.token2)
+      const [a, b] = await sides(uPool, f.token0.target as string, 4)
+
+      await expect(f.collector.connect(f.keeper).enableFees([uPool.target]))
+        .to.emit(f.collector, 'PoolFeeProtocolSet').withArgs(uPool.target, a, b, false)
+      expect(await feeProtocol(uPool)).to.eq(packed(a, b))
+
+      await f.revenue.add_reward_token(f.token2.target)
+      await expect(f.collector.connect(f.keeper).enableFees([uPool.target]))
+        .to.emit(f.collector, 'PoolFeeProtocolSet').withArgs(uPool.target, 4, 4, false)
+      expect(await feeProtocol(uPool)).to.eq(packed(4, 4))
+    })
+
+    it('only the listed side accrues protocol fees, and only listed tokens reach Revenue', async () => {
+      const f = await handedOver()
+      const uPool = await f.createPool(f.token0, f.token2)
+      await f.addLiquidity(uPool)
+      await f.collector.enableFees([uPool.target])
+      const [t0] = await uPool.token0()
+      const listedIs0 = t0 === f.token0.target
+
+      const amount = expandTo18Decimals(1)
+      await f.swapTargetCallee.swapExact0For1(uPool.target, amount, f.wallet.address, MIN_SQRT_RATIO + 1n)
+      await f.swapTargetCallee.swapExact1For0(uPool.target, amount, f.wallet.address, MAX_SQRT_RATIO - 1n)
+      const fees = await uPool.protocolFees()
+      expect(listedIs0 ? fees.token0 : fees.token1).to.be.gt(0n)
+      expect(listedIs0 ? fees.token1 : fees.token0).to.eq(0n)
+
+      await f.collector.connect(f.keeper).collect([uPool.target])
+      expect(await f.token0.balanceOf(f.revenue.target)).to.be.gt(0n)
+      expect(await f.token2.balanceOf(f.revenue.target)).to.eq(0n)
+    })
+
+    it('the owner can still set a fee by hand on an unlisted side, and enableFees leaves it untouched', async () => {
+      const f = await handedOver()
+      const uPool = await f.createPool(f.token0, f.token2)
+      await expect(f.collector.setPoolFeeProtocol(uPool.target, 6, 6, true))
+        .to.emit(f.collector, 'PoolFeeProtocolSet').withArgs(uPool.target, 6, 6, true)
+      await expect(f.collector.connect(f.keeper).enableFees([uPool.target]))
+        .to.emit(f.collector, 'PoolSkipped').withArgs(uPool.target, CUSTOM_FEE_PROTOCOL)
+      expect(await feeProtocol(uPool)).to.eq(packed(6, 6))
+
+      // Released, the pool follows the reward list again.
+      await f.collector.setPoolFeeProtocol(uPool.target, 6, 6, false)
+      await f.collector.connect(f.keeper).enableFees([uPool.target])
+      const [a, b] = await sides(uPool, f.token0.target as string, 4)
+      expect(await feeProtocol(uPool)).to.eq(packed(a, b))
+    })
+
+    it('a revenue that is not a RevenueV2 gives 0 on both sides without reverting', async () => {
+      const f = await handedOver()
+      const stake20 = await (await ethers.getContractFactory('TestERC20')).deploy(0n)
+      const v1 = await (await ethers.getContractFactory('contracts/dex-periphery/RevenueV1.sol:Revenue'))
+        .deploy(stake20.target, f.d223.target)
+      const garbage = await (await ethers.getContractFactory('NotRevenueV2')).deploy(false)
+      const uPool = await f.createPool(f.token0, f.token2)
+
+      for (const bad of [v1.target, garbage.target, f.alice.address]) {
+        await f.collector.setRevenue(bad)
+        const tx = f.collector.connect(f.keeper).enableFees([f.pool.target, uPool.target])
+        await expect(tx).to.emit(f.collector, 'PoolFeeProtocolSet').withArgs(f.pool.target, 0, 0, false)
+        await expect(tx).to.emit(f.collector, 'PoolFeeProtocolSet').withArgs(uPool.target, 0, 0, false)
+        expect(await feeProtocol(f.pool)).to.eq(0)
+      }
+
+      // Pointed back at the RevenueV2, the listed sides are turned on again.
+      await f.collector.setRevenue(f.revenue.target)
+      await f.collector.connect(f.keeper).enableFees([f.pool.target, uPool.target])
+      expect(await feeProtocol(f.pool)).to.eq(packed(4, 4))
+      const [a, b] = await sides(uPool, f.token0.target as string, 4)
+      expect(await feeProtocol(uPool)).to.eq(packed(a, b))
+    })
+
+    it('a default of 0 stays 0 on a listed side', async () => {
+      const f = await handedOver()
+      await f.collector.setDefaultFeeProtocol(0, 10)
+      await expect(f.collector.connect(f.keeper).enableFees([f.pool.target]))
+        .to.emit(f.collector, 'PoolFeeProtocolSet').withArgs(f.pool.target, 0, 10, false)
     })
   })
 
   describe('gas', () => {
-    it('a pool that burns all the gas it is given is skipped without starving the next pool', async () => {
+    it('a contract that burns all the gas the factory check gives it is skipped without starving the next pool', async () => {
       const f = await handedOver()
       const burner = await (await ethers.getContractFactory('GasBurnerPool')).deploy(f.factory.target)
 
       const enable = f.collector.connect(f.keeper).enableFees([burner.target, f.pool.target])
-      await expect(enable).to.emit(f.collector, 'PoolSkipped').withArgs(burner.target, '0x')
+      await expect(enable).to.emit(f.collector, 'PoolSkipped').withArgs(burner.target, NOT_FACTORY_POOL)
       await expect(enable).to.emit(f.collector, 'PoolFeeProtocolSet').withArgs(f.pool.target, 4, 4, false)
 
       await f.swap(expandTo18Decimals(1))
       const accrued = (await f.pool.protocolFees()).token0
       const collect = f.collector.connect(f.keeper).collect([burner.target, f.pool.target])
-      await expect(collect).to.emit(f.collector, 'PoolSkipped').withArgs(burner.target, '0x')
+      await expect(collect).to.emit(f.collector, 'PoolSkipped').withArgs(burner.target, NOT_FACTORY_POOL)
       await expect(collect).to.emit(f.collector, 'Collected').withArgs(f.pool.target, f.revenue.target, accrued - 1n, 0n)
+    })
+
+    it('a factory pool whose token burns all the gas it is given is skipped without starving the next pool', async () => {
+      const f = await handedOver()
+      const burnToken = await (await ethers.getContractFactory('GasBurnerToken')).deploy(ethers.MaxUint256 / 2n)
+      await burnToken.approve(f.swapTargetCallee.target, ethers.MaxUint256)
+      const gPool = await f.createPool(burnToken, f.token1)
+      await f.addLiquidity(gPool)
+      await f.revenue.add_reward_token(burnToken.target)
+      await f.collector.enableFees([gPool.target, f.pool.target])
+      expect(await feeProtocol(gPool)).to.eq(packed(4, 4))
+
+      // Pay the burning token in, so its side accrues the protocol fee; the pool sends it nothing yet.
+      const [t0] = await gPool.token0()
+      const amount = expandTo18Decimals(1)
+      if (t0 === burnToken.target) await f.swapTargetCallee.swapExact0For1(gPool.target, amount, f.wallet.address, MIN_SQRT_RATIO + 1n)
+      else await f.swapTargetCallee.swapExact1For0(gPool.target, amount, f.wallet.address, MAX_SQRT_RATIO - 1n)
+      await f.swap(amount)
+      const stuck = await gPool.protocolFees()
+      const accrued = (await f.pool.protocolFees()).token0
+      await burnToken.arm()
+
+      const collect = f.collector.connect(f.keeper).collect([gPool.target, f.pool.target])
+      await expect(collect).to.emit(f.collector, 'PoolSkipped').withArgs(gPool.target, anyValue)
+      await expect(collect).to.emit(f.collector, 'Collected').withArgs(f.pool.target, f.revenue.target, accrued - 1n, 0n)
+      const after = await gPool.protocolFees()
+      expect([after.token0, after.token1]).to.deep.eq([stuck.token0, stuck.token1])
+    })
+
+    it('a revenue that burns all the gas the reward-list check gives it cannot starve the batch', async () => {
+      const f = await handedOver()
+      const burner = await (await ethers.getContractFactory('NotRevenueV2')).deploy(true)
+      const uPool = await f.createPool(f.token0, f.token2)
+      await f.collector.setRevenue(burner.target)
+      const tx = f.collector.connect(f.keeper).enableFees([f.pool.target, uPool.target])
+      await expect(tx).to.emit(f.collector, 'PoolFeeProtocolSet').withArgs(f.pool.target, 0, 0, false)
+      await expect(tx).to.emit(f.collector, 'PoolFeeProtocolSet').withArgs(uPool.target, 0, 0, false)
     })
 
     it('a batch sent with too little gas reverts instead of skipping pools', async () => {
@@ -184,8 +436,8 @@ describe('ProtocolFeeCollector', () => {
 
     it('setRevenue redirects future collections', async () => {
       const f = await handedOver()
-      await f.collector.setRevenue(f.alice.address)
       await f.collector.enableFees([f.pool.target])
+      await f.collector.setRevenue(f.alice.address)
       await f.swap(expandTo18Decimals(1))
       await f.collector.connect(f.keeper).collect([f.pool.target])
       expect(await f.token0.balanceOf(f.revenue.target)).to.eq(0n)
