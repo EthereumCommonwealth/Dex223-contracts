@@ -294,6 +294,9 @@ contract Dex223AutoListing {
         if(!_isFullyListed(_token1_erc20, _token1_erc223))
         {
             toTransfer += price;
+            // Two prices must not wrap the sum (0.7.6 does not check): at a price of 2**255 the total wrapped to 0
+            // and both tokens listed unpaid (bounty #137). After a wrap the sum is below `price`.
+            require(toTransfer >= price, "Listing price overflow");
             checkListing(_token1_erc20, _token1_erc223);
         }
 
@@ -608,6 +611,9 @@ contract Dex223CoreAutoListing {
         if(!_isFullyListed(_token1_erc20, _token1_erc223))
         {
             toTransfer += price;
+            // Two prices must not wrap the sum (0.7.6 does not check): at a price of 2**255 the total wrapped to 0
+            // and both tokens listed unpaid (bounty #137). After a wrap the sum is below `price`.
+            require(toTransfer >= price, "Listing price overflow");
             checkListing(_token1_erc20, _token1_erc223);
         }
 
@@ -1050,6 +1056,9 @@ contract Dex223OwnableListing {
         if(!_isFullyListed(_token1_erc20, _token1_erc223))
         {
             toTransfer += price;
+            // Two prices must not wrap the sum (0.7.6 does not check): at a price of 2**255 the total wrapped to 0
+            // and both tokens listed unpaid (bounty #137). After a wrap the sum is below `price`.
+            require(toTransfer >= price, "Listing price overflow");
             checkListing(_token1_erc20, _token1_erc223);
         }
 
