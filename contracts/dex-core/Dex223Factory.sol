@@ -57,12 +57,9 @@ contract Dex223Factory is IDex223Factory, Dex223PoolDeployer, NoDelegateCall {
         emit FeeAmountEnabled(10000, 200);
     }
 
-    /// @dev Accepts ERC-223 transfers so they do not revert. The factory holds no balances and the
-    /// former `tokenReceivedCaller` bookkeeping was write-only, so nothing is recorded here.
-    function tokenReceived(address, uint, bytes memory) public pure returns (bytes4)
-    {
-        return 0x8943ec02;
-    }
+    /// @dev Deliberately no `tokenReceived`. The factory keeps no balances and has no way to send tokens out,
+    /// so an ERC-223 transfer to it must revert rather than strand the tokens (bounty #112). Nothing in the
+    /// protocol sends tokens to the factory: pool creation only probes `standard()` through the validator.
 
     // @inheritdoc IDex223Factory
     function createPool(
