@@ -11,6 +11,8 @@ interface IDex223Autolisting {
     function getURL() external view returns (string memory);
     function isListed(address _token) external view returns (bool);
 
-    function list(address pool, uint24 feeTier) external;
+    /// @notice Lists both tokens of `pool`. `paymentToken` is the token the listing fee is paid in
+    ///         (address(0) for ETH, sent as msg.value); see the listing contract's getPrices().
+    function list(address pool, uint24 feeTier, address paymentToken) external payable;
     function getToken(uint256 index) external view returns (address _erc20, address _erc223);
 }
