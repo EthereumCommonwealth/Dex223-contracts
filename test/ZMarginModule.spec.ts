@@ -397,6 +397,105 @@ describe('MarginModule', () => {
     }
   })
 
+  describe('tokens that return no value, like mainnet USDT (bounty #56)', () => {
+    // USDT returns nothing from transfer, transferFrom and approve, and refuses to change a non-zero
+    // allowance to another non-zero value. The module called these through the bool-returning
+    // interface, so USDT that reached a position through a swap could not be traded back, sold by a
+    // liquidation, withdrawn or closed out: it stayed in the module for good.
+    const ONE = expandTo18Decimals(1)
+
+    async function usdtPosition() {
+      const c = await loadFixture(fx)
+      await c.seedPool()
+      const usdt = await (await ethers.getContractFactory('TestUSDTLike')).deploy(expandTo18Decimals(10_000_000))
+      const usdt223 = (await c.converter.predictWrapperAddress(usdt.target, true)).toString()
+      const base = c.base.target.toString(), u = usdt.target.toString(), base223 = c.tokens[3].target.toString()
+      const baseIs0 = base.toLowerCase() < u.toLowerCase()
+      const [t0, t1] = baseIs0 ? [base, u] : [u, base]
+      const [w0, w1] = baseIs0 ? [base223, usdt223] : [usdt223, base223]
+      await c.nft.createAndInitializePoolIfNecessary(t0, t1, w0, w1, FeeAmount.MEDIUM, encodePriceSqrt(1n, 1n))
+      await usdt.approve(c.nft.target, ethers.MaxUint256)
+      const TS = TICK_SPACINGS[FeeAmount.MEDIUM]
+      await c.nft.mint({
+        token0: t0, token1: t1, tickLower: getMinTick(TS), tickUpper: getMaxTick(TS),
+        amount0Desired: expandTo18Decimals(1000), amount1Desired: expandTo18Decimals(1000), amount0Min: 0, amount1Min: 0,
+        recipient: c.wallet.address, deadline: BigInt((await time.latest()) + 3600), fee: FeeAmount.MEDIUM,
+      })
+      const pool = await c.factory.getPool(t0, t1, FeeAmount.MEDIUM)
+      await (await ethers.getContractAt('contracts/interfaces/IUniswapV3Pool.sol:IUniswapV3Pool', pool)).increaseObservationCardinalityNext(16)
+      await time.increase(c.TWAP_WINDOW)
+
+      const list = [base, c.collat.target.toString(), u]
+      await c.mm.addTokenlist(list, false)
+      await c.mm.createOrder({ ...c.orderParams, whitelistId: predictTokenListsID(list, false), interestRate: 10000n, duration: BigInt(365 * DAY) })
+      await c.mm.setOrderStatus(0, true)
+      await c.base.approve(c.mm.target, ethers.MaxUint256)
+      await c.collat.approve(c.mm.target, ethers.MaxUint256)
+      await c.mm.orderDepositToken(0, expandTo18Decimals(100))
+      await c.mm.takeLoan(0, ONE, 0, ONE)
+      // The borrower trades half the loan into USDT.
+      await c.mm.marginSwap(0, 0, 0, 2, ONE / 2n, u, FeeAmount.MEDIUM, 0, 0)
+      const assets = await c.mm.getPositionAssets(0)
+      expect(assets[2]).to.eq(u)
+      return { ...c, usdt, pool, baseIs0 }
+    }
+
+    it('the owner can trade USDT back into the base asset', async () => {
+      const c = await usdtPosition()
+      const held = (await c.mm.getPositionBalances(0))[2]
+      await c.mm.marginSwap(0, 2, 2, 0, held, c.base.target, FeeAmount.MEDIUM, 0, 0)
+      expect((await c.mm.getPositionAssets(0)).length).to.eq(2)
+    })
+
+    it('a liquidation sells the USDT', async () => {
+      const c = await usdtPosition()
+      await time.increase(26 * DAY)                                 // inside the buffer
+      await c.mm.connect(c.other).liquidate(0, c.other.address)
+      await time.increase(60)
+      await expect(c.mm.connect(c.other).liquidate(0, c.other.address)).to.emit(c.mm, 'Liquidation')
+      expect(await c.usdt.balanceOf(c.mm.target)).to.eq(0n)
+    })
+
+    it('the owner can close the position and withdraw what is left', async () => {
+      const c = await usdtPosition()
+      await c.mm.positionClose(0, true)
+      expect((await c.mm.positions(0)).open).to.eq(false)
+      expect(await c.usdt.balanceOf(c.mm.target)).to.eq(0n)
+    })
+
+    it('USDT can be deposited into a position and lent', async () => {
+      const c = await usdtPosition()
+      await c.usdt.approve(c.mm.target, ethers.MaxUint256)
+      await c.mm.positionDeposit(0, c.usdt.target, 2, ONE / 10n)
+      // An order lending USDT itself.
+      const list = [c.usdt.target.toString(), c.base.target.toString()]
+      await c.mm.addTokenlist(list, false)
+      await c.mm.createOrder({ ...c.orderParams, whitelistId: predictTokenListsID(list, false), asset: c.usdt.target.toString(),
+        collateral: [c.base.target.toString()], liquidationRewardAsset: c.usdt.target.toString() })
+      await c.mm.setOrderStatus(1, true)
+      await c.mm.orderDepositToken(1, expandTo18Decimals(10))
+      await c.mm.orderWithdraw(1, expandTo18Decimals(1))
+      await c.mm.takeLoan(1, ONE, 0, ONE)
+      expect((await c.mm.getPositionAssets(1))[0]).to.eq(c.usdt.target)
+    })
+
+    it('a partial fill leaves no allowance that would block the next sale of the token', async () => {
+      const c = await usdtPosition()
+      const held = (await c.mm.getPositionBalances(0))[2]
+      // Selling USDT moves the price one way; stop it a hair from where it is so only part fills.
+      const pool = await ethers.getContractAt('contracts/interfaces/IUniswapV3Pool.sol:IUniswapV3Pool', c.pool)
+      const sqrtP = (await pool.slot0()).sqrtPriceX96
+      const usdtIs0 = !c.baseIs0
+      const limit = usdtIs0 ? sqrtP * 99999n / 100000n : sqrtP * 100001n / 100000n
+      await c.mm.marginSwap(0, 2, 2, 0, held, c.base.target, FeeAmount.MEDIUM, 0, limit)
+      const left = (await c.mm.getPositionBalances(0))[2]
+      expect(left, 'partially filled').to.be.gt(0n)
+      expect(await c.usdt.allowance(c.mm.target, c.router.target)).to.eq(0n)
+      // The next sale of the token still goes through.
+      await c.mm.marginSwap(0, 2, 2, 0, left, c.base.target, FeeAmount.MEDIUM, 0, 0)
+    })
+  })
+
   describe('takeLoan reentrancy (position id must be claimed before external calls)', () => {
     it('a re-entering collateral token gets a fresh position id, not a colliding one', async () => {
       const { mm, oracle, wallet, now } = await loadFixture(fx)
@@ -1481,6 +1580,49 @@ describe('MarginModule', () => {
       return c
     }
 
+    // Bounty #49: the forced sale looked the sold asset and the base asset up in the order's static
+    // trading list and reverted when either was missing, although the module accepts the base asset
+    // and the position's initial collateral without a list entry. A lender who listed only the tokens
+    // to trade (the app does not add the loan token) got positions nobody could liquidate or close.
+    async function unlistedPosition() {
+      const c = await loadFixture(fx)
+      await c.seedPool()
+      const list = [c.third.target.toString()]   // neither the base asset nor the collateral
+      await c.mm.addTokenlist(list, false)
+      await c.mm.createOrder({ ...c.orderParams, whitelistId: predictTokenListsID(list, false), interestRate: 10000n, duration: BigInt(365 * DAY) })
+      await c.mm.setOrderStatus(0, true)
+      await c.base.approve(c.mm.target, ethers.MaxUint256)
+      await c.collat.approve(c.mm.target, ethers.MaxUint256)
+      await c.mm.orderDepositToken(0, expandTo18Decimals(100))
+      await c.mm.takeLoan(0, ONE, 0, ONE)
+      return c
+    }
+
+    it('liquidates a position whose order lists neither its base asset nor its collateral (bounty #49)', async () => {
+      const c = await unlistedPosition()
+      await time.increase(26 * DAY)                                 // inside the buffer: debt ~1.87, value ~2
+      await c.mm.connect(c.other).liquidate(0, c.other.address)   // freeze
+      await time.increase(60)
+      await expect(c.mm.connect(c.other).liquidate(0, c.other.address)).to.emit(c.mm, 'Liquidation')
+      expect((await c.mm.positions(0)).open).to.eq(false)
+    })
+
+    it('steps a liquidation of such a position (bounty #49)', async () => {
+      const c = await unlistedPosition()
+      await time.increase(26 * DAY)
+      await c.mm.connect(c.other).liquidate(0, c.other.address)
+      await time.increase(60)
+      await c.mm.connect(c.other).liquidateStep(0, c.collat.target, ONE / 2n)
+      expect((await c.mm.getPositionBalances(0))[1]).to.eq(ONE / 2n)
+    })
+
+    it('its owner can close it when the collateral has to be sold to repay (bounty #49)', async () => {
+      const c = await unlistedPosition()
+      await time.increase(DAY)                                      // debt ~1.03 > the 1 base held
+      await c.mm.positionClose(0, true)
+      expect((await c.mm.positions(0)).open).to.eq(false)
+    })
+
     it('liquidates while the holdings still cover the debt, once they are inside the 10% buffer', async () => {
       const c = await pooledPosition(10000n)
       expect(await c.mm.MAINTENANCE_MARGIN_BPS()).to.eq(1000n)
@@ -1691,6 +1833,86 @@ describe('MarginModule', () => {
       expect(await c.mm.positionUnderwaterSince(0)).to.be.greaterThan(0n)
       // The lender now holds the freeze: the third party cannot take it back.
       await expect(c.mm.connect(c.other).liquidateStep(0, c.collat.target, expandTo18Decimals(1))).to.be.revertedWith('MM38')
+    })
+
+    // Bounty #94: a position valued just above its debt is inside the buffer, so LENDER_WINDOW did
+    // not apply, yet the forced sale (up to 5% under the TWAP, plus the pool fee) can leave the
+    // lender short. Any third party could realize that loss.
+    async function justAboveDebt() {
+      // 10 base against 10 collat on the ~1000/1000 pool: selling the 10 collat loses about 1.3% to
+      // price impact and the 0.3% fee, well inside the 95% floor.
+      const loan = expandTo18Decimals(10)
+      const c = await pooledPosition(10000n, loan, loan)
+      const [, value] = await c.mm.getPositionStatus(0)
+      // Let interest carry the debt (loan + loan * t / 30 days) to 0.25% under the holdings' value.
+      const opened = (await c.mm.positions(0)).createdAt
+      await time.increaseTo(opened + (value * 9975n / 10000n - loan) * BigInt(30 * DAY) / loan)
+      const [debt, val] = await c.mm.getPositionStatus(0)
+      expect(val, 'valued above the debt').to.be.gt(debt)
+      expect(await c.mm.subjectToLiquidation(0)).to.eq(true)
+      await c.mm.connect(c.other).liquidate(0, c.other.address)   // freeze inside the buffer
+      expect(await c.mm.positionUnderwaterSince(0)).to.eq(0n)
+      await time.increase(60)
+      return c
+    }
+
+    it('a third party cannot finish a buffer liquidation whose sale leaves the lender short (bounty #94)', async () => {
+      const c = await justAboveDebt()
+      await expect(c.mm.connect(c.other).liquidate(0, c.other.address)).to.be.revertedWith('MM38')
+      expect((await c.mm.positions(0)).open).to.eq(true)
+      expect(await c.mm.positionUnderwaterSince(0), 'a refused attempt records nothing').to.eq(0n)
+      // The lender may realize its own loss: it completes the live freeze and books the shortfall.
+      await expect(c.mm.liquidate(0, c.wallet.address)).to.emit(c.mm, 'LiquidationShortfall')
+      expect((await c.mm.positions(0)).open).to.eq(false)
+      expect(await c.mm.orderShortfall(0)).to.be.gt(0n)
+    })
+
+    it('a third-party step may not sell the position under its debt either (bounty #94)', async () => {
+      const c = await justAboveDebt()
+      // Selling all 10 collat at once costs more than the 0.25% the value has over the debt.
+      await expect(c.mm.connect(c.other).liquidateStep(0, c.collat.target, expandTo18Decimals(10))).to.be.revertedWith('MM38')
+      // A step small enough to keep the value above the debt is still the freezer's to take.
+      await c.mm.connect(c.other).liquidateStep(0, c.collat.target, ONE)
+      const [debt, value] = await c.mm.getPositionStatus(0)
+      expect(value).to.be.gte(debt)
+      expect(await c.mm.positionUnderwaterSince(0)).to.eq(0n)
+    })
+
+    it("the lender's keeper may finish it (bounty #94)", async () => {
+      const c = await justAboveDebt()
+      const [, , keeper] = await ethers.getSigners()
+      await c.mm.orderSetLenderProtection(0, 0, keeper.address)
+      // An address that is neither lender nor keeper is still refused.
+      await expect(c.mm.connect(c.other).liquidate(0, c.other.address)).to.be.revertedWith('MM38')
+      await expect(c.mm.connect(keeper).liquidate(0, keeper.address)).to.emit(c.mm, 'LiquidationShortfall')
+    })
+
+    it('once the position has been under water for LENDER_WINDOW, anyone may finish it (bounty #94)', async () => {
+      const c = await justAboveDebt()
+      await expect(c.mm.connect(c.other).liquidate(0, c.other.address)).to.be.revertedWith('MM38')
+      // A day of interest takes the position under water; a day after that the window is over.
+      await time.increase(DAY)
+      await c.mm.connect(c.other).liquidate(0, c.other.address)   // renews the lapsed freeze
+      const since = await c.mm.positionUnderwaterSince(0)
+      expect(since).to.be.gt(0n)
+      await time.increase(DAY + 60)
+      await expect(c.mm.connect(c.other).liquidate(0, c.other.address)).to.emit(c.mm, 'PositionFrozen')
+      await time.increase(60)
+      await expect(c.mm.connect(c.other).liquidate(0, c.other.address)).to.emit(c.mm, 'LiquidationShortfall')
+    })
+
+    it('a sale that still covers the debt stays open to anyone inside the buffer (bounty #94)', async () => {
+      // 1 base + 1 collat with the debt 2% under their value: selling 1 collat costs about 0.4% of
+      // it, so the sale covers the debt and the buffer rule is unchanged.
+      const c = await pooledPosition(10000n)
+      const [, value] = await c.mm.getPositionStatus(0)
+      const opened = (await c.mm.positions(0)).createdAt
+      await time.increaseTo(opened + (value * 98n / 100n - ONE) * BigInt(30 * DAY) / ONE)
+      expect(await c.mm.subjectToLiquidation(0)).to.eq(true)
+      await c.mm.connect(c.other).liquidate(0, c.other.address)   // freeze
+      await time.increase(60)
+      await expect(c.mm.connect(c.other).liquidate(0, c.other.address))
+        .to.emit(c.mm, 'Liquidation').and.not.to.emit(c.mm, 'LiquidationShortfall')
     })
   })
   describe('lender protection', () => {

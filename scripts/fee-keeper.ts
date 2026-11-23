@@ -2,7 +2,10 @@
  * Keeper for ProtocolFeeCollector. Needs no owner key: any wallet with gas can run it.
  *
  * 1. Finds every pool from the factory's PoolCreated events.
- * 2. Calls collector.enableFees for pools whose protocol fee is still off and not set by hand.
+ * 2. Calls collector.enableFees for pools not set by hand whose protocol fee differs from what enableFees
+ *    would set (see `needsEnableFees`). Collectors since Dex223-contracts#220 set each side's fee only
+ *    while that side's token is a listed RevenueV2 reward token (bounty #111); older ones set the default
+ *    on both sides. The keeper detects which one it talks to.
  * 3. Calls collector.collect for pools with protocol fees to collect, sending them to Revenue.
  * 4. Calls revenue.syncAll() when Revenue (V2) holds fees it has not taken in yet, or has queued fees
  *    waiting for a finished stream to restart. Until that runs, collected fees do not start paying out.
@@ -40,8 +43,35 @@ const POOL_ABI = [
   'function protocolFees() view returns (uint128 token0, uint128 token1)',
 ]
 
+/// Only collectors with the per-side rule (Dex223-contracts#220) have this getter.
+const PER_SIDE_PROBE_ABI = ['function REWARD_CHECK_GAS() view returns (uint256)']
+
 function fail(msg: string): never {
   throw new Error(msg)
+}
+
+/**
+ * Whether enableFees would change this pool. `current` is slot0.feeProtocol (token0 in the low four bits,
+ * token1 in the high four), `fp0`/`fp1` the collector's defaults, `listed0`/`listed1` whether each side's
+ * ERC-20 is a listed reward token on the collector's revenue.
+ * - perSide (collector since #220): enableFees sets a side to its default only while its token is listed,
+ *   else 0, so the pool needs it whenever it differs from that. A pool with no listed token is left alone
+ *   at 0, and a side turns on once its token gets listed.
+ * - older collectors set both defaults; only a pool still at 0 needs it (unchanged behavior).
+ */
+export function needsEnableFees(
+  perSide: boolean,
+  current: number,
+  fp0: number,
+  fp1: number,
+  listed0: boolean,
+  listed1: boolean,
+  custom: boolean,
+): boolean {
+  if (custom) return false
+  if (!perSide) return current === 0 && (fp0 !== 0 || fp1 !== 0)
+  const want = (listed0 ? fp0 : 0) + ((listed1 ? fp1 : 0) << 4)
+  return current !== want
 }
 
 /// Pruned RPCs (publicnode among them) answer eth_getLogs for old blocks with an empty list instead of an
@@ -104,32 +134,56 @@ export async function main() {
   }
 
   const latest = await ethers.provider.getBlockNumber()
-  const pools: string[] = []
+  // Each pool with the ERC-20 versions of its tokens: the addresses the collector checks on Revenue.
+  const pools: { pool: string; token0: string; token1: string }[] = []
+  const add = (args: any) => pools.push({ pool: args.pool, token0: args.token0_erc20, token1: args.token1_erc20 })
   if ((process.env.POOL_SOURCE ?? '').toLowerCase() === 'etherscan') {
     for (const log of await etherscanLogs(factoryAddr, factory.interface.getEvent('PoolCreated')!.topicHash, fromBlock, latest)) {
-      pools.push((factory.interface.parseLog(log) as any).args.pool)
+      add((factory.interface.parseLog(log) as any).args)
     }
   } else {
     await assertLogsServed(fromBlock)
     for (let from = fromBlock; from <= latest; from += chunk) {
       const to = Math.min(from + chunk - 1, latest)
       const events = await factory.queryFilter(factory.filters.PoolCreated(), from, to)
-      for (const e of events) pools.push((e as any).args.pool)
+      for (const e of events) add((e as any).args)
     }
   }
   console.log(`network ${network.name}, collector ${collectorAddr}, ${pools.length} pools (blocks ${fromBlock}..${latest})`)
 
   const fp0 = Number(await collector.defaultFeeProtocol0())
   const fp1 = Number(await collector.defaultFeeProtocol1())
+  const perSide = await new ethers.Contract(collectorAddr, PER_SIDE_PROBE_ABI, ethers.provider)
+    .REWARD_CHECK_GAS()
+    .then(() => true, () => false)
+  const revenueAddr: string = await collector.revenue()
+  const revenueReader = new ethers.Contract(revenueAddr, REVENUE_V2_ABI, ethers.provider)
+  const listedCache = new Map<string, Promise<boolean>>()
+  // Same fail-safe as the collector: a revenue that is not a RevenueV2 lists nothing.
+  const listed = (token: string) => {
+    const k = token.toLowerCase()
+    if (!listedCache.has(k)) listedCache.set(k, revenueReader.reward_data(token).then((r: any) => r.listed === true, () => false))
+    return listedCache.get(k)!
+  }
+  console.log(`enableFees rule: ${perSide ? 'per side, only for listed reward tokens on ' + revenueAddr : 'both defaults (older collector)'}`)
+
   const toEnable: string[] = []
   const toCollect: string[] = []
-  for (const addr of pools) {
+  for (const { pool: addr, token0, token1 } of pools) {
     const pool = new ethers.Contract(addr, POOL_ABI, ethers.provider)
-    const [slot0, fees, custom] = await Promise.all([pool.slot0(), pool.protocolFees(), collector.customFeeProtocol(addr)])
+    const [slot0, fees, custom, listed0, listed1] = await Promise.all([
+      pool.slot0(),
+      pool.protocolFees(),
+      collector.customFeeProtocol(addr),
+      perSide ? listed(token0) : Promise.resolve(true),
+      perSide ? listed(token1) : Promise.resolve(true),
+    ])
     const feeProtocol = Number(slot0.feeProtocol)
-    if (feeProtocol === 0 && !custom && (fp0 !== 0 || fp1 !== 0)) toEnable.push(addr)
+    const enable = needsEnableFees(perSide, feeProtocol, fp0, fp1, listed0, listed1, custom)
+    if (enable) toEnable.push(addr)
     if (fees.token0 > minWei || fees.token1 > minWei) toCollect.push(addr)
-    console.log(`  ${addr} feeProtocol=${feeProtocol % 16}/${feeProtocol >> 4}${custom ? ' (custom)' : ''} accrued=${fees.token0}/${fees.token1}`)
+    const want = perSide && !custom ? ` want=${listed0 ? fp0 : 0}/${listed1 ? fp1 : 0}` : ''
+    console.log(`  ${addr} feeProtocol=${feeProtocol % 16}/${feeProtocol >> 4}${want}${custom ? ' (custom)' : ''}${enable ? ' -> enableFees' : ''} accrued=${fees.token0}/${fees.token1}`)
   }
 
   const [signer] = await ethers.getSigners()
@@ -160,7 +214,7 @@ export async function main() {
   }
 
   // Fees reach Revenue as plain transfers; syncAll turns them into reward streams.
-  const revenue = new ethers.Contract(await collector.revenue(), REVENUE_V2_ABI, signer)
+  const revenue = new ethers.Contract(revenueAddr, REVENUE_V2_ABI, signer)
   let rewardTokens: string[]
   try {
     rewardTokens = await revenue.get_reward_tokens()

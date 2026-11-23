@@ -204,6 +204,37 @@ describe('AutoListing', () => {
             await expect(ownable.listTokenByOwner(ethers.ZeroAddress, token3)).to.be.revertedWith('Token is banned')
         })
 
+        it('banToken with one half resolves and bans its listed counterpart, clears tokens[id], and updateMe forwards metadata', async () => {
+            const ownable = await (await ethers.getContractFactory('Dex223OwnableListing'))
+                .deploy(factory.target, registry.target, 'ownable', 'https://ownable')
+            const t20 = token0.target.toString()
+            await ownable.listTokenByOwner(t20, token3)
+            const id = await ownable.listed_tokens(t20)
+            expect(await ownable.getToken(id)).to.deep.eq([t20, token3])
+
+            await expect(ownable.banToken(ethers.ZeroAddress, ethers.ZeroAddress)).to.be.revertedWith('Zero token address')
+            await expect(ownable.banToken(t20, t20)).to.be.revertedWith('Identical token addresses')
+            await expect(ownable.banToken(t20, token4)).to.be.revertedWith('Listing pair mismatch')
+
+            // Banning by passing only the ERC-20 half also bans and delists the paired ERC-223 half and clears tokens[id]
+            await expect(ownable.banToken(t20, ethers.ZeroAddress))
+                .to.emit(registry, 'TokenBanned')
+                .withArgs(ownable.target.toString(), t20, token3)
+                .to.emit(ownable, 'TokenBanned')
+                .withArgs(t20)
+                .to.emit(ownable, 'TokenBanned')
+                .withArgs(token3)
+
+            expect(await ownable.isListed(t20)).to.eq(false)
+            expect(await ownable.isListed(token3)).to.eq(false)
+            expect(await ownable.getToken(id)).to.deep.eq([ethers.ZeroAddress, ethers.ZeroAddress])
+            await expect(ownable.listTokenByOwner(ethers.ZeroAddress, token3)).to.be.revertedWith('Token is banned')
+
+            await expect(ownable.updateMe('https://ownable-v2', '{"tier":"verified"}'))
+                .to.emit(registry, 'ListingContractUpdated')
+                .withArgs(ownable.target.toString(), wallet.address, 'https://ownable-v2', ethers.toUtf8Bytes('{"tier":"verified"}'))
+        })
+
         it('listTokenByOwner records the pair in the registry once, without half-empty entries', async () => {
             const ownable = await (await ethers.getContractFactory('Dex223OwnableListing'))
                 .deploy(factory.target, registry.target, 'ownable', 'https://ownable')
@@ -237,6 +268,87 @@ describe('AutoListing', () => {
             await expect(ownable.listTokenByOwner(u, ethers.ZeroAddress)).to.be.revertedWith('Listing pair mismatch')
             await ownable.listTokenByOwner(t, token3)
             expect(await ownable.getToken(id)).to.deep.eq([t, token3])
+        })
+    })
+
+    describe('listing price arithmetic (bounty #137)', () => {
+        const HALF = 2n ** 255n
+
+        async function allListings(): Promise<any[]> {
+            const core = await (await ethers.getContractFactory('Dex223CoreAutoListing'))
+                .deploy(factory.target, registry.target, converter.target, 'core', 'https://core')
+            const ownable = await (await ethers.getContractFactory('Dex223OwnableListing'))
+                .deploy(factory.target, registry.target, 'ownable', 'https://ownable')
+            return [listing, core, ownable]
+        }
+
+        it('refuses a two-token listing whose total price would wrap, in every listing contract', async () => {
+            for (const l of await allListings()) {
+                // ERC-20 payment: 2 * 2**255 wrapped to 0, so the payment step was skipped.
+                await l.setPaymentPrice(token2.target, HALF)
+                await token2.approve(l.target, ethers.MaxUint256)
+                const before = await token2.balanceOf(wallet.address)
+                await expect(l.list(pool0, feeAmount, token2.target)).to.be.revertedWith('Listing price overflow')
+                expect(await token2.balanceOf(wallet.address)).to.eq(before)
+
+                // ETH payment: 2 * (2**255 + 1) wrapped to 2 wei.
+                await l.setPaymentPrice(ethers.ZeroAddress, HALF + 1n)
+                await expect(l.connect(other).list(pool0, feeAmount, ethers.ZeroAddress, { value: 2n }))
+                    .to.be.revertedWith('Listing price overflow')
+
+                expect(await l.isListed(token0.target)).to.eq(false)
+                expect(await l.isListed(token1.target)).to.eq(false)
+            }
+        })
+
+        it('still charges each newly listed token its price, including a single price of 2**255', async () => {
+            for (const l of await allListings()) {
+                const pay = await (await ethers.getContractFactory('TestERC20')).deploy(ethers.MaxUint256)
+                await pay.approve(l.target, ethers.MaxUint256)
+                await l.setPaymentPrice(pay.target, 1000n)
+                await expect(l.list(pool0, feeAmount, pay.target))
+                    .to.changeTokenBalances(pay, [wallet, l], [-2000n, 2000n])
+
+                // token1 is listed now, so pool1 (token1/token2) owes one price, and one 2**255 does not wrap.
+                await l.setPaymentPrice(pay.target, HALF)
+                await expect(l.list(pool1, feeAmount, pay.target))
+                    .to.changeTokenBalances(pay, [wallet, l], [-HALF, HALF])
+                expect(await l.isListed(token2.target)).to.eq(true)
+            }
+        })
+    })
+
+    describe('TokenListed events (bounty #131)', () => {
+        function events(receipt: any, contract: any, name: string) {
+            return receipt!.logs
+                .filter((l: any) => l.address.toLowerCase() === contract.target.toString().toLowerCase())
+                .map((l: any) => contract.interface.parseLog(l))
+                .filter((e: any) => e?.name === name)
+        }
+
+        async function coreListing(): Promise<any> {
+            return (await ethers.getContractFactory('Dex223CoreAutoListing'))
+                .deploy(factory.target, registry.target, converter.target, 'core', 'https://core')
+        }
+
+        it('core listSingle emits TokenListed once for one listing', async () => {
+            const core = await coreListing()
+            const receipt = await (await core.listSingle(token0.target, token3, ethers.ZeroAddress)).wait()
+            const listed = events(receipt, core, 'TokenListed')
+            expect(listed.length).to.eq(1)
+            expect([listed[0].args[0], listed[0].args[1]]).to.deep.eq([token0.target.toString(), token3])
+            expect(events(receipt, registry, 'TokenListed').length).to.eq(1)
+        })
+
+        it('list still emits TokenListed once for each newly listed token, and none for listed ones', async () => {
+            const core = await coreListing()
+            const first = await (await core.list(pool0, feeAmount, ethers.ZeroAddress)).wait()
+            expect(events(first, core, 'TokenListed').length).to.eq(2)
+            expect(events(first, registry, 'TokenListed').length).to.eq(2)
+
+            const again = await (await core.list(pool0, feeAmount, ethers.ZeroAddress)).wait()
+            expect(events(again, core, 'TokenListed').length).to.eq(0)
+            expect(events(again, core, 'PairListed').length).to.eq(1)
         })
     })
 })

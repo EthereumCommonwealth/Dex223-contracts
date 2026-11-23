@@ -124,6 +124,29 @@ describe('Dex223Factory', () => {
     expect(await pool.tickSpacing(), 'pool tick spacing').to.eq(tickSpacing)
   }
 
+  describe('ERC-223 transfers (bounty #112)', () => {
+    // The factory keeps no balances and has no way to send tokens out, so an ERC-223 transfer to it must
+    // revert instead of leaving the tokens stranded. D223 is the contract deployed on mainnet.
+    async function d223() {
+      return (await ethers.getContractFactory('D223Token')).deploy()
+    }
+
+    it('refuses an ERC-223 transfer, with or without data', async () => {
+      const token = await d223()
+      const before = await token.balanceOf(wallet.address)
+      await expect(token['transfer(address,uint256)'](factory.target, 1000n)).to.be.reverted
+      await expect(token['transfer(address,uint256,bytes)'](factory.target, 1000n, '0x1234')).to.be.reverted
+      expect(await token.balanceOf(factory.target)).to.eq(0n)
+      expect(await token.balanceOf(wallet.address)).to.eq(before)
+    })
+
+    it('control: the same transfer to an address without code goes through', async () => {
+      const token = await d223()
+      await token['transfer(address,uint256)'](other.address, 1000n)
+      expect(await token.balanceOf(other.address)).to.eq(1000n)
+    })
+  })
+
   describe('#createPool', () => {
     it('succeeds for low fee pool', async () => {
       await createAndCheckPool(TEST_ADDRESSES, FeeAmount.LOW)

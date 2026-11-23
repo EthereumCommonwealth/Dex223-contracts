@@ -867,7 +867,7 @@ contract MarginModule is IOrderParams
             require(!_isErc223SideOf(pool, _asset1));
             (, address tokenOut20) = _poolErc20Pair(pool, _asset1);
 
-            IERC20Minimal(_asset1).approve(address(router), _amount);
+            _tokenCall(_asset1, abi.encodeWithSelector(IERC20Minimal.approve.selector, address(router), _amount));
             amountOut = ISwapRouter(router).exactInputSingle(ISwapRouter.ExactInputSingleParams({
                 tokenIn: _asset1,
                 tokenOut: tokenOut20,
@@ -882,6 +882,11 @@ contract MarginModule is IOrderParams
         }
         require(amountOut > 0);
         uint256 amountInUsed = balInBefore - IERC20Minimal(_asset1).balanceOf(address(this));
+        // A partial fill (owner's price limit) leaves the rest of the allowance standing, and a token
+        // like USDT then refuses the next approve, which would block every later sale of it.
+        if (amountInUsed < _amount) {
+            _tokenCall(_asset1, abi.encodeWithSelector(IERC20Minimal.approve.selector, address(router), 0));
+        }
 
         // add new (received) asset to Position
         addAsset(_positionId, _asset2, amountOut);
@@ -1067,13 +1072,24 @@ contract MarginModule is IOrderParams
 
     /// @dev Selling a position worth less than its debt realizes a loss for the lender. During
     /// LENDER_WINDOW only the lender or its keeper may do it; inside the buffer (value still above
-    /// the debt) and after the window, anyone may.
+    /// the debt) and after the window, anyone may, unless the sale itself leaves the lender short
+    /// (_requireMayRealizeSaleLoss).
     function _requireMayRealizeLoss(uint256 positionId) internal view returns (bool inWindow) {
         uint256 since = positionUnderwaterSince[positionId];
         inWindow = since != 0 && block.timestamp < since + LENDER_WINDOW;
         if (inWindow) {
             require(_isLossLiquidator(positions[positionId].orderId, msg.sender), "MM38");
         }
+    }
+
+    /// @dev A forced sale may fill up to FORCED_SWAP_MIN_OUT_BPS below the TWAP, so a position valued
+    /// just above its debt can still leave the lender short once its holdings are sold. That sale
+    /// realizes a loss as surely as one under water, so it starts the spell here and LENDER_WINDOW
+    /// applies (bounty #94). A third party's attempt reverts, so the timestamp is kept only when the
+    /// lender or its keeper goes ahead.
+    function _requireMayRealizeSaleLoss(uint256 positionId) internal {
+        if (positionUnderwaterSince[positionId] == 0) positionUnderwaterSince[positionId] = block.timestamp;
+        _requireMayRealizeLoss(positionId);
     }
 
     function liquidate(uint256 positionId, address receiver) public nonReentrant {
@@ -1137,6 +1153,8 @@ contract MarginModule is IOrderParams
         require(id > 0 && id < position.assets.length, "MM25");
 
         _swapToBaseAsset(positionId, asset, amount);
+        (uint256 debt, uint256 value) = _positionValue(positionId);
+        if (value < debt) _requireMayRealizeSaleLoss(positionId);
     }
 
     /// @notice Lift a freeze from a position that is no longer liquidatable. A freeze was never
@@ -1231,6 +1249,7 @@ contract MarginModule is IOrderParams
         // Every non-base holding is sold; whatever the sale does not recover is the lender's loss.
         uint256 shortfall = _settle(positionId, _receiver, true);
         if (shortfall > 0) {
+            _requireMayRealizeSaleLoss(positionId);
             orderShortfall[positions[positionId].orderId] += shortfall;
             emit LiquidationShortfall(positionId, positions[positionId].orderId, shortfall);
         }
@@ -1343,8 +1362,16 @@ contract MarginModule is IOrderParams
     function _sendAsset(address asset, uint256 amount, address receiver) internal {
         require(asset != address(0)); // _transferOut routes address(0) to _sendEth
 
-        bool success = IERC20Minimal(asset).transfer(receiver, amount);
-        require(success, "MM34");
+        _tokenCall(asset, abi.encodeWithSelector(IERC20Minimal.transfer.selector, receiver, amount));
+    }
+
+    /// @dev Calls a token and accepts either answer an ERC-20 gives: true, or nothing at all (USDT and
+    /// other tokens that predate the standard's return value). A typed call reverted on the empty
+    /// answer, so such a token could be swapped into a position but never sold, liquidated, withdrawn
+    /// or closed out (bounty #56).
+    function _tokenCall(address token, bytes memory data) private {
+        (bool success, bytes memory ret) = token.call(data);
+        require(success && (ret.length == 0 || abi.decode(ret, (bool))), "MM34");
     }
 
     function _sendEth(uint256 amount, address receiver) internal {
@@ -1379,7 +1406,7 @@ contract MarginModule is IOrderParams
         // erc20
         } else {
             uint256 balance = IERC20Minimal(asset).balanceOf(address(this));
-            IERC20Minimal(asset).transferFrom(msg.sender, address(this), amount);
+            _tokenCall(asset, abi.encodeWithSelector(IERC20Minimal.transferFrom.selector, msg.sender, address(this), amount));
             require(IERC20Minimal(asset).balanceOf(address(this)) >= balance + amount);
         }
     }
@@ -1430,10 +1457,15 @@ contract MarginModule is IOrderParams
         // Floor the output at FORCED_SWAP_MIN_OUT_BPS of the oracle's TWAP quote for this amount.
         uint256 minOut = oracle.getAmountOut(order.baseAsset, asset, amount) * FORCED_SWAP_MIN_OUT_BPS / 10000;
 
+        // The base asset and the initial collateral need no list entry (_validateAsset accepts them at
+        // any index, and takeLoan refuses an empty list, so index 0 exists). Looking them up with
+        // getIdFromTokenlist reverted for a static list without them, and the position could then be
+        // neither liquidated nor closed (bounty #49).
+        uint256 listId = _listIndex(order.whitelist, asset);
         if (_isErc223SideOf(pool, asset)) {
-            _marginSwap223Internal(positionId, getAssetId(positionId, asset), getIdFromTokenlist(order.whitelist, asset), getIdFromTokenlist(order.whitelist, order.baseAsset), amount, order.baseAsset, fee, minOut);
+            _marginSwap223Internal(positionId, getAssetId(positionId, asset), listId, 0, amount, order.baseAsset, fee, minOut);
         } else {
-            _marginSwapInternal(positionId, getAssetId(positionId, asset), getIdFromTokenlist(order.whitelist, asset), getIdFromTokenlist(order.whitelist, order.baseAsset), amount, order.baseAsset, fee, minOut, 0);
+            _marginSwapInternal(positionId, getAssetId(positionId, asset), listId, 0, amount, order.baseAsset, fee, minOut, 0);
         }
 
         // Return new base asset balance
@@ -1480,14 +1512,18 @@ contract MarginModule is IOrderParams
             return 0;
         }
 
-        assetId = list.tokens.length;
-        for (uint256 i = 0; i < list.tokens.length; i++) {
-            if (list.tokens[i] == asset) {
-                assetId = i;
-                break;
-            }
+        assetId = _listIndex(_listId, asset);
+        require(list.tokens[assetId] == asset);
+    }
+
+    /// @dev Index of `asset` in the list's tokens, or 0 when it is not there (always 0 for an
+    /// autolisting list, whose only entry is the listing contract). _validateAsset still decides.
+    function _listIndex(bytes32 _listId, address asset) internal view returns (uint256) {
+        address[] storage tokens = tokenlists[_listId].tokens;
+        for (uint256 i = 0; i < tokens.length; i++) {
+            if (tokens[i] == asset) return i;
         }
-        require(assetId < list.tokens.length);
+        return 0;
     }
 
 
